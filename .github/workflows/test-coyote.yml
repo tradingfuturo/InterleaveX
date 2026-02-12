@@ -64,13 +64,13 @@ jobs:
         run: ./Scripts/run-tests.ps1 -ci
         shell: pwsh
       - name: Archive Coyote binaries
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: coyote-binaries
           path: ./bin
       - name: Archive test results
         if: failure()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: coyote-test-results
           path: ./Tests/**/TestResults
@@ -98,7 +98,7 @@ jobs:
         with:
           dotnet-version: '8.0.x'
       - name: Download Coyote binaries
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: coyote-binaries
           path: ./bin
