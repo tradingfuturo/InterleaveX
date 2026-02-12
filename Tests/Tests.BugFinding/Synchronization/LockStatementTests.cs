@@ -1,7 +1,9 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Specifications;
 using Xunit;
 using Xunit.Abstractions;
@@ -111,6 +113,97 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 Specification.Assert(lockTaken, "lockTaken is false");
             },
             this.GetConfiguration());
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestLockInStaticConstructorDoesNotDeadlock()
+        {
+            this.Test(() =>
+            {
+                // Accessing this type triggers its static constructor which contains a lock.
+                // Without the fix for issue #488, this would deadlock because the rewriter
+                // would replace Monitor.Enter with Coyote's scheduler-aware version inside
+                // the .cctor, and the scheduler could suspend the thread while the CLR's
+                // type initialization lock is held.
+                var instance = new ClassWithLockInStaticConstructor();
+                Specification.Assert(ClassWithLockInStaticConstructor.IsInitialized,
+                    "Static constructor should have completed.");
+            },
+            this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestSchedulingPointInStaticConstructorDoesNotDeadlock()
+        {
+            this.Test(() =>
+            {
+                var instance = new ClassWithSchedulingPointInStaticConstructor();
+                Specification.Assert(ClassWithSchedulingPointInStaticConstructor.IsInitialized,
+                    "Static constructor should have completed.");
+            },
+            this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestConcurrentAccessToTypeWithLockInStaticConstructor()
+        {
+            this.Test(() =>
+            {
+                var t = new Thread(() =>
+                {
+                    ClassWithLockInStaticConstructor2.Touch();
+                });
+
+                t.Start();
+                ClassWithLockInStaticConstructor2.Touch();
+                t.Join();
+            },
+            this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        private class ClassWithLockInStaticConstructor
+        {
+            private static readonly object SyncObject = new object();
+            public static bool IsInitialized { get; private set; }
+
+            static ClassWithLockInStaticConstructor()
+            {
+                lock (SyncObject)
+                {
+                    IsInitialized = true;
+                }
+            }
+        }
+
+        private class ClassWithSchedulingPointInStaticConstructor
+        {
+            public static bool IsInitialized { get; private set; }
+
+            static ClassWithSchedulingPointInStaticConstructor()
+            {
+                SchedulingPoint.Interleave();
+                IsInitialized = true;
+            }
+        }
+
+        private class ClassWithLockInStaticConstructor2
+        {
+            private static readonly object SyncObject = new object();
+            public static bool IsInitialized { get; private set; }
+
+            static ClassWithLockInStaticConstructor2()
+            {
+                lock (SyncObject)
+                {
+                    IsInitialized = true;
+                }
+            }
+
+            public static void Touch()
+            {
+                // Force the static constructor to run by accessing the type.
+                Specification.Assert(IsInitialized, "Static constructor should have completed.");
+            }
         }
     }
 }

@@ -20,6 +20,21 @@ namespace Microsoft.Coyote.Rewriting
         }
 
         /// <inheritdoc/>
+        protected internal override void VisitMethod(MethodDefinition method)
+        {
+            // Skip static constructors (.cctor) to avoid deadlocks: the CLR holds a native
+            // type initialization lock during .cctor execution, and rewriting calls like
+            // Monitor.Enter to Coyote's scheduler-aware versions could suspend the thread
+            // while that lock is held, causing an unrecoverable deadlock (see issue #488).
+            if (method is null || (method.IsConstructor && method.IsStatic))
+            {
+                return;
+            }
+
+            base.VisitMethod(method);
+        }
+
+        /// <inheritdoc/>
         protected override void VisitVariable(VariableDefinition variable)
         {
             if (this.Method is null)

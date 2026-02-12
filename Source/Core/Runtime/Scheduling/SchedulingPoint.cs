@@ -2,7 +2,9 @@
 // Licensed under the MIT License.
 
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using System.Reflection;
 using Microsoft.Coyote.Runtime.CompilerServices;
 
 namespace Microsoft.Coyote.Runtime
@@ -17,10 +19,35 @@ namespace Microsoft.Coyote.Runtime
     public static class SchedulingPoint
     {
         /// <summary>
+        /// Returns true if the current call stack includes a static constructor (.cctor) frame.
+        /// This is used to avoid deadlocks caused by the CLR's type initialization lock being
+        /// held while the scheduler tries to suspend the thread (see issue #488).
+        /// </summary>
+        private static bool IsInsideStaticConstructor()
+        {
+            var stackTrace = new StackTrace(false);
+            for (int i = 0; i < stackTrace.FrameCount; i++)
+            {
+                MethodBase method = stackTrace.GetFrame(i)?.GetMethod();
+                if (method != null && method.IsStatic && method.IsConstructor)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// Explores a possible interleaving with another controlled operation.
         /// </summary>
         public static void Interleave()
         {
+            if (IsInsideStaticConstructor())
+            {
+                return;
+            }
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy != SchedulingPolicy.None &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
@@ -94,6 +121,11 @@ namespace Microsoft.Coyote.Runtime
         /// </remarks>
         public static void Yield()
         {
+            if (IsInsideStaticConstructor())
+            {
+                return;
+            }
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy != SchedulingPolicy.None &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
@@ -119,6 +151,11 @@ namespace Microsoft.Coyote.Runtime
         /// </param>
         public static void Read(string state, IEqualityComparer<string> comparer = null)
         {
+            if (IsInsideStaticConstructor())
+            {
+                return;
+            }
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy != SchedulingPolicy.None &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
@@ -147,6 +184,11 @@ namespace Microsoft.Coyote.Runtime
         /// </param>
         public static void Write(string state, IEqualityComparer<string> comparer = null)
         {
+            if (IsInsideStaticConstructor())
+            {
+                return;
+            }
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy != SchedulingPolicy.None &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
