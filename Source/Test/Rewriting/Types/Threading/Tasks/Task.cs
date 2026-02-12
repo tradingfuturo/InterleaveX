@@ -328,6 +328,108 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             return task;
         }
 
+#if NET9_0_OR_GREATER
+        /// <summary>
+        /// Creates an <see cref="IAsyncEnumerable{T}"/> that will yield the supplied tasks
+        /// as those tasks complete.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static IAsyncEnumerable<SystemTask> WhenEach(params SystemTask[] tasks)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return SystemTask.WhenEach(tasks);
+            }
+
+            return new ControlledWhenEachEnumerable<SystemTask>(runtime, (IEnumerable<SystemTask>)tasks);
+        }
+
+        /// <summary>
+        /// Creates an <see cref="IAsyncEnumerable{T}"/> that will yield the supplied tasks
+        /// as those tasks complete.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static IAsyncEnumerable<SystemTask> WhenEach(IEnumerable<SystemTask> tasks)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return SystemTask.WhenEach(tasks);
+            }
+
+            return new ControlledWhenEachEnumerable<SystemTask>(runtime, tasks);
+        }
+
+        /// <summary>
+        /// Creates an <see cref="IAsyncEnumerable{T}"/> that will yield the supplied tasks
+        /// as those tasks complete.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static IAsyncEnumerable<SystemTask> WhenEach(ReadOnlySpan<SystemTask> tasks)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return SystemTask.WhenEach(tasks);
+            }
+
+            return new ControlledWhenEachEnumerable<SystemTask>(runtime, tasks);
+        }
+
+        /// <summary>
+        /// Creates an <see cref="IAsyncEnumerable{T}"/> that will yield the supplied tasks
+        /// as those tasks complete.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static IAsyncEnumerable<SystemTasks.Task<TResult>> WhenEach<TResult>(
+            params SystemTasks.Task<TResult>[] tasks)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return SystemTask.WhenEach(tasks);
+            }
+
+            return new ControlledWhenEachEnumerable<SystemTasks.Task<TResult>>(runtime,
+                (IEnumerable<SystemTasks.Task<TResult>>)tasks);
+        }
+
+        /// <summary>
+        /// Creates an <see cref="IAsyncEnumerable{T}"/> that will yield the supplied tasks
+        /// as those tasks complete.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static IAsyncEnumerable<SystemTasks.Task<TResult>> WhenEach<TResult>(
+            IEnumerable<SystemTasks.Task<TResult>> tasks)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return SystemTask.WhenEach(tasks);
+            }
+
+            return new ControlledWhenEachEnumerable<SystemTasks.Task<TResult>>(runtime, tasks);
+        }
+
+        /// <summary>
+        /// Creates an <see cref="IAsyncEnumerable{T}"/> that will yield the supplied tasks
+        /// as those tasks complete.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static IAsyncEnumerable<SystemTasks.Task<TResult>> WhenEach<TResult>(
+            ReadOnlySpan<SystemTasks.Task<TResult>> tasks)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return SystemTask.WhenEach(tasks);
+            }
+
+            return new ControlledWhenEachEnumerable<SystemTasks.Task<TResult>>(runtime, tasks);
+        }
+#endif
+
         /// <summary>
         /// Waits for all of the provided task objects to complete execution.
         /// </summary>

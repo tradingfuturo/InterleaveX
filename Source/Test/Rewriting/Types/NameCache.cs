@@ -93,5 +93,10 @@ namespace Microsoft.Coyote.Rewriting.Types
         internal static string HttpClient { get; } = typeof(SystemNetHttp.HttpClient).FullName;
         internal static string HttpRequestMessage { get; } = typeof(SystemNetHttp.HttpRequestMessage).FullName;
 #endif
+
+#if NET9_0_OR_GREATER
+        internal static string Lock { get; } = typeof(SystemThreading.Lock).FullName;
+        internal static string LockScope { get; } = typeof(SystemThreading.Lock).FullName + "/Scope";
+#endif
     }
 }

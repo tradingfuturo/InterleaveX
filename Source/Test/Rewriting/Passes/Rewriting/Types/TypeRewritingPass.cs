@@ -95,6 +95,12 @@ namespace Microsoft.Coyote.Rewriting
             this.KnownTypes[NameCache.HttpRequestMessage] = typeof(Types.Net.Http.HttpRequestMessage);
 #endif
 
+#if NET9_0_OR_GREATER
+            // Populate the map with the known .NET 9+ lock type.
+            this.KnownTypes[NameCache.Lock] = typeof(Types.Threading.Lock);
+            this.KnownTypes[NameCache.LockScope] = typeof(Types.Threading.Lock);
+#endif
+
             if (options.IsRewritingConcurrentCollections)
             {
                 this.KnownTypes[NameCache.ConcurrentBag] = typeof(Types.Collections.Concurrent.ConcurrentBag<>);

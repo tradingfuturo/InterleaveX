@@ -26,6 +26,7 @@ if ($host.Version.Major -lt 7)
 $dotnet = "dotnet"
 $dotnet_sdk_path = FindDotNetSdkPath -dotnet $dotnet
 $version_net4 = $IsWindows -and (Get-ItemProperty "HKLM:SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full").Release -ge 528040
+$version_net8 = FindMatchingVersion -path $dotnet_sdk_path -version "8.0.0"
 $version_net6 = FindMatchingVersion -path $dotnet_sdk_path -version "6.0.0"
 $sdk_version = FindDotNetSdkVersion -dotnet_sdk_path $dotnet_sdk_path
 

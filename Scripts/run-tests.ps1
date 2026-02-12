@@ -2,8 +2,8 @@
 # Licensed under the MIT License.
 
 param(
-    [ValidateSet("net8.0", "net6.0", "net462")]
-    [string]$framework = "net8.0",
+    [ValidateSet("net9.0", "net8.0", "net6.0", "net462")]
+    [string]$framework = "net9.0",
     [ValidateSet("all", "runtime", "rewriting", "testing", "actors", "actors-testing", "tools")]
     [string]$test = "all",
     [string]$filter = "",
@@ -38,7 +38,7 @@ $runtime_version = FindDotNetRuntimeVersion -dotnet_runtime_path $dotnet_runtime
 # Restore the local ilverify tool.
 &dotnet nuget locals all --clear
 &dotnet tool restore
-&dotnet tool install dotnet-ilverify --version 8.0.0
+&dotnet tool install dotnet-ilverify --version 9.0.0
 &dotnet tool list
 $ilverify = "dotnet ilverify"
 
@@ -59,12 +59,12 @@ foreach ($kvp in $targets.GetEnumerator()) {
         }
 
         $target = "$PSScriptRoot/../Tests/$($kvp.Value)/$($kvp.Value).csproj"
-        if ($f -eq "net8.0") {
+        if ($f -eq "net9.0" -or $f -eq "net8.0") {
             $AssemblyName = GetAssemblyName($target)
-            $command = [IO.Path]::Combine($PSScriptRoot, "..", "Tests", $($kvp.Value), "bin", "net8.0", "$AssemblyName.dll")
+            $command = [IO.Path]::Combine($PSScriptRoot, "..", "Tests", $($kvp.Value), "bin", $f, "$AssemblyName.dll")
             $command = $command + ' -r "' + [IO.Path]::Combine( `
-                $PSScriptRoot, "..", "Tests", $($kvp.Value), "bin", "net8.0", "*.dll") + '"'
-            $command = $command + ' -r "' + [IO.Path]::Combine($PSScriptRoot, "..", "bin", "net8.0", "*.dll") + '"'
+                $PSScriptRoot, "..", "Tests", $($kvp.Value), "bin", $f, "*.dll") + '"'
+            $command = $command + ' -r "' + [IO.Path]::Combine($PSScriptRoot, "..", "bin", $f, "*.dll") + '"'
             $command = $command + ' -r "' + [IO.Path]::Combine($dotnet_runtime_path, $runtime_version, "*.dll") + '"'
             $command = $command + ' -r "' + [IO.Path]::Combine($aspnet_runtime_path, $runtime_version, "*.dll") + '"'
             Invoke-ToolCommand -tool $ilverify -cmd $command -error_msg "found corrupted assembly rewriting"
