@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+using System;
 using System.Threading.Tasks;
 using Xunit;
 using Xunit.Abstractions;
@@ -37,5 +38,47 @@ namespace Microsoft.Coyote.Rewriting.Tests
         {
             Task.WhenAny(Task.FromResult(1));
         }
+
+#if NET9_0_OR_GREATER
+        [Fact(Timeout = 5000)]
+        public void TestRewritingTaskWhenAllWithSpan()
+        {
+            Task[] tasks = new[] { Task.CompletedTask };
+            ReadOnlySpan<Task> taskSpan = tasks;
+            Task.WhenAll(taskSpan);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestRewritingGenericTaskWhenAllWithSpan()
+        {
+            Task<int>[] tasks = new[] { Task.FromResult(1) };
+            ReadOnlySpan<Task<int>> taskSpan = tasks;
+            Task.WhenAll(taskSpan);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestRewritingTaskWhenAnyWithSpan()
+        {
+            Task[] tasks = new[] { Task.CompletedTask };
+            ReadOnlySpan<Task> taskSpan = tasks;
+            Task.WhenAny(taskSpan);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestRewritingGenericTaskWhenAnyWithSpan()
+        {
+            Task<int>[] tasks = new[] { Task.FromResult(1) };
+            ReadOnlySpan<Task<int>> taskSpan = tasks;
+            Task.WhenAny(taskSpan);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestRewritingTaskWaitAllWithSpan()
+        {
+            Task[] tasks = new[] { Task.CompletedTask };
+            ReadOnlySpan<Task> taskSpan = tasks;
+            Task.WaitAll(taskSpan);
+        }
+#endif
     }
 }

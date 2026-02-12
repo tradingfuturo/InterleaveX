@@ -256,6 +256,30 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             return task;
         }
 
+#if NET9_0_OR_GREATER
+        /// <summary>
+        /// Creates a task that will complete when all tasks in the specified span have completed.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static SystemTask WhenAll(ReadOnlySpan<SystemTask> tasks)
+        {
+            SystemTask task = SystemTask.WhenAll(tasks);
+            CoyoteRuntime.Current.RegisterKnownControlledTask(task);
+            return task;
+        }
+
+        /// <summary>
+        /// Creates a task that will complete when all tasks in the specified span have completed.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static SystemTasks.Task<TResult[]> WhenAll<TResult>(ReadOnlySpan<SystemTasks.Task<TResult>> tasks)
+        {
+            SystemTasks.Task<TResult[]> task = SystemTask.WhenAll(tasks);
+            CoyoteRuntime.Current.RegisterKnownControlledTask(task);
+            return task;
+        }
+#endif
+
         /// <summary>
         /// Creates a task that will complete when any task in the specified array have completed.
         /// </summary>
@@ -327,6 +351,31 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             CoyoteRuntime.Current.RegisterKnownControlledTask(task);
             return task;
         }
+
+#if NET9_0_OR_GREATER
+        /// <summary>
+        /// Creates a task that will complete when any task in the specified span has completed.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static SystemTasks.Task<SystemTask> WhenAny(ReadOnlySpan<SystemTask> tasks)
+        {
+            SystemTasks.Task<SystemTask> task = SystemTask.WhenAny(tasks);
+            CoyoteRuntime.Current.RegisterKnownControlledTask(task);
+            return task;
+        }
+
+        /// <summary>
+        /// Creates a task that will complete when any task in the specified span has completed.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static SystemTasks.Task<SystemTasks.Task<TResult>> WhenAny<TResult>(
+            ReadOnlySpan<SystemTasks.Task<TResult>> tasks)
+        {
+            SystemTasks.Task<SystemTasks.Task<TResult>> task = SystemTask.WhenAny(tasks);
+            CoyoteRuntime.Current.RegisterKnownControlledTask(task);
+            return task;
+        }
+#endif
 
 #if NET9_0_OR_GREATER
         /// <summary>
@@ -436,6 +485,23 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void WaitAll(params SystemTask[] tasks) =>
             WaitAll(tasks, SystemTimeout.Infinite, default);
+
+#if NET9_0_OR_GREATER
+        /// <summary>
+        /// Waits for all of the provided task objects in the specified span to complete execution.
+        /// </summary>
+        public static void WaitAll(ReadOnlySpan<SystemTask> tasks)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy != SchedulingPolicy.None)
+            {
+                // TODO: support timeouts during testing.
+                TaskServices.WaitUntilAllTasksComplete(runtime, tasks.ToArray());
+            }
+
+            SystemTask.WaitAll(tasks);
+        }
+#endif
 
         /// <summary>
         /// Waits for all of the provided task objects to complete execution
