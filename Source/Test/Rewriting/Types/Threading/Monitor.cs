@@ -444,6 +444,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 Cache.TryGetValue(syncObject, out Lazy<SynchronizedBlock> lazyMock) ? lazyMock.Value : null;
 
             /// <summary>
+            /// Resets the cache. This should be called after each testing iteration
+            /// to prevent orphaned entries from persisting across iterations.
+            /// </summary>
+            internal static void ResetCache() => Cache.Clear();
+
+            /// <summary>
             /// Determines whether the current thread holds the lock on the sync object.
             /// </summary>
             internal bool IsEntered()

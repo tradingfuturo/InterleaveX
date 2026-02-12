@@ -444,6 +444,11 @@ namespace Microsoft.Coyote.SystematicTesting
             {
                 // Clean up runtime resources before the next iteration starts.
                 runtime?.Dispose();
+
+                // Reset the SynchronizedBlock cache to prevent orphaned entries from
+                // persisting across iterations when iterations are interrupted early
+                // (e.g. due to max step bounds being exceeded).
+                Microsoft.Coyote.Rewriting.Types.Threading.Monitor.SynchronizedBlock.ResetCache();
             }
 
             return true;

@@ -194,6 +194,40 @@ namespace Microsoft.Coyote.BugFinding.Tests
             this.GetConfiguration());
         }
 
+        [Fact(Timeout = 5000)]
+        public void TestMonitorCacheResetAcrossIterations()
+        {
+            // Regression test: verifies the SynchronizedBlock cache is properly reset
+            // between iterations, preventing orphaned entries from persisting.
+            this.Test(async () =>
+            {
+                object syncObject = new object();
+                bool waiting = false;
+                Task t1 = Task.Run(() =>
+                {
+                    Monitor.Enter(syncObject);
+                    waiting = true;
+                    Monitor.Wait(syncObject);
+                    Monitor.Exit(syncObject);
+                });
+
+                Task t2 = Task.Run(async () =>
+                {
+                    while (!waiting)
+                    {
+                        await Task.Delay(1);
+                    }
+
+                    Monitor.Enter(syncObject);
+                    Monitor.Pulse(syncObject);
+                    Monitor.Exit(syncObject);
+                });
+
+                await Task.WhenAll(t1, t2);
+            },
+            this.GetConfiguration().WithTestingIterations(10));
+        }
+
         private class SignalData
         {
             private readonly object SyncObject;
