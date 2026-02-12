@@ -14,6 +14,11 @@ namespace Microsoft.Coyote.Actors.Coverage
     public class ActorEventCoverage
     {
         /// <summary>
+        /// Synchronizes access to the event coverage data.
+        /// </summary>
+        internal readonly object Lock = new object();
+
+        /// <summary>
         /// Map from states to the list of events received by that state.  The state id is fully qualified by
         /// the actor id it belongs to.
         /// </summary>
@@ -29,13 +34,16 @@ namespace Microsoft.Coyote.Actors.Coverage
 
         internal void AddEventReceived(string stateId, string eventId)
         {
-            if (!this.EventsReceived.TryGetValue(stateId, out HashSet<string> set))
+            lock (this.Lock)
             {
-                set = new HashSet<string>();
-                this.EventsReceived[stateId] = set;
-            }
+                if (!this.EventsReceived.TryGetValue(stateId, out HashSet<string> set))
+                {
+                    set = new HashSet<string>();
+                    this.EventsReceived[stateId] = set;
+                }
 
-            set.Add(eventId);
+                set.Add(eventId);
+            }
         }
 
         /// <summary>
@@ -44,23 +52,29 @@ namespace Microsoft.Coyote.Actors.Coverage
         /// <param name="stateId">The actor qualified state name.</param>
         public IEnumerable<string> GetEventsReceived(string stateId)
         {
-            if (this.EventsReceived.TryGetValue(stateId, out HashSet<string> set))
+            lock (this.Lock)
             {
-                return set;
-            }
+                if (this.EventsReceived.TryGetValue(stateId, out HashSet<string> set))
+                {
+                    return set;
+                }
 
-            return Array.Empty<string>();
+                return Array.Empty<string>();
+            }
         }
 
         internal void AddEventSent(string stateId, string eventId)
         {
-            if (!this.EventsSent.TryGetValue(stateId, out HashSet<string> set))
+            lock (this.Lock)
             {
-                set = new HashSet<string>();
-                this.EventsSent[stateId] = set;
-            }
+                if (!this.EventsSent.TryGetValue(stateId, out HashSet<string> set))
+                {
+                    set = new HashSet<string>();
+                    this.EventsSent[stateId] = set;
+                }
 
-            set.Add(eventId);
+                set.Add(eventId);
+            }
         }
 
         /// <summary>
@@ -69,18 +83,25 @@ namespace Microsoft.Coyote.Actors.Coverage
         /// <param name="stateId">The actor qualified state name.</param>
         public IEnumerable<string> GetEventsSent(string stateId)
         {
-            if (this.EventsSent.TryGetValue(stateId, out HashSet<string> set))
+            lock (this.Lock)
             {
-                return set;
-            }
+                if (this.EventsSent.TryGetValue(stateId, out HashSet<string> set))
+                {
+                    return set;
+                }
 
-            return Array.Empty<string>();
+                return Array.Empty<string>();
+            }
         }
 
         internal void Merge(ActorEventCoverage other)
         {
-            MergeHashSets(this.EventsReceived, other.EventsReceived);
-            MergeHashSets(this.EventsSent, other.EventsSent);
+            lock (other.Lock)
+            lock (this.Lock)
+            {
+                MergeHashSets(this.EventsReceived, other.EventsReceived);
+                MergeHashSets(this.EventsSent, other.EventsSent);
+            }
         }
 
         private static void MergeHashSets(Dictionary<string, HashSet<string>> ours, Dictionary<string, HashSet<string>> theirs)

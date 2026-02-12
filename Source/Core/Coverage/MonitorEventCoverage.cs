@@ -14,6 +14,11 @@ namespace Microsoft.Coyote.Coverage
     public class MonitorEventCoverage
     {
         /// <summary>
+        /// Synchronizes access to the event coverage data.
+        /// </summary>
+        internal readonly object Lock = new object();
+
+        /// <summary>
         /// Map from states to the list of events processed by that state. The state id is fully qualified by
         /// the specification monitor type it belongs to.
         /// </summary>
@@ -33,12 +38,15 @@ namespace Microsoft.Coyote.Coverage
         /// <param name="stateId">The specification monitor qualified state name.</param>
         public IEnumerable<string> GetEventsProcessed(string stateId)
         {
-            if (this.EventsProcessed.TryGetValue(stateId, out HashSet<string> set))
+            lock (this.Lock)
             {
-                return set;
-            }
+                if (this.EventsProcessed.TryGetValue(stateId, out HashSet<string> set))
+                {
+                    return set;
+                }
 
-            return Array.Empty<string>();
+                return Array.Empty<string>();
+            }
         }
 
         /// <summary>
@@ -47,40 +55,53 @@ namespace Microsoft.Coyote.Coverage
         /// <param name="stateId">The specification monitor qualified state name.</param>
         public IEnumerable<string> GetEventsRaised(string stateId)
         {
-            if (this.EventsRaised.TryGetValue(stateId, out HashSet<string> set))
+            lock (this.Lock)
             {
-                return set;
-            }
+                if (this.EventsRaised.TryGetValue(stateId, out HashSet<string> set))
+                {
+                    return set;
+                }
 
-            return Array.Empty<string>();
+                return Array.Empty<string>();
+            }
         }
 
         internal void AddEventProcessed(string stateId, string eventId)
         {
-            if (!this.EventsProcessed.TryGetValue(stateId, out HashSet<string> set))
+            lock (this.Lock)
             {
-                set = new HashSet<string>();
-                this.EventsProcessed[stateId] = set;
-            }
+                if (!this.EventsProcessed.TryGetValue(stateId, out HashSet<string> set))
+                {
+                    set = new HashSet<string>();
+                    this.EventsProcessed[stateId] = set;
+                }
 
-            set.Add(eventId);
+                set.Add(eventId);
+            }
         }
 
         internal void AddEventRaised(string stateId, string eventId)
         {
-            if (!this.EventsRaised.TryGetValue(stateId, out HashSet<string> set))
+            lock (this.Lock)
             {
-                set = new HashSet<string>();
-                this.EventsRaised[stateId] = set;
-            }
+                if (!this.EventsRaised.TryGetValue(stateId, out HashSet<string> set))
+                {
+                    set = new HashSet<string>();
+                    this.EventsRaised[stateId] = set;
+                }
 
-            set.Add(eventId);
+                set.Add(eventId);
+            }
         }
 
         internal void Merge(MonitorEventCoverage other)
         {
-            MergeHashSets(this.EventsProcessed, other.EventsProcessed);
-            MergeHashSets(this.EventsRaised, other.EventsRaised);
+            lock (other.Lock)
+            lock (this.Lock)
+            {
+                MergeHashSets(this.EventsProcessed, other.EventsProcessed);
+                MergeHashSets(this.EventsRaised, other.EventsRaised);
+            }
         }
 
         private static void MergeHashSets(Dictionary<string, HashSet<string>> ours, Dictionary<string, HashSet<string>> theirs)

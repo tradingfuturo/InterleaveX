@@ -18,6 +18,11 @@ namespace Microsoft.Coyote.Coverage
     {
         internal const string DgmlNamespace = "http://schemas.microsoft.com/vs/2009/dgml";
 
+        /// <summary>
+        /// Synchronizes access to the graph data.
+        /// </summary>
+        private readonly object Lock = new object();
+
         [DataMember]
         private readonly Dictionary<string, Node> InternalNodes = new Dictionary<string, Node>();
 
@@ -79,13 +84,16 @@ namespace Microsoft.Coyote.Coverage
         /// <returns>Returns the new node or the existing node if it was already defined.</returns>
         public Node GetOrCreateNode(string id, string label = null, string category = null)
         {
-            if (!this.InternalNodes.TryGetValue(id, out Node node))
+            lock (this.Lock)
             {
-                node = new Node(id, label, category);
-                this.InternalNodes.Add(id, node);
-            }
+                if (!this.InternalNodes.TryGetValue(id, out Node node))
+                {
+                    node = new Node(id, label, category);
+                    this.InternalNodes.Add(id, node);
+                }
 
-            return node;
+                return node;
+            }
         }
 
         /// <summary>
@@ -94,12 +102,15 @@ namespace Microsoft.Coyote.Coverage
         /// <returns>Returns the new node or the existing node if it was already defined.</returns>
         private Node GetOrCreateNode(Node newNode)
         {
-            if (!this.InternalNodes.ContainsKey(newNode.Id))
+            lock (this.Lock)
             {
-                this.InternalNodes.Add(newNode.Id, newNode);
-            }
+                if (!this.InternalNodes.ContainsKey(newNode.Id))
+                {
+                    this.InternalNodes.Add(newNode.Id, newNode);
+                }
 
-            return newNode;
+                return newNode;
+            }
         }
 
         /// <summary>
@@ -108,52 +119,58 @@ namespace Microsoft.Coyote.Coverage
         /// <returns>The new link or the existing link if it was already defined.</returns>
         public Link GetOrCreateLink(Node source, Node target, int? index = null, string linkLabel = null, string category = null)
         {
-            string key = source.Id + "->" + target.Id;
-            if (index.HasValue)
+            lock (this.Lock)
             {
-                key += string.Format("({0})", index.Value);
-            }
-
-            if (!this.InternalLinks.TryGetValue(key, out Link link))
-            {
-                link = new Link(source, target, linkLabel, category);
+                string key = source.Id + "->" + target.Id;
                 if (index.HasValue)
                 {
-                    link.Index = index.Value;
+                    key += string.Format("({0})", index.Value);
                 }
 
-                this.InternalLinks.Add(key, link);
-            }
+                if (!this.InternalLinks.TryGetValue(key, out Link link))
+                {
+                    link = new Link(source, target, linkLabel, category);
+                    if (index.HasValue)
+                    {
+                        link.Index = index.Value;
+                    }
 
-            return link;
+                    this.InternalLinks.Add(key, link);
+                }
+
+                return link;
+            }
         }
 
         internal int GetUniqueLinkIndex(Node source, Node target, string id)
         {
-            // The augmented key.
-            string key = string.Format("{0}->{1}({2})", source.Id, target.Id, id);
-            if (this.InternalAllocatedLinkIndexes.TryGetValue(key, out int index))
+            lock (this.Lock)
             {
+                // The augmented key.
+                string key = string.Format("{0}->{1}({2})", source.Id, target.Id, id);
+                if (this.InternalAllocatedLinkIndexes.TryGetValue(key, out int index))
+                {
+                    return index;
+                }
+
+                // Allocate a new index for the simple key.
+                var simpleKey = string.Format("{0}->{1}", source.Id, target.Id);
+                if (this.InternalNextLinkIndex.TryGetValue(simpleKey, out index))
+                {
+                    index++;
+                }
+
+                this.InternalNextLinkIndex[simpleKey] = index;
+
+                // Remember this index has been allocated for this link id.
+                this.InternalAllocatedLinkIndexes[key] = index;
+
+                // Remember the original id associated with this link index.
+                key = string.Format("{0}->{1}({2})", source.Id, target.Id, index);
+                this.InternalAllocatedLinkIds[key] = id;
+
                 return index;
             }
-
-            // Allocate a new index for the simple key.
-            var simpleKey = string.Format("{0}->{1}", source.Id, target.Id);
-            if (this.InternalNextLinkIndex.TryGetValue(simpleKey, out index))
-            {
-                index++;
-            }
-
-            this.InternalNextLinkIndex[simpleKey] = index;
-
-            // Remember this index has been allocated for this link id.
-            this.InternalAllocatedLinkIndexes[key] = index;
-
-            // Remember the original id associated with this link index.
-            key = string.Format("{0}->{1}({2})", source.Id, target.Id, index);
-            this.InternalAllocatedLinkIds[key] = id;
-
-            return index;
         }
 
         internal void SaveDgml(string graphFilePath, bool includeDefaultStyles)
@@ -170,58 +187,61 @@ namespace Microsoft.Coyote.Coverage
             writer.WriteLine("<DirectedGraph xmlns='{0}'>", DgmlNamespace);
             writer.WriteLine("  <Nodes>");
 
-            if (this.InternalNodes != null)
+            lock (this.Lock)
             {
-                List<string> nodes = new List<string>(this.InternalNodes.Keys);
-                nodes.Sort(StringComparer.Ordinal);
-                foreach (var id in nodes)
+                if (this.InternalNodes != null)
                 {
-                    Node node = this.InternalNodes[id];
-                    writer.Write("    <Node Id='{0}'", node.Id);
-
-                    if (!string.IsNullOrEmpty(node.Label))
+                    List<string> nodes = new List<string>(this.InternalNodes.Keys);
+                    nodes.Sort(StringComparer.Ordinal);
+                    foreach (var id in nodes)
                     {
-                        writer.Write(" Label='{0}'", node.Label);
-                    }
+                        Node node = this.InternalNodes[id];
+                        writer.Write("    <Node Id='{0}'", node.Id);
 
-                    if (!string.IsNullOrEmpty(node.Category))
-                    {
-                        writer.Write(" Category='{0}'", node.Category);
-                    }
+                        if (!string.IsNullOrEmpty(node.Label))
+                        {
+                            writer.Write(" Label='{0}'", node.Label);
+                        }
 
-                    node.WriteAttributes(writer);
-                    writer.WriteLine("/>");
+                        if (!string.IsNullOrEmpty(node.Category))
+                        {
+                            writer.Write(" Category='{0}'", node.Category);
+                        }
+
+                        node.WriteAttributes(writer);
+                        writer.WriteLine("/>");
+                    }
                 }
-            }
 
-            writer.WriteLine("  </Nodes>");
-            writer.WriteLine("  <Links>");
+                writer.WriteLine("  </Nodes>");
+                writer.WriteLine("  <Links>");
 
-            if (this.InternalLinks != null)
-            {
-                List<string> links = new List<string>(this.InternalLinks.Keys);
-                links.Sort(StringComparer.Ordinal);
-                foreach (var id in links)
+                if (this.InternalLinks != null)
                 {
-                    Link link = this.InternalLinks[id];
-                    writer.Write("    <Link Source='{0}' Target='{1}'", link.Source.Id, link.Target.Id);
-                    if (!string.IsNullOrEmpty(link.Label))
+                    List<string> links = new List<string>(this.InternalLinks.Keys);
+                    links.Sort(StringComparer.Ordinal);
+                    foreach (var id in links)
                     {
-                        writer.Write(" Label='{0}'", link.Label);
-                    }
+                        Link link = this.InternalLinks[id];
+                        writer.Write("    <Link Source='{0}' Target='{1}'", link.Source.Id, link.Target.Id);
+                        if (!string.IsNullOrEmpty(link.Label))
+                        {
+                            writer.Write(" Label='{0}'", link.Label);
+                        }
 
-                    if (!string.IsNullOrEmpty(link.Category))
-                    {
-                        writer.Write(" Category='{0}'", link.Category);
-                    }
+                        if (!string.IsNullOrEmpty(link.Category))
+                        {
+                            writer.Write(" Category='{0}'", link.Category);
+                        }
 
-                    if (link.Index.HasValue)
-                    {
-                        writer.Write(" Index='{0}'", link.Index.Value);
-                    }
+                        if (link.Index.HasValue)
+                        {
+                            writer.Write(" Index='{0}'", link.Index.Value);
+                        }
 
-                    link.WriteAttributes(writer);
-                    writer.WriteLine("/>");
+                        link.WriteAttributes(writer);
+                        writer.WriteLine("/>");
+                    }
                 }
             }
 
@@ -318,27 +338,78 @@ namespace Microsoft.Coyote.Coverage
         /// <param name="other">The new <see cref="CoverageGraph"/> to merge into this <see cref="CoverageGraph"/>.</param>
         public void Merge(CoverageGraph other)
         {
-            foreach (var node in other.InternalNodes.Values)
+            lock (other.Lock)
+            lock (this.Lock)
             {
-                var newNode = this.GetOrCreateNode(node.Id, node.Label, node.Category);
-                newNode.Merge(node);
-            }
-
-            foreach (var link in other.InternalLinks.Values)
-            {
-                var source = this.GetOrCreateNode(link.Source.Id, link.Source.Label, link.Source.Category);
-                var target = this.GetOrCreateNode(link.Target.Id, link.Target.Label, link.Target.Category);
-                int? index = null;
-                if (link.Index.HasValue)
+                foreach (var node in other.InternalNodes.Values)
                 {
-                    // ouch, link indexes cannot be compared across graph instances, we need to assign a new index here.
-                    string key = string.Format("{0}->{1}({2})", source.Id, target.Id, link.Index.Value);
-                    string linkId = other.InternalAllocatedLinkIds[key];
-                    index = this.GetUniqueLinkIndex(source, target, linkId);
+                    if (!this.InternalNodes.TryGetValue(node.Id, out Node newNode))
+                    {
+                        newNode = new Node(node.Id, node.Label, node.Category);
+                        this.InternalNodes.Add(node.Id, newNode);
+                    }
+
+                    newNode.Merge(node);
                 }
 
-                var newLink = this.GetOrCreateLink(source, target, index, link.Label, link.Category);
-                newLink.Merge(link);
+                foreach (var link in other.InternalLinks.Values)
+                {
+                    if (!this.InternalNodes.TryGetValue(link.Source.Id, out Node source))
+                    {
+                        source = new Node(link.Source.Id, link.Source.Label, link.Source.Category);
+                        this.InternalNodes.Add(link.Source.Id, source);
+                    }
+
+                    if (!this.InternalNodes.TryGetValue(link.Target.Id, out Node target))
+                    {
+                        target = new Node(link.Target.Id, link.Target.Label, link.Target.Category);
+                        this.InternalNodes.Add(link.Target.Id, target);
+                    }
+
+                    int? index = null;
+                    if (link.Index.HasValue)
+                    {
+                        // ouch, link indexes cannot be compared across graph instances, we need to assign a new index here.
+                        string key = string.Format("{0}->{1}({2})", source.Id, target.Id, link.Index.Value);
+                        string linkId = other.InternalAllocatedLinkIds[key];
+                        // Inline GetUniqueLinkIndex logic to avoid re-entrant lock.
+                        string augKey = string.Format("{0}->{1}({2})", source.Id, target.Id, linkId);
+                        if (!this.InternalAllocatedLinkIndexes.TryGetValue(augKey, out int idx))
+                        {
+                            var simpleKey = string.Format("{0}->{1}", source.Id, target.Id);
+                            if (this.InternalNextLinkIndex.TryGetValue(simpleKey, out idx))
+                            {
+                                idx++;
+                            }
+
+                            this.InternalNextLinkIndex[simpleKey] = idx;
+                            this.InternalAllocatedLinkIndexes[augKey] = idx;
+                            string idxKey = string.Format("{0}->{1}({2})", source.Id, target.Id, idx);
+                            this.InternalAllocatedLinkIds[idxKey] = linkId;
+                        }
+
+                        index = idx;
+                    }
+
+                    string linkKey = source.Id + "->" + target.Id;
+                    if (index.HasValue)
+                    {
+                        linkKey += string.Format("({0})", index.Value);
+                    }
+
+                    if (!this.InternalLinks.TryGetValue(linkKey, out Link newLink))
+                    {
+                        newLink = new Link(source, target, link.Label, link.Category);
+                        if (index.HasValue)
+                        {
+                            newLink.Index = index.Value;
+                        }
+
+                        this.InternalLinks.Add(linkKey, newLink);
+                    }
+
+                    newLink.Merge(link);
+                }
             }
         }
 
