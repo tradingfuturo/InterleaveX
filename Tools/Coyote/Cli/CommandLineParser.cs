@@ -531,6 +531,20 @@ namespace Microsoft.Coyote.Cli
                 Arity = ArgumentArity.Zero
             };
 
+            var listTestsOption = new Option<bool>(
+                name: "--list-tests",
+                description: "List all discovered [Test] methods in the assembly and exit without running them.")
+            {
+                Arity = ArgumentArity.Zero
+            };
+
+            var stopOnFirstFailureOption = new Option<bool>(
+                name: "--stop-on-first-failure",
+                description: "When running multiple tests, stop after the first test method that finds a bug.")
+            {
+                Arity = ArgumentArity.Zero
+            };
+
             var outputDirectoryOption = new Option<string>(
                 aliases: new[] { "-o", "--outdir" },
                 description: "Output directory for emitting reports. This can be an absolute path or relative to current directory.")
@@ -608,6 +622,8 @@ namespace Microsoft.Coyote.Cli
             this.AddOption(command, exploreOption);
             this.AddOption(command, breakOption);
             this.AddOption(command, outputDirectoryOption);
+            this.AddOption(command, listTestsOption);
+            this.AddOption(command, stopOnFirstFailureOption);
             command.TreatUnmatchedTokensAsErrors = true;
             return command;
         }
@@ -1118,6 +1134,12 @@ namespace Microsoft.Coyote.Cli
                         break;
                     case "explore":
                         this.Configuration.RunTestIterationsToCompletion = true;
+                        break;
+                    case "list-tests":
+                        this.Configuration.ListTests = true;
+                        break;
+                    case "stop-on-first-failure":
+                        this.Configuration.StopOnFirstFailure = true;
                         break;
                     case "break":
                         this.Configuration.AttachDebugger = true;

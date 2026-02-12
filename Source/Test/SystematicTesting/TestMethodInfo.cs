@@ -135,6 +135,24 @@ namespace Microsoft.Coyote.SystematicTesting
         internal static TestMethodInfo Create(Configuration configuration, LogWriter logWriter) => new TestMethodInfo(configuration, logWriter);
 
         /// <summary>
+        /// Returns the fully-qualified names of all methods annotated with the
+        /// <see cref="TestAttribute"/> in the assembly specified in the configuration.
+        /// </summary>
+        internal static List<string> GetAllTestMethodNames(Configuration configuration, LogWriter logWriter)
+        {
+#if NET
+            Assembly assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(configuration.AssemblyToBeAnalyzed);
+#else
+            Assembly assembly = Assembly.LoadFrom(configuration.AssemblyToBeAnalyzed);
+#endif
+            BindingFlags flags = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public |
+                BindingFlags.DeclaredOnly | BindingFlags.InvokeMethod;
+            List<MethodInfo> testMethods = FindTestMethodsWithAttribute(
+                typeof(TestAttribute), flags, assembly, logWriter);
+            return testMethods.Select(mi => $"{mi.DeclaringType.FullName}.{mi.Name}").ToList();
+        }
+
+        /// <summary>
         /// Invokes the user-specified initialization method for all iterations executing this test.
         /// </summary>
         internal void InitializeAllIterations() => this.InitMethod?.Invoke(null, Array.Empty<object>());

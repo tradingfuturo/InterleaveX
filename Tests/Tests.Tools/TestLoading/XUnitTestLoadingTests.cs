@@ -40,6 +40,19 @@ namespace Microsoft.Coyote.Tools.Tests
         [Fact(Timeout = 5000)]
         public void TestTaskEntryPoint() => this.CheckTestMethod(nameof(this.TaskTest));
 
+        [Fact(Timeout = 5000)]
+        public void TestDiscoverAllTestMethods()
+        {
+            Configuration config = this.GetConfiguration();
+            config.AssemblyToBeAnalyzed = Assembly.GetExecutingAssembly().Location;
+            var logWriter = new LogWriter(config);
+            logWriter.SetLogger(new TestOutputLogger(this.TestOutput));
+            var testNames = TestMethodInfo.GetAllTestMethodNames(config, logWriter);
+            Assert.True(testNames.Count >= 2);
+            Assert.Contains(testNames, n => n.EndsWith(".VoidTest"));
+            Assert.Contains(testNames, n => n.EndsWith(".TaskTest"));
+        }
+
         private void CheckTestMethod(string name)
         {
             Configuration config = this.GetConfiguration();

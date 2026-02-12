@@ -37,6 +37,18 @@ namespace Microsoft.Coyote
         internal string TestMethodName;
 
         /// <summary>
+        /// If true, list all discovered test methods and exit without running them.
+        /// </summary>
+        [DataMember]
+        internal bool ListTests;
+
+        /// <summary>
+        /// If true, stop testing after the first test method that finds a bug.
+        /// </summary>
+        [DataMember]
+        internal bool StopOnFirstFailure;
+
+        /// <summary>
         /// Number of testing iterations.
         /// </summary>
         [DataMember]
