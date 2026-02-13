@@ -9,7 +9,7 @@
     <Framework462Supported>false</Framework462Supported>
     <Net6Supported>false</Net6Supported>
     <IsPackable>false</IsPackable>
-    <NoWarn>$(NoWarn);</NoWarn>
+    <NoWarn>$(NoWarn);NU1902;NU1903;NU1904</NoWarn>
   </PropertyGroup>
   <Import Project="..\..\Common\build.props" />
   <Import Project="..\..\Common\key.props" />
