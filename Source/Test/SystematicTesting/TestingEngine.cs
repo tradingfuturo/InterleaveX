@@ -364,7 +364,15 @@ namespace Microsoft.Coyote.SystematicTesting
 
             if (!this.Scheduler.IsReplaying && this.ShouldPrintIteration(iteration + 1))
             {
-                this.LogWriter.LogImportant("..... Iteration #{0}", iteration + 1);
+                if (this.Scheduler.PortfolioSize > 1)
+                {
+                    this.LogWriter.LogImportant("..... Iteration #{0} [{1}]",
+                        iteration + 1, this.Scheduler.GetActiveStrategyDescription());
+                }
+                else
+                {
+                    this.LogWriter.LogImportant("..... Iteration #{0}", iteration + 1);
+                }
             }
 
             // Runtime used to serialize and test the program in this iteration.

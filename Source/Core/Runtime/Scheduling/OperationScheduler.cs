@@ -122,15 +122,32 @@ namespace Microsoft.Coyote.Runtime
                 configuration.LivenessTemperatureThreshold = configuration.MaxFairSchedulingSteps / 2;
             }
 
-            // Portfolio mode only works with interleaving exploration strategies and no replay.
-            if (this.Configuration.PortfolioMode.IsEnabled() && !this.IsReplaying &&
-                this.SchedulingPolicy is SchedulingPolicy.Interleaving )
+            // Portfolio mode works with both interleaving and fuzzing exploration strategies, but not during replay.
+            if (this.Configuration.PortfolioMode.IsEnabled() && !this.IsReplaying)
             {
-                bool isFair = this.Configuration.PortfolioMode.IsFair();
-                this.Portfolio.AddLast(new RandomInterleavingStrategy(configuration));
-                this.Portfolio.AddLast(new ProbabilisticRandomInterleavingStrategy(configuration, 3));
-                this.Portfolio.AddLast(new PrioritizationInterleavingStrategy(configuration, 10, isFair));
-                this.Portfolio.AddLast(new DelayBoundingInterleavingStrategy(configuration, 10, isFair));
+                if (this.SchedulingPolicy is SchedulingPolicy.Interleaving)
+                {
+                    bool isFair = this.Configuration.PortfolioMode.IsFair();
+                    this.Portfolio.AddLast(new RandomInterleavingStrategy(configuration));
+                    this.Portfolio.AddLast(new ProbabilisticRandomInterleavingStrategy(configuration, 3));
+                    this.Portfolio.AddLast(new PrioritizationInterleavingStrategy(configuration, 10, isFair));
+                    this.Portfolio.AddLast(new DelayBoundingInterleavingStrategy(configuration, 10, isFair));
+                    this.Portfolio.AddLast(new QLearningInterleavingStrategy(configuration));
+                    configuration.IsImplicitProgramStateHashingEnabled = true;
+                }
+                else if (this.SchedulingPolicy is SchedulingPolicy.Fuzzing)
+                {
+                    // Set a default strategy bound for the fuzzing prioritization strategy,
+                    // which uses it to determine reshuffling frequency. This matches the
+                    // default bound used by the CLI when prioritization is explicitly selected.
+                    if (configuration.StrategyBound is 0)
+                    {
+                        configuration.StrategyBound = 10;
+                    }
+
+                    this.Portfolio.AddLast(new BoundedRandomFuzzingStrategy(configuration));
+                    this.Portfolio.AddLast(new PrioritizationFuzzingStrategy(configuration));
+                }
             }
             else
             {
@@ -341,10 +358,22 @@ namespace Microsoft.Coyote.Runtime
         internal string GetStrategyName() => this.Strategy.GetName();
 
         /// <summary>
+        /// Returns the number of strategies in the portfolio.
+        /// </summary>
+        internal int PortfolioSize => this.Portfolio.Count;
+
+        /// <summary>
+        /// Returns a description of the currently active strategy in the portfolio.
+        /// </summary>
+        internal string GetActiveStrategyDescription() => this.Strategy.GetDescription();
+
+        /// <summary>
         /// Returns a description of the current exploration strategy in text format.
         /// </summary>
         internal string GetDescription() => this.Portfolio.Count > 1 ?
-            $"portfolio[{(this.Configuration.PortfolioMode.IsFair() ? "fair," : string.Empty)}seed:{this.Strategy.RandomValueGenerator.Seed}]" :
+            this.SchedulingPolicy is SchedulingPolicy.Fuzzing ?
+                $"portfolio[fuzzing,seed:{this.Strategy.RandomValueGenerator.Seed}]" :
+                $"portfolio[{(this.Configuration.PortfolioMode.IsFair() ? "fair," : string.Empty)}seed:{this.Strategy.RandomValueGenerator.Seed}]" :
             this.Strategy.GetDescription();
 
         /// <summary>
