@@ -14,6 +14,7 @@ using SystemTaskContinuationOptions = System.Threading.Tasks.TaskContinuationOpt
 using SystemTaskCreationOptions = System.Threading.Tasks.TaskCreationOptions;
 using SystemTaskFactory = System.Threading.Tasks.TaskFactory;
 using SystemTasks = System.Threading.Tasks;
+using SystemTaskScheduler = System.Threading.Tasks.TaskScheduler;
 using SystemTimeout = System.Threading.Timeout;
 
 namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
@@ -50,6 +51,127 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
 
                 return runtime.TaskFactory;
             }
+        }
+
+#pragma warning disable CA1068 // CancellationToken parameters must come last
+        /// <summary>
+        /// Creates a new task instance with the specified action.
+        /// </summary>
+        public static SystemTask Create(Action action) => new SystemTask(action);
+
+        /// <summary>
+        /// Creates a new task instance with the specified action and cancellation token.
+        /// </summary>
+        public static SystemTask Create(Action action, SystemCancellationToken cancellationToken) =>
+            new SystemTask(action, cancellationToken);
+
+        /// <summary>
+        /// Creates a new task instance with the specified action and creation options.
+        /// </summary>
+        public static SystemTask Create(Action action, SystemTaskCreationOptions creationOptions) =>
+            new SystemTask(action, creationOptions);
+
+        /// <summary>
+        /// Creates a new task instance with the specified action, cancellation token, and creation options.
+        /// </summary>
+        public static SystemTask Create(Action action, SystemCancellationToken cancellationToken,
+            SystemTaskCreationOptions creationOptions) =>
+            new SystemTask(action, cancellationToken, creationOptions);
+
+        /// <summary>
+        /// Creates a new task instance with the specified action and state.
+        /// </summary>
+        public static SystemTask Create(Action<object> action, object state) =>
+            new SystemTask(action, state);
+
+        /// <summary>
+        /// Creates a new task instance with the specified action, state, and cancellation token.
+        /// </summary>
+        public static SystemTask Create(Action<object> action, object state,
+            SystemCancellationToken cancellationToken) =>
+            new SystemTask(action, state, cancellationToken);
+
+        /// <summary>
+        /// Creates a new task instance with the specified action, state, and creation options.
+        /// </summary>
+        public static SystemTask Create(Action<object> action, object state,
+            SystemTaskCreationOptions creationOptions) =>
+            new SystemTask(action, state, creationOptions);
+
+        /// <summary>
+        /// Creates a new task instance with the specified action, state, cancellation token, and creation options.
+        /// </summary>
+        public static SystemTask Create(Action<object> action, object state,
+            SystemCancellationToken cancellationToken, SystemTaskCreationOptions creationOptions) =>
+            new SystemTask(action, state, cancellationToken, creationOptions);
+#pragma warning restore CA1068 // CancellationToken parameters must come last
+
+        /// <summary>
+        /// Starts the specified task, scheduling it for execution to the current <see cref="SystemTaskScheduler"/>.
+        /// </summary>
+        public static void Start(SystemTask task)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                task.Start();
+                return;
+            }
+
+            // Start the task on the controlled task scheduler, which will queue
+            // it to the runtime for controlled execution.
+            task.Start(runtime.ControlledTaskScheduler);
+        }
+
+        /// <summary>
+        /// Starts the specified task, scheduling it for execution to the specified <see cref="SystemTaskScheduler"/>.
+        /// </summary>
+        public static void Start(SystemTask task, SystemTaskScheduler scheduler)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None ||
+                scheduler.GetType() != SystemTaskScheduler.Default.GetType())
+            {
+                task.Start(scheduler);
+                return;
+            }
+
+            // Start the task on the controlled task scheduler, which will queue
+            // it to the runtime for controlled execution.
+            task.Start(runtime.ControlledTaskScheduler);
+        }
+
+        /// <summary>
+        /// Runs the specified task synchronously on the current <see cref="SystemTaskScheduler"/>.
+        /// </summary>
+        public static void RunSynchronously(SystemTask task)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                task.RunSynchronously();
+                return;
+            }
+
+            // Run the task synchronously on the controlled task scheduler.
+            task.RunSynchronously(runtime.ControlledTaskScheduler);
+        }
+
+        /// <summary>
+        /// Runs the specified task synchronously on the specified <see cref="SystemTaskScheduler"/>.
+        /// </summary>
+        public static void RunSynchronously(SystemTask task, SystemTaskScheduler scheduler)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None ||
+                scheduler.GetType() != SystemTaskScheduler.Default.GetType())
+            {
+                task.RunSynchronously(scheduler);
+                return;
+            }
+
+            // Run the task synchronously on the controlled task scheduler.
+            task.RunSynchronously(runtime.ControlledTaskScheduler);
         }
 
         /// <summary>
@@ -754,6 +876,62 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                     runtime.ControlledTaskScheduler);
             }
         }
+
+#pragma warning disable CA1068 // CancellationToken parameters must come last
+        /// <summary>
+        /// Creates a new generic task instance with the specified function.
+        /// </summary>
+        public static SystemTasks.Task<TResult> Create(Func<TResult> function) =>
+            new SystemTasks.Task<TResult>(function);
+
+        /// <summary>
+        /// Creates a new generic task instance with the specified function and cancellation token.
+        /// </summary>
+        public static SystemTasks.Task<TResult> Create(Func<TResult> function,
+            SystemCancellationToken cancellationToken) =>
+            new SystemTasks.Task<TResult>(function, cancellationToken);
+
+        /// <summary>
+        /// Creates a new generic task instance with the specified function and creation options.
+        /// </summary>
+        public static SystemTasks.Task<TResult> Create(Func<TResult> function,
+            SystemTaskCreationOptions creationOptions) =>
+            new SystemTasks.Task<TResult>(function, creationOptions);
+
+        /// <summary>
+        /// Creates a new generic task instance with the specified function, cancellation token, and creation options.
+        /// </summary>
+        public static SystemTasks.Task<TResult> Create(Func<TResult> function,
+            SystemCancellationToken cancellationToken, SystemTaskCreationOptions creationOptions) =>
+            new SystemTasks.Task<TResult>(function, cancellationToken, creationOptions);
+
+        /// <summary>
+        /// Creates a new generic task instance with the specified function and state.
+        /// </summary>
+        public static SystemTasks.Task<TResult> Create(Func<object, TResult> function, object state) =>
+            new SystemTasks.Task<TResult>(function, state);
+
+        /// <summary>
+        /// Creates a new generic task instance with the specified function, state, and cancellation token.
+        /// </summary>
+        public static SystemTasks.Task<TResult> Create(Func<object, TResult> function, object state,
+            SystemCancellationToken cancellationToken) =>
+            new SystemTasks.Task<TResult>(function, state, cancellationToken);
+
+        /// <summary>
+        /// Creates a new generic task instance with the specified function, state, and creation options.
+        /// </summary>
+        public static SystemTasks.Task<TResult> Create(Func<object, TResult> function, object state,
+            SystemTaskCreationOptions creationOptions) =>
+            new SystemTasks.Task<TResult>(function, state, creationOptions);
+
+        /// <summary>
+        /// Creates a new generic task instance with the specified function, state, cancellation token, and creation options.
+        /// </summary>
+        public static SystemTasks.Task<TResult> Create(Func<object, TResult> function, object state,
+            SystemCancellationToken cancellationToken, SystemTaskCreationOptions creationOptions) =>
+            new SystemTasks.Task<TResult>(function, state, cancellationToken, creationOptions);
+#pragma warning restore CA1068 // CancellationToken parameters must come last
 
         /// <summary>
         /// Gets the result value of the specified generic task.

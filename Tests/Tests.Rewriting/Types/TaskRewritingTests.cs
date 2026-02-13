@@ -39,6 +39,37 @@ namespace Microsoft.Coyote.Rewriting.Tests
             Task.WhenAny(Task.FromResult(1));
         }
 
+        [Fact(Timeout = 5000)]
+        public void TestRewritingTaskConstructorAndStart()
+        {
+            var task = new Task(() => { });
+            task.Start();
+            task.Wait();
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestRewritingGenericTaskConstructorAndStart()
+        {
+            var task = new Task<int>(() => 42);
+            task.Start();
+            task.Wait();
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestRewritingTaskRunSynchronously()
+        {
+            var task = new Task(() => { });
+            task.RunSynchronously();
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestRewritingTaskConstructorWithState()
+        {
+            var task = new Task(state => { }, "test");
+            task.Start();
+            task.Wait();
+        }
+
 #if NET9_0_OR_GREATER
         [Fact(Timeout = 5000)]
         public void TestRewritingTaskWhenAllWithSpan()
