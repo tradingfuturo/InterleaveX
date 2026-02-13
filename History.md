@@ -1,4 +1,30 @@
 ## vNext
+- Added support for the `net9.0` target framework.
+- Added support for the `net10.0` target framework.
+- Added rewriting support for the `System.Threading.Lock` type introduced in
+  .NET 9, including `EnterScope`, `Enter`, `Exit`, `TryEnter`, and
+  `IsHeldByCurrentThread`.
+- Added rewriting support for the `Task.WhenEach` API introduced in .NET 9.
+- Added rewriting support for the `Task.WhenAll` and `Task.WhenAny`
+  `ReadOnlySpan`-based overloads introduced in .NET 9.
+- Added rewriting support for the `new Task(() => ...) + task.Start()` explicit
+  task construction pattern, including `Task.RunSynchronously`.
+- Added the `IActorRuntime.HaltActorAsync` and `IActorRuntime.HaltAllActorsAsync`
+  APIs for externally halting actors and awaiting their full cleanup, including
+  `OnHaltAsync` completion.
+- The `coyote test` command now automatically discovers and runs all `[Test]`
+  methods when the `-m` flag is omitted, printing per-test banners and an
+  aggregate summary. Added the `--list-tests` CLI option for discovering test
+  names without running them, and `--stop-on-first-failure` for aborting after
+  the first non-success result.
+- The `coyote test` command now emits diagnostic warnings when `[Test]`-decorated
+  methods have invalid signatures (e.g. non-public, unsupported parameters)
+  instead of silently ignoring them.
+- Enhanced the portfolio strategy mode with Q-learning and extended it to the
+  fuzzing scheduling policy.
+- Optimized the PCT (prioritization) strategy by preserving the awaiting
+  operation's group across async task continuations, preventing sequential awaits
+  from inflating the exploration space with redundant independent groups.
 - Upgraded the `System.Text.Json` package to `v8.0.4` for the `netstandard2.0`
   target framework, due to a vulnerability.
 - Dropped support for the `netcoreapp3.1` target framework, which reached end of
