@@ -125,3 +125,17 @@ These will inadvertently catch the special Coyote exception, which then stops `-
 working. The recommended fix is to add a `when (!(e is Microsoft.Coyote.RuntimeException))` filter.
 The good news is that `coyote rewrite` can take care of this for you automatically so you do not
 need to modify any of your exception handlers.
+
+### Supported rewriting targets
+
+Coyote binary rewriting intercepts the following concurrency constructs:
+
+- **Task-based concurrency**: `Task`, `Task<TResult>`, `ValueTask`, `ValueTask<TResult>`,
+  `TaskCompletionSource<TResult>`, and the `async`/`await` keywords.
+- **Task combinators**: `Task.WhenAll`, `Task.WhenAny`, `Task.WhenEach` (introduced in .NET 9),
+  including `ReadOnlySpan`-based overloads.
+- **Explicit task construction**: The `new Task(() => ...) + task.Start()` pattern, including
+  `Task.RunSynchronously`.
+- **Synchronization primitives**: The `lock` keyword, `Monitor.Enter`/`Exit`/`TryEnter`/`Wait`/
+  `Pulse`/`PulseAll`, and the `System.Threading.Lock` type (introduced in .NET 9) including
+  `EnterScope`, `Enter`, `Exit`, `TryEnter`, and `IsHeldByCurrentThread`.

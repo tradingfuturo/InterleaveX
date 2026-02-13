@@ -130,6 +130,17 @@ Using `Specification.Assert`, Coyote allows you to write assertions that check t
 properties. In this case, the assertion will check if the Value is `5` or not, and if not it will
 throw an exception, or report an error together with a reproducible trace during testing.
 
+### Additional supported task APIs
+
+In addition to the core `Task` and `Task<TResult>` types, Coyote supports the following:
+
+- **`Task.WhenEach`** (introduced in .NET 9): Iterates over tasks as they complete. Coyote
+  intercepts this API to control the completion order during testing.
+- **`ReadOnlySpan`-based overloads** of `Task.WhenAll` and `Task.WhenAny` (introduced in .NET 9).
+- **Explicit task construction**: The pattern `new Task(() => ...) + task.Start()` (including
+  `Task.RunSynchronously`) is supported. Coyote will intercept tasks created via the `Task`
+  constructor and started explicitly, allowing systematic exploration of their execution.
+
 ## What about System.Collections.Concurrent?
 
 Yes, you can use the .NET thread safe collections to share information across tasks, but not the

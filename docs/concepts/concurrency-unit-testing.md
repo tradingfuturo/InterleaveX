@@ -29,8 +29,10 @@ cases you do not need to do much thanks to the awesome [binary rewriting](binary
 Coyote does to enable testing of unmodified programs.
 
 Out of the box, Coyote supports most common types and methods available in the .NET Task Parallel
-Library (such as `Task`, `Task<TResult>` and `TaskCompletionSource<TResult>`), as well as the
-`async`, `await` and `lock` C# keywords, and we are adding more types and APIs over time. You can
+Library (such as `Task`, `Task<TResult>`, `TaskCompletionSource<TResult>`, `Task.WhenEach`, and
+`ReadOnlySpan`-based `Task.WhenAll`/`Task.WhenAny` overloads), as well as the `async`, `await` and
+`lock` C# keywords, the `System.Threading.Lock` type (.NET 9+), the `Monitor` type, and explicit
+task construction via `new Task() + Start()`. You can
 read more about binary rewriting in Coyote [here](binary-rewriting.md) and supported scenarios
 [here](../get-started/using-coyote.md).
 

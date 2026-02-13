@@ -21,6 +21,8 @@ public interface IActorRuntime : ICoyoteRuntime
 | [GetCurrentActorTypes](IActorRuntime/GetCurrentActorTypes.md)() | Returns the distinct types of all active actors currently managed by this runtime. |
 | [GetCurrentEventGroup](IActorRuntime/GetCurrentEventGroup.md)(…) | Returns the current [`EventGroup`](./EventGroup.md) of the actor with the specified id. Returns null if the id is not set, or if the [`ActorId`](./ActorId.md) is not associated with this runtime. During testing, the runtime asserts that the specified actor is currently executing. |
 | [SendEvent](IActorRuntime/SendEvent.md)(…) | Sends an asynchronous [`Event`](./Event.md) to an actor. |
+| [HaltActorAsync](IActorRuntime/HaltActorAsync.md)(…) | Sends a `HaltEvent` to the actor with the specified id and returns a task that completes when the actor has fully halted (after `OnHaltAsync` completes). |
+| [HaltAllActorsAsync](IActorRuntime/HaltAllActorsAsync.md)() | Sends a `HaltEvent` to all currently active actors and returns a task that completes when all actors have fully halted. |
 
 ## Remarks
 

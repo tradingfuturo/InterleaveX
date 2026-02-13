@@ -50,6 +50,13 @@ test.
 
 Type `coyote test -?` to see the full command line options.
 
+If you omit the `-m` flag, Coyote will automatically discover and run all `[Test]` methods in the
+specified assembly, printing per-test banners and an aggregate summary at the end. You can use
+`--list-tests` to discover test method names without running them, and `--stop-on-first-failure` to
+abort after the first non-success result. Coyote also emits diagnostic warnings when
+`[Test]`-decorated methods have invalid signatures (e.g. non-public or unsupported parameters)
+instead of silently ignoring them.
+
 ### Controlled and reproducible testing
 
 In its essence, the Coyote tester:
@@ -128,7 +135,8 @@ iteration forever. This is related to [liveness checking](../how-to/liveness-che
 The Coyote tester supports running a portfolio of different exploration strategies during testing.
 To enable this provide the `--strategy portfolio` flag. This option allocates different exploration
 strategies to each spawned test process which increases the chance that one of the test processes
-will find a particularly difficult bug.
+will find a particularly difficult bug. The portfolio mode has been enhanced with Q-learning and
+extended to the fuzzing scheduling policy, improving its ability to discover hard-to-find bugs.
 
 ### Reproducing and debugging traces
 
@@ -155,8 +163,14 @@ See the replay options section of the help output from invoking `coyote -?`.
 Out of the box, Coyote supports finding and reproducing bugs in programs written using:
 
 - The `async`, `await` and `lock` C# keywords.
+- The `System.Threading.Lock` type introduced in .NET 9, including `EnterScope`, `Enter`,
+  `Exit`, `TryEnter`, and `IsHeldByCurrentThread`.
 - The most common `System.Threading.Tasks` types in the .NET Task Parallel Library:
   - Including the `Task`, `Task<TResult>` and `TaskCompletionSource<TResult>` types.
+  - The `Task.WhenEach` API introduced in .NET 9.
+  - The `Task.WhenAll` and `Task.WhenAny` `ReadOnlySpan`-based overloads introduced in .NET 9.
+  - The explicit `new Task(() => ...) + task.Start()` task construction pattern, including
+    `Task.RunSynchronously`.
 - The `Monitor` type in `System.Threading`.
 
 Coyote will let you know with an informative error if it detects a type that it does not support, or
