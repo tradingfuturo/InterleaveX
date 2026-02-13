@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using System;
+using System.Threading;
 using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Runtime.CompilerServices;
 using SystemCompiler = System.Runtime.CompilerServices;
@@ -95,13 +96,55 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
             /// Schedules the continuation action for the task associated with this awaiter.
             /// </summary>
             /// <param name="continuation">The action to invoke when the await operation completes.</param>
-            public void OnCompleted(Action continuation) => this.Awaiter.OnCompleted(continuation);
+            public void OnCompleted(Action continuation)
+            {
+                if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
+                {
+                    var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
+                    this.Runtime.RegisterContinuationGroup(continuation, group);
+                    var savedSyncCtx = SynchronizationContext.Current;
+                    SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
+                    try
+                    {
+                        this.Awaiter.OnCompleted(continuation);
+                    }
+                    finally
+                    {
+                        SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
+                    }
+                }
+                else
+                {
+                    this.Awaiter.OnCompleted(continuation);
+                }
+            }
 
             /// <summary>
             /// Schedules the continuation action for the task associated with this awaiter.
             /// </summary>
             /// <param name="continuation">The action to invoke when the await operation completes.</param>
-            public void UnsafeOnCompleted(Action continuation) => this.Awaiter.UnsafeOnCompleted(continuation);
+            public void UnsafeOnCompleted(Action continuation)
+            {
+                if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
+                {
+                    var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
+                    this.Runtime.RegisterContinuationGroup(continuation, group);
+                    var savedSyncCtx = SynchronizationContext.Current;
+                    SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
+                    try
+                    {
+                        this.Awaiter.UnsafeOnCompleted(continuation);
+                    }
+                    finally
+                    {
+                        SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
+                    }
+                }
+                else
+                {
+                    this.Awaiter.UnsafeOnCompleted(continuation);
+                }
+            }
         }
     }
 
@@ -190,13 +233,55 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
             /// Schedules the continuation action for the task associated with this awaiter.
             /// </summary>
             /// <param name="continuation">The action to invoke when the await operation completes.</param>
-            public void OnCompleted(Action continuation) => this.Awaiter.OnCompleted(continuation);
+            public void OnCompleted(Action continuation)
+            {
+                if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
+                {
+                    var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
+                    this.Runtime.RegisterContinuationGroup(continuation, group);
+                    var savedSyncCtx = SynchronizationContext.Current;
+                    SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
+                    try
+                    {
+                        this.Awaiter.OnCompleted(continuation);
+                    }
+                    finally
+                    {
+                        SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
+                    }
+                }
+                else
+                {
+                    this.Awaiter.OnCompleted(continuation);
+                }
+            }
 
             /// <summary>
             /// Schedules the continuation action for the task associated with this awaiter.
             /// </summary>
             /// <param name="continuation">The action to invoke when the await operation completes.</param>
-            public void UnsafeOnCompleted(Action continuation) => this.Awaiter.UnsafeOnCompleted(continuation);
+            public void UnsafeOnCompleted(Action continuation)
+            {
+                if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
+                {
+                    var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
+                    this.Runtime.RegisterContinuationGroup(continuation, group);
+                    var savedSyncCtx = SynchronizationContext.Current;
+                    SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
+                    try
+                    {
+                        this.Awaiter.UnsafeOnCompleted(continuation);
+                    }
+                    finally
+                    {
+                        SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
+                    }
+                }
+                else
+                {
+                    this.Awaiter.UnsafeOnCompleted(continuation);
+                }
+            }
         }
     }
 }

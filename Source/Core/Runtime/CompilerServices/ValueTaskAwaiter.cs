@@ -4,6 +4,7 @@
 using System;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Tasks;
 using SystemCompiler = System.Runtime.CompilerServices;
 using SystemTask = System.Threading.Tasks.Task;
@@ -89,14 +90,54 @@ namespace Microsoft.Coyote.Runtime.CompilerServices
         /// <summary>
         /// Sets the action to perform when the controlled value task completes.
         /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void OnCompleted(Action continuation) => this.Awaiter.OnCompleted(continuation);
+        public void OnCompleted(Action continuation)
+        {
+            if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
+            {
+                var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
+                this.Runtime.RegisterContinuationGroup(continuation, group);
+                var savedSyncCtx = SynchronizationContext.Current;
+                SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
+                try
+                {
+                    this.Awaiter.OnCompleted(continuation);
+                }
+                finally
+                {
+                    SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
+                }
+            }
+            else
+            {
+                this.Awaiter.OnCompleted(continuation);
+            }
+        }
 
         /// <summary>
         /// Schedules the continuation action that is invoked when the controlled value task completes.
         /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void UnsafeOnCompleted(Action continuation) => this.Awaiter.UnsafeOnCompleted(continuation);
+        public void UnsafeOnCompleted(Action continuation)
+        {
+            if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
+            {
+                var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
+                this.Runtime.RegisterContinuationGroup(continuation, group);
+                var savedSyncCtx = SynchronizationContext.Current;
+                SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
+                try
+                {
+                    this.Awaiter.UnsafeOnCompleted(continuation);
+                }
+                finally
+                {
+                    SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
+                }
+            }
+            else
+            {
+                this.Awaiter.UnsafeOnCompleted(continuation);
+            }
+        }
 
         /// <summary>
         /// Wraps the specified value task awaiter.
@@ -225,13 +266,53 @@ namespace Microsoft.Coyote.Runtime.CompilerServices
         /// <summary>
         /// Sets the action to perform when the controlled value task completes.
         /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void OnCompleted(Action continuation) => this.Awaiter.OnCompleted(continuation);
+        public void OnCompleted(Action continuation)
+        {
+            if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
+            {
+                var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
+                this.Runtime.RegisterContinuationGroup(continuation, group);
+                var savedSyncCtx = SynchronizationContext.Current;
+                SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
+                try
+                {
+                    this.Awaiter.OnCompleted(continuation);
+                }
+                finally
+                {
+                    SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
+                }
+            }
+            else
+            {
+                this.Awaiter.OnCompleted(continuation);
+            }
+        }
 
         /// <summary>
         /// Schedules the continuation action that is invoked when the controlled value task completes.
         /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void UnsafeOnCompleted(Action continuation) => this.Awaiter.UnsafeOnCompleted(continuation);
+        public void UnsafeOnCompleted(Action continuation)
+        {
+            if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
+            {
+                var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
+                this.Runtime.RegisterContinuationGroup(continuation, group);
+                var savedSyncCtx = SynchronizationContext.Current;
+                SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
+                try
+                {
+                    this.Awaiter.UnsafeOnCompleted(continuation);
+                }
+                finally
+                {
+                    SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
+                }
+            }
+            else
+            {
+                this.Awaiter.UnsafeOnCompleted(continuation);
+            }
+        }
     }
 }

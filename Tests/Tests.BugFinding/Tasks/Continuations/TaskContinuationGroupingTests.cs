@@ -1,9 +1,12 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Specifications;
+using Microsoft.Coyote.SystematicTesting;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -70,20 +73,11 @@ namespace Microsoft.Coyote.BugFinding.Tests
                     taskGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
                 });
 
-                bool isAwaitCompleted = task.IsCompleted;
                 await task;
 
                 OperationGroup newGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
-                if (isAwaitCompleted)
-                {
-                    Specification.Assert(newGroup == originalGroup,
-                        $"The new '{newGroup}' and original '{originalGroup}' groups differ.");
-                }
-                else
-                {
-                    Specification.Assert(newGroup == taskGroup,
-                        $"The new '{newGroup}' and task '{taskGroup}' groups differ.");
-                }
+                Specification.Assert(newGroup == originalGroup,
+                    $"The new '{newGroup}' and original '{originalGroup}' groups differ.");
             },
             configuration: this.GetConfiguration().WithTestingIterations(100));
         }
@@ -104,20 +98,11 @@ namespace Microsoft.Coyote.BugFinding.Tests
                         $"The task '{taskGroup}' and original task '{originalTaskGroup}' groups differ.");
                 });
 
-                bool isAwaitCompleted = task.IsCompleted;
                 await task;
 
                 OperationGroup newGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
-                if (isAwaitCompleted)
-                {
-                    Specification.Assert(newGroup == originalGroup,
-                        $"The new '{newGroup}' and original '{originalGroup}' groups differ.");
-                }
-                else
-                {
-                    Specification.Assert(newGroup == taskGroup,
-                        $"The new '{newGroup}' and task '{taskGroup}' groups differ.");
-                }
+                Specification.Assert(newGroup == originalGroup,
+                    $"The new '{newGroup}' and original '{originalGroup}' groups differ.");
             },
             configuration: this.GetConfiguration().WithTestingIterations(100));
         }
@@ -138,20 +123,11 @@ namespace Microsoft.Coyote.BugFinding.Tests
                         $"The task '{taskGroup}' and original task '{originalTaskGroup}' groups differ.");
                 });
 
-                bool isAwaitCompleted = task.IsCompleted;
                 await task;
 
                 OperationGroup newGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
-                if (isAwaitCompleted)
-                {
-                    Specification.Assert(newGroup == originalGroup,
-                        $"The new '{newGroup}' and original '{originalGroup}' groups differ.");
-                }
-                else
-                {
-                    Specification.Assert(newGroup == taskGroup,
-                        $"The new '{newGroup}' and task '{taskGroup}' groups differ.");
-                }
+                Specification.Assert(newGroup == originalGroup,
+                    $"The new '{newGroup}' and original '{originalGroup}' groups differ.");
             },
             configuration: this.GetConfiguration().WithTestingIterations(100));
         }
@@ -172,20 +148,11 @@ namespace Microsoft.Coyote.BugFinding.Tests
                         $"The task '{taskGroup}' and original task '{originalTaskGroup}' groups differ.");
                 });
 
-                bool isAwaitCompleted = task.IsCompleted;
                 await task;
 
                 OperationGroup newGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
-                if (isAwaitCompleted)
-                {
-                    Specification.Assert(newGroup == originalGroup,
-                        $"The new '{newGroup}' and original '{originalGroup}' groups differ.");
-                }
-                else
-                {
-                    Specification.Assert(newGroup == taskGroup,
-                        $"The new '{newGroup}' and task '{taskGroup}' groups differ.");
-                }
+                Specification.Assert(newGroup == originalGroup,
+                    $"The new '{newGroup}' and original '{originalGroup}' groups differ.");
             },
             configuration: this.GetConfiguration().WithTestingIterations(100));
         }
@@ -210,36 +177,18 @@ namespace Microsoft.Coyote.BugFinding.Tests
                             $"The inner task '{innerTaskGroup}' and original inner task '{originalInnerTaskGroup}' groups differ.");
                     });
 
-                    bool isInnerAwaitCompleted = innerTask.IsCompleted;
                     await innerTask;
 
                     taskGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
-                    if (isInnerAwaitCompleted)
-                    {
-                        Specification.Assert(taskGroup == originalTaskGroup,
-                            $"The task '{taskGroup}' and original task '{originalTaskGroup}' groups differ.");
-                    }
-                    else
-                    {
-                        Specification.Assert(taskGroup == innerTaskGroup,
-                            $"The task '{taskGroup}' and inner task '{innerTaskGroup}' groups differ.");
-                    }
+                    Specification.Assert(taskGroup == originalTaskGroup,
+                        $"The task '{taskGroup}' and original task '{originalTaskGroup}' groups differ.");
                 });
 
-                bool isAwaitCompleted = task.IsCompleted;
                 await task;
 
                 OperationGroup newGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
-                if (isAwaitCompleted)
-                {
-                    Specification.Assert(newGroup == originalGroup,
-                        $"The new '{newGroup}' and original '{originalGroup}' groups differ.");
-                }
-                else
-                {
-                    Specification.Assert(newGroup == taskGroup,
-                        $"The new '{newGroup}' and task '{taskGroup}' groups differ.");
-                }
+                Specification.Assert(newGroup == originalGroup,
+                    $"The new '{newGroup}' and original '{originalGroup}' groups differ.");
             },
             configuration: this.GetConfiguration().WithTestingIterations(100));
         }
@@ -264,36 +213,18 @@ namespace Microsoft.Coyote.BugFinding.Tests
                             $"The inner task '{innerTaskGroup}' and original inner task '{originalInnerTaskGroup}' groups differ.");
                     });
 
-                    bool isInnerAwaitCompleted = innerTask.IsCompleted;
                     await innerTask;
 
                     taskGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
-                    if (isInnerAwaitCompleted)
-                    {
-                        Specification.Assert(taskGroup == originalTaskGroup,
-                            $"The task '{taskGroup}' and original task '{originalTaskGroup}' groups differ.");
-                    }
-                    else
-                    {
-                        Specification.Assert(taskGroup == innerTaskGroup,
-                            $"The task '{taskGroup}' and inner task '{innerTaskGroup}' groups differ.");
-                    }
+                    Specification.Assert(taskGroup == originalTaskGroup,
+                        $"The task '{taskGroup}' and original task '{originalTaskGroup}' groups differ.");
                 });
 
-                bool isAwaitCompleted = task.IsCompleted;
                 await task;
 
                 OperationGroup newGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
-                if (isAwaitCompleted)
-                {
-                    Specification.Assert(newGroup == originalGroup,
-                        $"The new '{newGroup}' and original '{originalGroup}' groups differ.");
-                }
-                else
-                {
-                    Specification.Assert(newGroup == taskGroup,
-                        $"The new '{newGroup}' and task '{taskGroup}' groups differ.");
-                }
+                Specification.Assert(newGroup == originalGroup,
+                    $"The new '{newGroup}' and original '{originalGroup}' groups differ.");
             },
             configuration: this.GetConfiguration().WithTestingIterations(100));
         }
@@ -318,36 +249,116 @@ namespace Microsoft.Coyote.BugFinding.Tests
                             $"The inner task '{innerTaskGroup}' and original inner task '{originalInnerTaskGroup}' groups differ.");
                     });
 
-                    bool isInnerAwaitCompleted = innerTask.IsCompleted;
                     await innerTask;
 
                     taskGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
-                    if (isInnerAwaitCompleted)
-                    {
-                        Specification.Assert(taskGroup == originalTaskGroup,
-                            $"The task '{taskGroup}' and original task '{originalTaskGroup}' groups differ.");
-                    }
-                    else
-                    {
-                        Specification.Assert(taskGroup == innerTaskGroup,
-                            $"The task '{taskGroup}' and inner task '{innerTaskGroup}' groups differ.");
-                    }
+                    Specification.Assert(taskGroup == originalTaskGroup,
+                        $"The task '{taskGroup}' and original task '{originalTaskGroup}' groups differ.");
                 });
 
-                bool isAwaitCompleted = task.IsCompleted;
                 await task;
 
                 OperationGroup newGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
-                if (isAwaitCompleted)
+                Specification.Assert(newGroup == originalGroup,
+                    $"The new '{newGroup}' and original '{originalGroup}' groups differ.");
+            },
+            configuration: this.GetConfiguration().WithTestingIterations(100));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestTaskContinuationGroupingWithSequentialAwaits()
+        {
+            this.Test(async () =>
+            {
+                OperationGroup originalGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
+
+                await Task.Run(() => { });
+                OperationGroup groupAfterFirst = CoyoteRuntime.Current.GetExecutingOperation().Group;
+                Specification.Assert(groupAfterFirst == originalGroup,
+                    $"After first await: group '{groupAfterFirst}' differs from original '{originalGroup}'.");
+
+                await Task.Run(() => { });
+                OperationGroup groupAfterSecond = CoyoteRuntime.Current.GetExecutingOperation().Group;
+                Specification.Assert(groupAfterSecond == originalGroup,
+                    $"After second await: group '{groupAfterSecond}' differs from original '{originalGroup}'.");
+
+                await Task.Run(() => { });
+                OperationGroup groupAfterThird = CoyoteRuntime.Current.GetExecutingOperation().Group;
+                Specification.Assert(groupAfterThird == originalGroup,
+                    $"After third await: group '{groupAfterThird}' differs from original '{originalGroup}'.");
+            },
+            configuration: this.GetConfiguration().WithTestingIterations(100));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestTaskContinuationGroupingWithSequentialAwaitsAndPCT()
+        {
+            this.Test(async () =>
+            {
+                OperationGroup originalGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
+
+                await Task.Run(() => { });
+                OperationGroup groupAfterFirst = CoyoteRuntime.Current.GetExecutingOperation().Group;
+                Specification.Assert(groupAfterFirst == originalGroup,
+                    $"After first await: group '{groupAfterFirst}' differs from original '{originalGroup}'.");
+
+                await Task.Run(() => { });
+                OperationGroup groupAfterSecond = CoyoteRuntime.Current.GetExecutingOperation().Group;
+                Specification.Assert(groupAfterSecond == originalGroup,
+                    $"After second await: group '{groupAfterSecond}' differs from original '{originalGroup}'.");
+
+                await Task.Run(() => { });
+                OperationGroup groupAfterThird = CoyoteRuntime.Current.GetExecutingOperation().Group;
+                Specification.Assert(groupAfterThird == originalGroup,
+                    $"After third await: group '{groupAfterThird}' differs from original '{originalGroup}'.");
+            },
+            configuration: this.GetConfiguration()
+                .WithTestingIterations(100)
+                .WithPrioritizationStrategy());
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestTaskContinuationGroupingWithFaultedTask()
+        {
+            this.Test(async () =>
+            {
+                OperationGroup originalGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
+                try
                 {
-                    Specification.Assert(newGroup == originalGroup,
-                        $"The new '{newGroup}' and original '{originalGroup}' groups differ.");
+                    await Task.Run(() => throw new InvalidOperationException("test"));
                 }
-                else
+                catch (InvalidOperationException)
                 {
-                    Specification.Assert(newGroup == taskGroup,
-                        $"The new '{newGroup}' and task '{taskGroup}' groups differ.");
+                    // Expected.
                 }
+
+                OperationGroup newGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
+                Specification.Assert(newGroup == originalGroup,
+                    $"After faulted await: group '{newGroup}' differs from original '{originalGroup}'.");
+            },
+            configuration: this.GetConfiguration().WithTestingIterations(100));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestTaskContinuationGroupingWithCancelledTask()
+        {
+            this.Test(async () =>
+            {
+                OperationGroup originalGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
+                using var cts = new CancellationTokenSource();
+                cts.Cancel();
+                try
+                {
+                    await Task.Run(() => cts.Token.ThrowIfCancellationRequested(), cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected.
+                }
+
+                OperationGroup newGroup = CoyoteRuntime.Current.GetExecutingOperation().Group;
+                Specification.Assert(newGroup == originalGroup,
+                    $"After cancelled await: group '{newGroup}' differs from original '{originalGroup}'.");
             },
             configuration: this.GetConfiguration().WithTestingIterations(100));
         }

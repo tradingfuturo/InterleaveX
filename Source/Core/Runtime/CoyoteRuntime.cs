@@ -455,9 +455,9 @@ namespace Microsoft.Coyote.Runtime
         /// <summary>
         /// Schedules the specified continuation to execute on the controlled thread pool.
         /// </summary>
-        internal void Schedule(Action continuation, Action preCondition = null, Action postCondition = null)
+        internal void Schedule(Action continuation, OperationGroup group = null, Action preCondition = null, Action postCondition = null)
         {
-            ControlledOperation op = this.CreateControlledOperation(group: ExecutingOperation?.Group);
+            ControlledOperation op = this.CreateControlledOperation(group: group ?? ExecutingOperation?.Group);
             Thread thread = this.CreateControlledThread(op, continuation, preCondition, postCondition);
 
             // Start executing the controlled thread.
@@ -466,6 +466,52 @@ namespace Microsoft.Coyote.Runtime
             // Add a scheduling point to explore interleavings between the current operation
             // and the operation that was just scheduled.
             this.ScheduleNextOperation(default, SchedulingPointType.ContinueWith);
+        }
+
+        /// <summary>
+        /// Registers a mapping from the specified continuation action to its awaiting operation's group.
+        /// When the continuation is later posted through <see cref="ControlledSynchronizationContext.Post"/>,
+        /// the group is looked up via <see cref="TryGetContinuationGroup"/> and passed to
+        /// <see cref="Schedule(Action, OperationGroup, Action, Action)"/>, preserving the awaiting
+        /// operation's group instead of using the completing operation's group.
+        /// </summary>
+        internal void RegisterContinuationGroup(Action continuation, OperationGroup group)
+        {
+            if (continuation != null && group != null)
+            {
+                this.ContinuationGroups[continuation] = group;
+            }
+        }
+
+        /// <summary>
+        /// Returns a SynchronizationContext wrapper with a different object identity than the
+        /// main <see cref="ControlledSynchronizationContext"/>. This prevents the .NET runtime
+        /// from inlining task continuations, forcing them through
+        /// <see cref="SynchronizationContext.Post"/> instead.
+        /// </summary>
+        internal SynchronizationContext GetAntiInlineSyncContext() =>
+            this.SyncContext.GetAntiInlineContext();
+
+        /// <summary>
+        /// A dictionary that maps continuation actions to their awaiting operation's group.
+        /// Used by <see cref="ControlledSynchronizationContext.Post"/> to preserve the group
+        /// when a continuation is posted through the synchronization context.
+        /// </summary>
+        private readonly ConcurrentDictionary<Action, OperationGroup> ContinuationGroups =
+            new ConcurrentDictionary<Action, OperationGroup>();
+
+        /// <summary>
+        /// Tries to retrieve and remove the continuation group registered for the given
+        /// continuation action. Returns null if no group was registered.
+        /// </summary>
+        internal OperationGroup TryGetContinuationGroup(object state)
+        {
+            if (state is Action action && this.ContinuationGroups.TryRemove(action, out OperationGroup group))
+            {
+                return group;
+            }
+
+            return null;
         }
 
         /// <summary>
