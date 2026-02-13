@@ -96,6 +96,20 @@ namespace Microsoft.Coyote.Rewriting.Tests
                 public static ValueTask<TRight> GetGenericTypeTask<T>() => ValueTask.FromResult<TRight>(default(TRight));
             }
         }
+
+        /// <summary>
+        /// Helper class with expression-bodied methods that directly return ValueTask results.
+        /// These methods trigger the Ret-after-call IL pattern that previously caused
+        /// InvalidProgramException (see issue #433).
+        /// </summary>
+        private static class ExpressionBodiedValueTaskWrapper
+        {
+            internal static ValueTask GetTask() => ValueTaskProvider.GetTask();
+
+            internal static ValueTask<T> GetGenericTask<T>() => ValueTaskProvider.GetGenericTask<T>();
+
+            internal static ValueTask<T[]> GetGenericTaskArray<T>() => ValueTaskProvider.GetGenericTaskArray<T>();
+        }
 #endif
 #pragma warning restore CA1000 // Do not declare static members on generic types
 
@@ -333,6 +347,36 @@ namespace Microsoft.Coyote.Rewriting.Tests
                 var obj4 = new object();
                 var obj5 = new object();
                 var task = GenericValueTaskProvider<object, bool>.Nested<short>.GetGenericTypeTask<int>();
+                await task;
+            });
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestUncontrolledMethodReturnsValueTaskFromExpressionBodiedMethod()
+        {
+            this.Test(async () =>
+            {
+                var task = ExpressionBodiedValueTaskWrapper.GetTask();
+                await task;
+            });
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestUncontrolledMethodReturnsGenericValueTaskFromExpressionBodiedMethod()
+        {
+            this.Test(async () =>
+            {
+                var task = ExpressionBodiedValueTaskWrapper.GetGenericTask<int>();
+                await task;
+            });
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestUncontrolledMethodReturnsGenericValueTaskArrayFromExpressionBodiedMethod()
+        {
+            this.Test(async () =>
+            {
+                var task = ExpressionBodiedValueTaskWrapper.GetGenericTaskArray<int>();
                 await task;
             });
         }

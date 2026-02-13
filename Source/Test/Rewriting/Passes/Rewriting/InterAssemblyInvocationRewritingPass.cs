@@ -216,9 +216,16 @@ namespace Microsoft.Coyote.Rewriting
             }
             else
             {
-                instructions.Add(this.Processor.Create(OpCodes.Ldstr, methodName));
-                instructions.Add(this.Processor.Create(OpCodes.Call, interceptionMethod));
-                return instructions;
+                if (isParamByReference)
+                {
+                    // When the next instruction is not a recognized store opcode (e.g. it is Ret in
+                    // expression-bodied methods), we need a temporary local variable to store the value
+                    // so we can load its address for the by-ref interception method parameter (see #433).
+                    var tempLocal = new VariableDefinition(returnType);
+                    this.Method.Body.Variables.Add(tempLocal);
+                    instructions.Add(this.Processor.Create(OpCodes.Stloc, tempLocal));
+                    instructions.Add(this.Processor.Create(OpCodes.Ldloca, tempLocal));
+                }
             }
 
             instructions.Add(this.Processor.Create(OpCodes.Ldstr, methodName));
