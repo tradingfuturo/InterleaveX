@@ -90,6 +90,12 @@ namespace Microsoft.Coyote.Actors
         private readonly object QuiescenceSyncObject;
 
         /// <summary>
+        /// Map from actor ids to completion sources that are signaled when the actor halts.
+        /// Used to support awaiting halt completion via <see cref="HaltActorAsync"/>.
+        /// </summary>
+        private readonly ConcurrentDictionary<ActorId, TaskCompletionSource<bool>> HaltCompletionMap;
+
+        /// <summary>
         /// True if the actor program is running, else false.
         /// </summary>
         internal bool IsRunning => this.Runtime.IsRunning;
@@ -138,6 +144,7 @@ namespace Microsoft.Coyote.Actors
             this.QuiescenceCompletionSource = new TaskCompletionSource<bool>();
             this.IsActorQuiescenceAwaited = false;
             this.QuiescenceSyncObject = new object();
+            this.HaltCompletionMap = new ConcurrentDictionary<ActorId, TaskCompletionSource<bool>>();
         }
 
         /// <summary>
@@ -450,6 +457,7 @@ namespace Microsoft.Coyote.Actors
                 {
                     this.ActorMap.TryRemove(actor.Id, out Actor _);
                     this.HandleActorHalted(actor.Id);
+                    this.SignalActorHaltCompletion(actor.Id);
                 }
 
                 this.OnActorEventHandlerCompleted(actor.Id);
@@ -789,6 +797,18 @@ namespace Microsoft.Coyote.Actors
         internal void HandleActorHalted(ActorId id) => this.OnActorHalted?.Invoke(id);
 
         /// <summary>
+        /// Signals halt completion for the specified actor if any caller is awaiting it
+        /// via <see cref="HaltActorAsync"/>.
+        /// </summary>
+        protected void SignalActorHaltCompletion(ActorId id)
+        {
+            if (this.HaltCompletionMap.TryRemove(id, out var tcs))
+            {
+                tcs.TrySetResult(true);
+            }
+        }
+
+        /// <summary>
         /// Handle the specified dropped <see cref="Event"/>.
         /// </summary>
         internal void HandleDroppedEvent(Event e, ActorId id) => this.OnEventDropped?.Invoke(e, id);
@@ -828,6 +848,54 @@ namespace Microsoft.Coyote.Actors
         /// <inheritdoc/>
         public void Stop() => this.Runtime.Stop();
 
+        /// <inheritdoc/>
+        public virtual Task HaltActorAsync(ActorId id)
+        {
+            if (id is null)
+            {
+                throw new ArgumentNullException(nameof(id));
+            }
+
+            // Register TCS first to avoid race with concurrent halt.
+            var tcs = this.HaltCompletionMap.GetOrAdd(id,
+                _ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
+
+            // Check if the actor exists and is not already halted.
+            var target = this.GetActorWithId<Actor>(id);
+            if (target is null || target.IsHalted)
+            {
+                // Already halted or doesn't exist — clean up and complete.
+                if (this.HaltCompletionMap.TryRemove(id, out var removed))
+                {
+                    removed.TrySetResult(true);
+                }
+
+                return tcs.Task;
+            }
+
+            // Send the halt event; the finally block will signal the TCS when halt completes.
+            this.SendEvent(id, HaltEvent.Instance);
+            return tcs.Task;
+        }
+
+        /// <inheritdoc/>
+        public virtual Task HaltAllActorsAsync()
+        {
+            var actorIds = this.ActorMap.Keys.ToArray();
+            if (actorIds.Length == 0)
+            {
+                return Task.CompletedTask;
+            }
+
+            var tasks = new Task[actorIds.Length];
+            for (int i = 0; i < actorIds.Length; i++)
+            {
+                tasks[i] = this.HaltActorAsync(actorIds[i]);
+            }
+
+            return Task.WhenAll(tasks);
+        }
+
         /// <summary>
         /// Disposes runtime resources.
         /// </summary>
@@ -835,6 +903,12 @@ namespace Microsoft.Coyote.Actors
         {
             if (disposing)
             {
+                foreach (var kvp in this.HaltCompletionMap)
+                {
+                    kvp.Value.TrySetCanceled();
+                }
+
+                this.HaltCompletionMap.Clear();
                 this.ActorMap.Clear();
                 this.EnabledActors.Clear();
             }
@@ -1239,6 +1313,7 @@ namespace Microsoft.Coyote.Actors
                         {
                             this.ActorMap.TryRemove(actor.Id, out Actor _);
                             this.HandleActorHalted(actor.Id);
+                            this.SignalActorHaltCompletion(actor.Id);
                         }
 
                         this.OnActorEventHandlerCompleted(actor.Id);

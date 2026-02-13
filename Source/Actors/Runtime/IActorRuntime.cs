@@ -192,5 +192,23 @@ namespace Microsoft.Coyote.Actors
         /// This method is not thread-safe.
         /// </remarks>
         int GetCurrentActorCount();
+
+        /// <summary>
+        /// Sends a <see cref="HaltEvent"/> to the actor with the specified id and returns
+        /// a task that completes when the actor has fully halted (after <see cref="Actor.OnHaltAsync"/>
+        /// completes). If the actor is already halted or does not exist, the returned task
+        /// completes immediately.
+        /// </summary>
+        /// <param name="id">The id of the actor to halt.</param>
+        /// <returns>Task that represents the asynchronous operation.</returns>
+        Task HaltActorAsync(ActorId id);
+
+        /// <summary>
+        /// Sends a <see cref="HaltEvent"/> to all currently active actors and returns a task
+        /// that completes when all actors have fully halted (after all <see cref="Actor.OnHaltAsync"/>
+        /// callbacks complete). Actors created after this call begins are not affected.
+        /// </summary>
+        /// <returns>Task that represents the asynchronous operation.</returns>
+        Task HaltAllActorsAsync();
     }
 }
