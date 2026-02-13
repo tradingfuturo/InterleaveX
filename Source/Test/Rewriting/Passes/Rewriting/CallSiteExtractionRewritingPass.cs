@@ -33,27 +33,44 @@ namespace Microsoft.Coyote.Rewriting
                 return;
             }
 
-            // Get the first instruction in the body.
-            Instruction nextInstruction = body.Instructions.FirstOrDefault();
-
-            // Construct the instructions for notifying the runtime which method is executing.
-            string methodName = GetFullyQualifiedMethodName(this.Method);
-            Instruction loadStrInstruction = this.Processor.Create(OpCodes.Ldstr, methodName);
-
-            TypeDefinition providerType = this.Module.ImportReference(typeof(Operation)).Resolve();
-            MethodReference notificationMethod = providerType.Methods.FirstOrDefault(m => m.Name == nameof(Operation.RegisterCallSite));
-            notificationMethod = this.Module.ImportReference(notificationMethod);
-            Instruction callInstruction = this.Processor.Create(OpCodes.Call, notificationMethod);
-
-            this.Processor.InsertBefore(nextInstruction, this.Processor.Create(OpCodes.Nop));
-            this.Processor.InsertBefore(nextInstruction, loadStrInstruction);
-            this.Processor.InsertBefore(nextInstruction, callInstruction);
-            if (nextInstruction.OpCode != OpCodes.Nop)
+            try
             {
-                this.Processor.InsertBefore(nextInstruction, this.Processor.Create(OpCodes.Nop));
-            }
+                // Get the first instruction in the body.
+                Instruction nextInstruction = body.Instructions.FirstOrDefault();
 
-            this.IsMethodBodyModified = true;
+                // Construct the instructions for notifying the runtime which method is executing.
+                string methodName = GetFullyQualifiedMethodName(this.Method);
+                Instruction loadStrInstruction = this.Processor.Create(OpCodes.Ldstr, methodName);
+
+                TypeDefinition providerType = this.Module.ImportReference(typeof(Operation)).Resolve();
+                if (providerType is null)
+                {
+                    return;
+                }
+
+                MethodReference notificationMethod = providerType.Methods.FirstOrDefault(m => m.Name == nameof(Operation.RegisterCallSite));
+                if (notificationMethod is null)
+                {
+                    return;
+                }
+
+                notificationMethod = this.Module.ImportReference(notificationMethod);
+                Instruction callInstruction = this.Processor.Create(OpCodes.Call, notificationMethod);
+
+                this.Processor.InsertBefore(nextInstruction, this.Processor.Create(OpCodes.Nop));
+                this.Processor.InsertBefore(nextInstruction, loadStrInstruction);
+                this.Processor.InsertBefore(nextInstruction, callInstruction);
+                if (nextInstruction.OpCode != OpCodes.Nop)
+                {
+                    this.Processor.InsertBefore(nextInstruction, this.Processor.Create(OpCodes.Nop));
+                }
+
+                this.IsMethodBodyModified = true;
+            }
+            catch (AssemblyResolutionException)
+            {
+                // Skip this method, we are only interested in types that can be resolved.
+            }
         }
     }
 }

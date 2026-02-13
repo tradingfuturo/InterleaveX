@@ -137,7 +137,10 @@ namespace Microsoft.Coyote.Rewriting
             if (this.Configuration.AttachDebugger)
             {
                 var debuggerType = this.Module.ImportReference(typeof(System.Diagnostics.Debugger)).Resolve();
-                launchMethod = FindMethod("Launch", debuggerType);
+                if (debuggerType != null)
+                {
+                    launchMethod = FindMethod("Launch", debuggerType);
+                }
             }
 
             TypeReference actionType;
@@ -157,6 +160,13 @@ namespace Microsoft.Coyote.Rewriting
             var resolvedActionType = actionType.Resolve(); // Func<>
             var resolvedConfigurationType = configurationType.Resolve();
             var resolvedEngineType = engineType.Resolve();
+
+            if (resolvedActionType is null || resolvedConfigurationType is null || resolvedEngineType is null)
+            {
+                throw new InvalidOperationException(string.Format(
+                    "Failed to resolve required types for rewriting test method '{0}'. " +
+                    "Ensure the Coyote runtime assemblies are available.", method.Name));
+            }
 
             MethodReference actionConstructor = this.Module.ImportReference(
                 resolvedActionType.Methods.FirstOrDefault(m => m.IsConstructor));

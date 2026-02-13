@@ -90,34 +90,51 @@ namespace Microsoft.Coyote.Rewriting
                 this.IsMethodBodyModified = true;
             }
 
-            this.LogWriter.LogDebug("............. [+] rewriting catch block to rethrow a {0}",
-                nameof(ThreadInterruptedException));
-
-            var providerType = this.Method.Module.ImportReference(typeof(ExceptionProvider)).Resolve();
-            MethodReference providerMethod = providerType.Methods.FirstOrDefault(
-                m => m.Name is nameof(ExceptionProvider.ThrowIfThreadInterruptedException));
-            providerMethod = this.Method.Module.ImportReference(providerMethod);
-
-            var processor = this.Method.Body.GetILProcessor();
-            var newStart = Instruction.Create(OpCodes.Dup);
-            var previousStart = handler.HandlerStart;
-            processor.InsertBefore(handler.HandlerStart, newStart);
-            processor.InsertBefore(handler.HandlerStart, Instruction.Create(OpCodes.Call, providerMethod));
-            handler.HandlerStart = newStart;
-
-            // Fix up any other handler end position that points to previousStart instruction.
-            foreach (var other in this.Method.Body.ExceptionHandlers)
+            try
             {
-                // The first (or most nested) try/catch block.
-                if (other.TryEnd == previousStart)
+                this.LogWriter.LogDebug("............. [+] rewriting catch block to rethrow a {0}",
+                    nameof(ThreadInterruptedException));
+
+                var providerType = this.Method.Module.ImportReference(typeof(ExceptionProvider)).Resolve();
+                if (providerType is null)
                 {
-                    other.TryEnd = newStart;
+                    return;
                 }
 
-                if (other.HandlerEnd == previousStart)
+                MethodReference providerMethod = providerType.Methods.FirstOrDefault(
+                    m => m.Name is nameof(ExceptionProvider.ThrowIfThreadInterruptedException));
+                if (providerMethod is null)
                 {
-                    other.HandlerEnd = newStart;
+                    return;
                 }
+
+                providerMethod = this.Method.Module.ImportReference(providerMethod);
+
+                var processor = this.Method.Body.GetILProcessor();
+                var newStart = Instruction.Create(OpCodes.Dup);
+                var previousStart = handler.HandlerStart;
+                processor.InsertBefore(handler.HandlerStart, newStart);
+                processor.InsertBefore(handler.HandlerStart, Instruction.Create(OpCodes.Call, providerMethod));
+                handler.HandlerStart = newStart;
+
+                // Fix up any other handler end position that points to previousStart instruction.
+                foreach (var other in this.Method.Body.ExceptionHandlers)
+                {
+                    // The first (or most nested) try/catch block.
+                    if (other.TryEnd == previousStart)
+                    {
+                        other.TryEnd = newStart;
+                    }
+
+                    if (other.HandlerEnd == previousStart)
+                    {
+                        other.HandlerEnd = newStart;
+                    }
+                }
+            }
+            catch (AssemblyResolutionException)
+            {
+                // Skip this handler, we are only interested in types that can be resolved.
             }
         }
 

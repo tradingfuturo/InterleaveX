@@ -38,81 +38,113 @@ namespace Microsoft.Coyote.Rewriting
                 return instruction;
             }
 
-            if ((instruction.OpCode == OpCodes.Call || instruction.OpCode == OpCodes.Callvirt) &&
-                instruction.Operand is MethodReference methodReference &&
-                this.IsForeignType(methodReference.DeclaringType))
+            try
             {
-                TypeDefinition resolvedReturnType = methodReference.ReturnType.Resolve();
-                if (IsTaskType(resolvedReturnType, NameCache.TaskName, NameCache.SystemTasksNamespace))
+                if ((instruction.OpCode == OpCodes.Call || instruction.OpCode == OpCodes.Callvirt) &&
+                    instruction.Operand is MethodReference methodReference &&
+                    this.IsForeignType(methodReference.DeclaringType))
                 {
-                    string methodName = GetFullyQualifiedMethodName(methodReference);
-                    Instruction nextInstruction = instruction.Next;
-                    MethodReference interceptionMethod = this.CreateInterceptionMethod(
-                        typeof(ExceptionProvider), methodReference,
-                        nameof(ExceptionProvider.ThrowIfReturnedTaskNotControlled));
-                    TypeReference interceptedReturnType = this.CreateInterceptedReturnType(methodReference);
-                    var instructions = this.CreateInterceptionMethodCallInstructions(
-                        interceptionMethod, nextInstruction, interceptedReturnType, methodName);
-                    if (instructions.Count > 0)
+                    TypeDefinition resolvedReturnType = methodReference.ReturnType.Resolve();
+                    if (IsTaskType(resolvedReturnType, NameCache.TaskName, NameCache.SystemTasksNamespace))
                     {
-                        this.LogWriter.LogDebug("............. [+] uncontrolled task assertion when invoking '{0}'", methodName);
-                        instructions.ForEach(i => this.Processor.InsertBefore(nextInstruction, i));
+                        string methodName = GetFullyQualifiedMethodName(methodReference);
+                        Instruction nextInstruction = instruction.Next;
+                        MethodReference interceptionMethod = this.CreateInterceptionMethod(
+                            typeof(ExceptionProvider), methodReference,
+                            nameof(ExceptionProvider.ThrowIfReturnedTaskNotControlled));
+                        if (interceptionMethod is null)
+                        {
+                            return instruction;
+                        }
+
+                        TypeReference interceptedReturnType = this.CreateInterceptedReturnType(methodReference);
+                        var instructions = this.CreateInterceptionMethodCallInstructions(
+                            interceptionMethod, nextInstruction, interceptedReturnType, methodName);
+                        if (instructions.Count > 0)
+                        {
+                            this.LogWriter.LogDebug("............. [+] uncontrolled task assertion when invoking '{0}'", methodName);
+                            instructions.ForEach(i => this.Processor.InsertBefore(nextInstruction, i));
+                            this.IsMethodBodyModified = true;
+                        }
+                    }
+                    else if (IsTaskType(resolvedReturnType, NameCache.ValueTaskName, NameCache.SystemTasksNamespace))
+                    {
+                        string methodName = GetFullyQualifiedMethodName(methodReference);
+                        Instruction nextInstruction = instruction.Next;
+                        MethodReference interceptionMethod = this.CreateInterceptionMethod(
+                            typeof(ExceptionProvider), methodReference,
+                            nameof(ExceptionProvider.ThrowIfReturnedValueTaskNotControlled));
+                        if (interceptionMethod is null)
+                        {
+                            return instruction;
+                        }
+
+                        TypeReference interceptedReturnType = this.CreateInterceptedReturnType(methodReference);
+                        var instructions = this.CreateInterceptionMethodCallInstructions(
+                            interceptionMethod, nextInstruction, interceptedReturnType, methodName);
+                        if (instructions.Count > 0)
+                        {
+                            this.LogWriter.LogDebug("............. [+] uncontrolled value task assertion when invoking '{0}'", methodName);
+                            instructions.ForEach(i => this.Processor.InsertBefore(nextInstruction, i));
+                            this.IsMethodBodyModified = true;
+                        }
+                    }
+                    else if (methodReference.Name is "GetAwaiter" && IsTaskType(resolvedReturnType,
+                        NameCache.TaskAwaiterName, NameCache.SystemCompilerNamespace))
+                    {
+                        MethodReference interceptionMethod = this.CreateInterceptionMethod(
+                            typeof(TaskAwaiter), methodReference,
+                            nameof(TaskAwaiter.Wrap));
+                        if (interceptionMethod is null)
+                        {
+                            return instruction;
+                        }
+
+                        Instruction newInstruction = Instruction.Create(OpCodes.Call, interceptionMethod);
+                        this.LogWriter.LogDebug("............. [+] {0}", newInstruction);
+
+                        this.Processor.InsertAfter(instruction, newInstruction);
                         this.IsMethodBodyModified = true;
                     }
-                }
-                else if (IsTaskType(resolvedReturnType, NameCache.ValueTaskName, NameCache.SystemTasksNamespace))
-                {
-                    string methodName = GetFullyQualifiedMethodName(methodReference);
-                    Instruction nextInstruction = instruction.Next;
-                    MethodReference interceptionMethod = this.CreateInterceptionMethod(
-                        typeof(ExceptionProvider), methodReference,
-                        nameof(ExceptionProvider.ThrowIfReturnedValueTaskNotControlled));
-                    TypeReference interceptedReturnType = this.CreateInterceptedReturnType(methodReference);
-                    var instructions = this.CreateInterceptionMethodCallInstructions(
-                        interceptionMethod, nextInstruction, interceptedReturnType, methodName);
-                    if (instructions.Count > 0)
+                    else if (methodReference.Name is "GetAwaiter" && IsTaskType(resolvedReturnType,
+                        NameCache.ValueTaskAwaiterName, NameCache.SystemCompilerNamespace))
                     {
-                        this.LogWriter.LogDebug("............. [+] uncontrolled value task assertion when invoking '{0}'", methodName);
-                        instructions.ForEach(i => this.Processor.InsertBefore(nextInstruction, i));
+                        MethodReference interceptionMethod = this.CreateInterceptionMethod(
+                            typeof(ValueTaskAwaiter), methodReference,
+                            nameof(ValueTaskAwaiter.Wrap));
+                        if (interceptionMethod is null)
+                        {
+                            return instruction;
+                        }
+
+                        Instruction newInstruction = Instruction.Create(OpCodes.Call, interceptionMethod);
+                        this.LogWriter.LogDebug("............. [+] {0}", newInstruction);
+
+                        this.Processor.InsertAfter(instruction, newInstruction);
                         this.IsMethodBodyModified = true;
                     }
-                }
-                else if (methodReference.Name is "GetAwaiter" && IsTaskType(resolvedReturnType,
-                    NameCache.TaskAwaiterName, NameCache.SystemCompilerNamespace))
-                {
-                    MethodReference interceptionMethod = this.CreateInterceptionMethod(
-                        typeof(TaskAwaiter), methodReference,
-                        nameof(TaskAwaiter.Wrap));
-                    Instruction newInstruction = Instruction.Create(OpCodes.Call, interceptionMethod);
-                    this.LogWriter.LogDebug("............. [+] {0}", newInstruction);
-
-                    this.Processor.InsertAfter(instruction, newInstruction);
-                    this.IsMethodBodyModified = true;
-                }
-                else if (methodReference.Name is "GetAwaiter" && IsTaskType(resolvedReturnType,
-                    NameCache.ValueTaskAwaiterName, NameCache.SystemCompilerNamespace))
-                {
-                    MethodReference interceptionMethod = this.CreateInterceptionMethod(
-                        typeof(ValueTaskAwaiter), methodReference,
-                        nameof(ValueTaskAwaiter.Wrap));
-                    Instruction newInstruction = Instruction.Create(OpCodes.Call, interceptionMethod);
-                    this.LogWriter.LogDebug("............. [+] {0}", newInstruction);
-
-                    this.Processor.InsertAfter(instruction, newInstruction);
-                    this.IsMethodBodyModified = true;
-                }
 #if NET
-                else if (IsSystemType(resolvedReturnType) && resolvedReturnType.FullName == NameCache.HttpClient)
-                {
-                    MethodReference interceptionMethod = this.CreateInterceptionMethod(
-                        typeof(HttpClient), methodReference, nameof(HttpClient.Control));
-                    Instruction newInstruction = Instruction.Create(OpCodes.Call, interceptionMethod);
-                    this.LogWriter.LogDebug("............. [+] {0}", newInstruction);
+                    else if (IsSystemType(resolvedReturnType) && resolvedReturnType.FullName == NameCache.HttpClient)
+                    {
+                        MethodReference interceptionMethod = this.CreateInterceptionMethod(
+                            typeof(HttpClient), methodReference, nameof(HttpClient.Control));
+                        if (interceptionMethod is null)
+                        {
+                            return instruction;
+                        }
 
-                    this.Processor.InsertAfter(instruction, newInstruction);
-                    this.IsMethodBodyModified = true;
-                }
+                        Instruction newInstruction = Instruction.Create(OpCodes.Call, interceptionMethod);
+                        this.LogWriter.LogDebug("............. [+] {0}", newInstruction);
+
+                        this.Processor.InsertAfter(instruction, newInstruction);
+                        this.IsMethodBodyModified = true;
+                    }
 #endif
+                }
+            }
+            catch (AssemblyResolutionException)
+            {
+                // Skip this instruction, we are only interested in types that can be resolved.
             }
 
             return instruction;
@@ -207,6 +239,11 @@ namespace Microsoft.Coyote.Rewriting
         {
             var returnType = methodReference.ReturnType;
             TypeDefinition providerType = this.Module.ImportReference(type).Resolve();
+            if (providerType is null)
+            {
+                return null;
+            }
+
             MethodReference wrapMethod = null;
             if (returnType is GenericInstanceType genericType)
             {
@@ -214,14 +251,29 @@ namespace Microsoft.Coyote.Rewriting
                 TypeReference argType = resolvedType.HasGenericArguments ?
                     resolvedType.GenericArguments.FirstOrDefault() :
                     resolvedType;
+                if (argType is null)
+                {
+                    return null;
+                }
+
                 MethodDefinition genericMethod = providerType.Methods.FirstOrDefault(
                     m => m.Name == interceptionMethodName && m.HasGenericParameters);
+                if (genericMethod is null)
+                {
+                    return null;
+                }
+
                 MethodReference wrapReference = this.Module.ImportReference(genericMethod);
                 wrapMethod = MakeGenericMethod(wrapReference, argType);
             }
             else
             {
                 wrapMethod = providerType.Methods.FirstOrDefault(m => m.Name == interceptionMethodName);
+            }
+
+            if (wrapMethod is null)
+            {
+                return null;
             }
 
             return this.Module.ImportReference(wrapMethod);

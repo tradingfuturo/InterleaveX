@@ -51,7 +51,17 @@ namespace Microsoft.Coyote.Rewriting
                     this.LogWriter.LogDebug("............. [+] injected scheduling point at field-access instruction");
 
                     TypeDefinition providerType = this.Method.Module.ImportReference(typeof(SchedulingPoint)).Resolve();
+                    if (providerType is null)
+                    {
+                        return instruction;
+                    }
+
                     MethodReference providerMethod = providerType.Methods.FirstOrDefault(m => m.Name is nameof(SchedulingPoint.InterleaveMemoryAccess));
+                    if (providerMethod is null)
+                    {
+                        return instruction;
+                    }
+
                     providerMethod = this.Method.Module.ImportReference(providerMethod);
 
                     if (instruction.Previous != null && instruction.Previous.OpCode == OpCodes.Volatile)
@@ -71,7 +81,17 @@ namespace Microsoft.Coyote.Rewriting
                     this.LogWriter.LogDebug("............. [+] injected scheduling point at branching instruction");
 
                     TypeDefinition providerType = this.Method.Module.ImportReference(typeof(SchedulingPoint)).Resolve();
+                    if (providerType is null)
+                    {
+                        return instruction;
+                    }
+
                     MethodReference providerMethod = providerType.Methods.FirstOrDefault(m => m.Name is nameof(SchedulingPoint.InterleaveControlFlow));
+                    if (providerMethod is null)
+                    {
+                        return instruction;
+                    }
+
                     providerMethod = this.Method.Module.ImportReference(providerMethod);
                     this.Processor.InsertBefore(instruction, Instruction.Create(OpCodes.Call, providerMethod));
 
