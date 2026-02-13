@@ -57,6 +57,30 @@ namespace Microsoft.Coyote.BugFinding.Tests
         }
 
         [Fact(Timeout = 5000)]
+        public void TestUncontrolledTimerCallbackWithLock()
+        {
+            this.Test(async () =>
+            {
+                var lockObj = new object();
+                var tcs = new TaskCompletionSource<bool>();
+                using var timer = new Timer(_ =>
+                {
+                    // Timer callbacks run on uncontrolled threads. Acquiring a lock
+                    // inside the callback must not cause a NullReferenceException
+                    // when the rewritten Monitor.Enter falls back to native locking.
+                    lock (lockObj)
+                    {
+                        tcs.TrySetResult(true);
+                    }
+                }, null, 1, Timeout.Infinite);
+                await tcs.Task;
+            },
+            configuration: this.GetConfiguration()
+                .WithPartiallyControlledConcurrencyAllowed()
+                .WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 5000)]
         public void TestUncontrolledTimerInvocationWithNoPartialControl()
         {
             this.TestWithError(() =>

@@ -36,7 +36,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         public static SystemThreading.Lock.Scope EnterScope(SystemThreading.Lock lockObj)
         {
             var runtime = CoyoteRuntime.Current;
-            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
+            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
+                runtime.TryGetExecutingOperation(out _))
             {
                 var block = Monitor.SynchronizedBlock.Lock(lockObj);
                 (ScopeStack ??= new Stack<Monitor.SynchronizedBlock>()).Push(block);
@@ -63,6 +64,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
+                runtime.TryGetExecutingOperation(out _) &&
                 ScopeStack?.Count > 0)
             {
                 var block = ScopeStack.Pop();
@@ -76,7 +78,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         public static void Enter(SystemThreading.Lock lockObj)
         {
             var runtime = CoyoteRuntime.Current;
-            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
+            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
+                runtime.TryGetExecutingOperation(out _))
             {
                 Monitor.SynchronizedBlock.Lock(lockObj);
             }
@@ -98,7 +101,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         public static void Exit(SystemThreading.Lock lockObj)
         {
             var runtime = CoyoteRuntime.Current;
-            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
+            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
+                runtime.TryGetExecutingOperation(out _))
             {
                 var block = Monitor.SynchronizedBlock.Find(lockObj) ??
                     throw new SystemThreading.SynchronizationLockException();
@@ -116,7 +120,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         public static bool TryEnter(SystemThreading.Lock lockObj)
         {
             var runtime = CoyoteRuntime.Current;
-            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
+            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
+                runtime.TryGetExecutingOperation(out _))
             {
                 // In systematic testing, always succeed to explore all interleavings.
                 Monitor.SynchronizedBlock.Lock(lockObj);
@@ -140,7 +145,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         public static bool TryEnter(SystemThreading.Lock lockObj, int millisecondsTimeout)
         {
             var runtime = CoyoteRuntime.Current;
-            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
+            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
+                runtime.TryGetExecutingOperation(out _))
             {
                 Monitor.SynchronizedBlock.Lock(lockObj);
                 return true;
@@ -163,7 +169,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         public static bool TryEnter(SystemThreading.Lock lockObj, TimeSpan timeout)
         {
             var runtime = CoyoteRuntime.Current;
-            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
+            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
+                runtime.TryGetExecutingOperation(out _))
             {
                 Monitor.SynchronizedBlock.Lock(lockObj);
                 return true;
@@ -186,7 +193,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         public static bool IsHeldByCurrentThread(SystemThreading.Lock lockObj)
         {
             var runtime = CoyoteRuntime.Current;
-            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
+            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
+                runtime.TryGetExecutingOperation(out _))
             {
                 var block = Monitor.SynchronizedBlock.Find(lockObj);
                 return block != null && block.IsEntered();
