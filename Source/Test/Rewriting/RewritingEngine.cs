@@ -65,6 +65,11 @@ namespace Microsoft.Coyote.Rewriting
         private readonly Profiler Profiler;
 
         /// <summary>
+        /// Cached list of .NET shared framework directories for fallback assembly resolution.
+        /// </summary>
+        private List<string> CachedFrameworkDirectories;
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="RewritingEngine"/> class.
         /// </summary>
         private RewritingEngine(RewritingOptions options, Configuration configuration, LogWriter logWriter, Profiler profiler)
@@ -365,10 +370,65 @@ namespace Microsoft.Coyote.Rewriting
         }
 
         /// <summary>
+        /// Attempts to resolve an assembly by probing all .NET shared framework directories.
+        /// This is a fallback for when the primary .runtimeconfig.json-based discovery did not
+        /// add the right directories (e.g. when rewriting a class library without its own config).
+        /// </summary>
+        private AssemblyDefinition TryResolveFromSharedFrameworks(AssemblyNameReference reference)
+        {
+            if (this.CachedFrameworkDirectories is null)
+            {
+                this.CachedFrameworkDirectories = new List<string>();
+                string dotnetRoot = AssemblyInfo.GetDotnetRoot();
+                if (dotnetRoot != null)
+                {
+                    string sharedDir = Path.Combine(dotnetRoot, "shared");
+                    if (Directory.Exists(sharedDir))
+                    {
+                        foreach (string frameworkDir in Directory.GetDirectories(sharedDir))
+                        {
+                            foreach (string versionDir in Directory.GetDirectories(frameworkDir))
+                            {
+                                this.CachedFrameworkDirectories.Add(versionDir);
+                            }
+                        }
+                    }
+                }
+            }
+
+            string fileName = reference.Name + ".dll";
+            foreach (string dir in this.CachedFrameworkDirectories)
+            {
+                string candidate = Path.Combine(dir, fileName);
+                if (File.Exists(candidate))
+                {
+                    try
+                    {
+                        return AssemblyDefinition.ReadAssembly(candidate,
+                            new ReaderParameters { ReadSymbols = false });
+                    }
+                    catch
+                    {
+                        // Ignore and continue searching.
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
         /// Handles an assembly resolution error.
         /// </summary>
         private AssemblyDefinition OnResolveAssemblyFailure(object sender, AssemblyNameReference reference)
         {
+            // Try to resolve from .NET shared framework directories as a fallback.
+            var resolved = this.TryResolveFromSharedFrameworks(reference);
+            if (resolved != null)
+            {
+                return resolved;
+            }
+
             if (!this.ResolveWarnings.Contains(reference.FullName))
             {
                 this.LogWriter.LogWarning("Unable to resolve assembly: '{0}'", reference.FullName);

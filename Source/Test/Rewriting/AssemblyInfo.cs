@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 
@@ -87,6 +88,9 @@ namespace Microsoft.Coyote.Rewriting
                     assemblyResolver.AddSearchDirectory(dependencySearchPath);
                 }
             }
+
+            // Add shared framework directories discovered from the target assembly's runtime config.
+            AddSharedFrameworkDirectories(assemblyResolver, path);
 
             // Add the assembly resolution error handler.
             assemblyResolver.ResolveFailure += handler;
@@ -381,6 +385,144 @@ namespace Microsoft.Coyote.Rewriting
             }
 
             return sortedAssemblies;
+        }
+
+        /// <summary>
+        /// Returns the root directory of the .NET installation, or null if it cannot be determined.
+        /// </summary>
+        internal static string GetDotnetRoot()
+        {
+            // Check the DOTNET_ROOT environment variable first.
+            string dotnetRoot = Environment.GetEnvironmentVariable(
+                Environment.Is64BitProcess ? "DOTNET_ROOT" : "DOTNET_ROOT(x86)");
+            if (!string.IsNullOrEmpty(dotnetRoot) && Directory.Exists(dotnetRoot))
+            {
+                return dotnetRoot;
+            }
+
+            // Derive from the current runtime directory.
+            // RuntimeEnvironment.GetRuntimeDirectory() returns e.g.:
+            //   C:\Program Files\dotnet\shared\Microsoft.NETCore.App\8.0.0\
+            // Navigate up 3 levels: version -> framework name -> shared -> dotnet root.
+            string runtimeDir = System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory();
+            string candidate = Path.GetFullPath(Path.Combine(runtimeDir, "..", "..", ".."));
+            if (Directory.Exists(Path.Combine(candidate, "shared")))
+            {
+                return candidate;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Reads the target assembly's .runtimeconfig.json to extract the list of
+        /// shared framework dependencies (name + minimum version).
+        /// </summary>
+        private static List<(string Name, string Version)> GetFrameworksFromRuntimeConfig(string assemblyPath)
+        {
+            var frameworks = new List<(string, string)>();
+
+            // Look for the .runtimeconfig.json next to the assembly.
+            string configPath = Path.ChangeExtension(assemblyPath, ".runtimeconfig.json");
+            if (!File.Exists(configPath))
+            {
+                return frameworks;
+            }
+
+            try
+            {
+                string json = File.ReadAllText(configPath);
+                using var doc = JsonDocument.Parse(json);
+                var runtimeOptions = doc.RootElement.GetProperty("runtimeOptions");
+
+                if (runtimeOptions.TryGetProperty("frameworks", out var frameworksArray))
+                {
+                    foreach (var fw in frameworksArray.EnumerateArray())
+                    {
+                        string name = fw.GetProperty("name").GetString();
+                        string version = fw.GetProperty("version").GetString();
+                        frameworks.Add((name, version));
+                    }
+                }
+                else if (runtimeOptions.TryGetProperty("framework", out var singleFramework))
+                {
+                    // Older format uses singular "framework" property.
+                    string name = singleFramework.GetProperty("name").GetString();
+                    string version = singleFramework.GetProperty("version").GetString();
+                    frameworks.Add((name, version));
+                }
+            }
+            catch
+            {
+                // Silently ignore malformed runtime config files.
+            }
+
+            return frameworks;
+        }
+
+        /// <summary>
+        /// Finds the best matching installed shared framework directory for the given
+        /// framework name and minimum version, using major-version roll-forward semantics.
+        /// </summary>
+        private static string ResolveFrameworkDirectory(string dotnetRoot, string frameworkName, string minimumVersion)
+        {
+            string frameworkBase = Path.Combine(dotnetRoot, "shared", frameworkName);
+            if (!Directory.Exists(frameworkBase))
+            {
+                return null;
+            }
+
+            if (!Version.TryParse(minimumVersion, out var requestedVersion))
+            {
+                return null;
+            }
+
+            string bestMatch = null;
+            Version bestVersion = null;
+
+            foreach (string dir in Directory.GetDirectories(frameworkBase))
+            {
+                string versionStr = Path.GetFileName(dir);
+                // Strip pre-release suffixes (e.g. "8.0.0-preview.1").
+                int dashIndex = versionStr.IndexOf('-');
+                string cleanVersion = dashIndex >= 0 ? versionStr.Substring(0, dashIndex) : versionStr;
+
+                if (Version.TryParse(cleanVersion, out var candidateVersion) &&
+                    candidateVersion.Major == requestedVersion.Major &&
+                    candidateVersion >= requestedVersion)
+                {
+                    if (bestVersion is null || candidateVersion > bestVersion)
+                    {
+                        bestVersion = candidateVersion;
+                        bestMatch = dir;
+                    }
+                }
+            }
+
+            return bestMatch;
+        }
+
+        /// <summary>
+        /// Discovers shared framework directories from the target assembly's runtime
+        /// configuration and adds them as search directories to the assembly resolver.
+        /// </summary>
+        private static void AddSharedFrameworkDirectories(DefaultAssemblyResolver resolver, string assemblyPath)
+        {
+            string dotnetRoot = GetDotnetRoot();
+            if (dotnetRoot is null)
+            {
+                return;
+            }
+
+            var frameworks = GetFrameworksFromRuntimeConfig(assemblyPath);
+            foreach (var (name, version) in frameworks)
+            {
+                string frameworkDir = ResolveFrameworkDirectory(dotnetRoot, name, version);
+                if (frameworkDir != null)
+                {
+                    resolver.AddSearchDirectory(frameworkDir);
+                }
+            }
         }
 
         /// <summary>
