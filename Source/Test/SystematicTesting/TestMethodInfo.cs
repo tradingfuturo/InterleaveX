@@ -149,6 +149,11 @@ namespace Microsoft.Coyote.SystematicTesting
                 BindingFlags.DeclaredOnly | BindingFlags.InvokeMethod;
             List<MethodInfo> testMethods = FindTestMethodsWithAttribute(
                 typeof(TestAttribute), flags, assembly, logWriter);
+            if (testMethods.Count is 0)
+            {
+                DiagnoseInvalidTestMethods(assembly, testMethods, logWriter);
+            }
+
             return testMethods.Select(mi => $"{mi.DeclaringType.FullName}.{mi.Name}").ToList();
         }
 
@@ -194,6 +199,7 @@ namespace Microsoft.Coyote.SystematicTesting
                     }
                     else if (filteredTestMethods.Count is 0)
                     {
+                        DiagnoseInvalidTestMethods(assembly, testMethods, logWriter);
                         error = $"Cannot detect a Coyote test method name containing {methodName}.";
                     }
                 }
@@ -228,6 +234,7 @@ namespace Microsoft.Coyote.SystematicTesting
             }
             else if (testMethods.Count is 0)
             {
+                DiagnoseInvalidTestMethods(assembly, testMethods, logWriter);
                 throw new InvalidOperationException("Cannot detect a Coyote test method declared with the " +
                     $"'[{typeof(TestAttribute).FullName}]' attribute.");
             }
@@ -433,6 +440,83 @@ namespace Microsoft.Coyote.SystematicTesting
             }
 
             return testMethods;
+        }
+
+        /// <summary>
+        /// Scans the assembly with broader binding flags (including non-public methods) to find
+        /// [Test]-decorated methods that don't qualify as valid test methods, and emits warnings
+        /// explaining why each method is invalid.
+        /// </summary>
+        private static void DiagnoseInvalidTestMethods(Assembly assembly, List<MethodInfo> validMethods, LogWriter logWriter)
+        {
+            BindingFlags broadFlags = BindingFlags.Instance | BindingFlags.Static |
+                BindingFlags.Public | BindingFlags.NonPublic |
+                BindingFlags.DeclaredOnly | BindingFlags.InvokeMethod;
+
+            List<MethodInfo> allTestMethods;
+            try
+            {
+                allTestMethods = assembly.GetTypes().SelectMany(t => t.GetMethods(broadFlags)).
+                    Where(m => m.GetCustomAttributes(typeof(TestAttribute), false).Length > 0).ToList();
+            }
+            catch (ReflectionTypeLoadException)
+            {
+                return;
+            }
+
+            var validSet = new HashSet<MethodInfo>(validMethods);
+
+            foreach (var method in allTestMethods)
+            {
+                if (validSet.Contains(method))
+                {
+                    continue;
+                }
+
+                var reasons = new List<string>();
+
+                if (!method.IsPublic)
+                {
+                    reasons.Add("it is not public");
+                }
+
+                bool hasVoidReturnType = method.ReturnType == typeof(void);
+                bool hasTaskReturnType = typeof(Task).IsAssignableFrom(method.ReturnType);
+                if (!hasVoidReturnType && !hasTaskReturnType)
+                {
+                    reasons.Add($"it has an unsupported return type '{method.ReturnType.Name}' (expected void, Task, or Task<T>)");
+                }
+
+                var testParams = method.GetParameters();
+                bool hasNoInputParameters = testParams.Length is 0;
+                bool hasActorInputParameters = testParams.Length is 1 && testParams[0].ParameterType == typeof(IActorRuntime);
+                bool hasTaskInputParameters = testParams.Length is 1 && testParams[0].ParameterType == typeof(ICoyoteRuntime);
+                if (!hasNoInputParameters && !hasActorInputParameters && !hasTaskInputParameters)
+                {
+                    reasons.Add("it has unsupported parameters (expected none, ICoyoteRuntime, or IActorRuntime)");
+                }
+
+                if (method.IsAbstract)
+                {
+                    reasons.Add("it is abstract");
+                }
+                else if (method.IsVirtual && !method.IsFinal)
+                {
+                    reasons.Add("it is virtual");
+                }
+
+                if (method.ContainsGenericParameters)
+                {
+                    reasons.Add("it is generic");
+                }
+
+                if (reasons.Count > 0)
+                {
+                    string fullName = $"{method.DeclaringType.FullName}.{method.Name}";
+                    logWriter.LogImportant("Warning: found method '{0}' with [{1}] attribute, but {2}.",
+                        fullName, typeof(TestAttribute).FullName, string.Join(", and ", reasons));
+                }
+            }
         }
 
 #if NET
