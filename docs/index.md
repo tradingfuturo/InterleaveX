@@ -1,6 +1,8 @@
-# Concurrency Unit Testing with Coyote
+# Concurrency Unit Testing with InterleaveX
 
-Coyote is .NET library and tool designed to help ensure that your code is free of concurrency bugs.
+> **InterleaveX is a community-maintained fork of [Microsoft Coyote](https://github.com/microsoft/coyote)**, kept alive on current and upcoming .NET LTS releases for teams that depend on this style of systematic concurrency testing in production. The API is preserved unchanged from upstream — much of the documentation on this site originated with Microsoft Coyote and applies verbatim. See the [fork rationale](overview/fork-rationale.md) for the full story.
+
+InterleaveX (originally Microsoft Coyote) is a .NET library and tool designed to help ensure that your code is free of concurrency bugs.
 
 Too often developers are drowning in the complexity of their own code and many hours are wasted
 trying to track down impossible-to-find bugs, especially when dealing with _concurrent_ code or
@@ -96,22 +98,22 @@ These are some direct quotes from Azure Engineers that use Coyote:
   * _Coyote gave developers a significant confidence boost by providing full failover and
   concurrency testing at each check-in, right on their desktops as the code was written._
 
-## Explore Coyote
+## Explore InterleaveX
 
 Get started with the following links:
 
-[Watch a video overview of Coyote](https://innovation.microsoft.com/en-us/tech-minutes-project-coyote)
+[Read why InterleaveX exists as a fork of Microsoft Coyote](overview/fork-rationale.md)
 
-[Learn about the key benefits of using Coyote](overview/benefits.md)
+[Watch a video overview of the original Microsoft Coyote (applies to InterleaveX)](https://innovation.microsoft.com/en-us/tech-minutes-project-coyote)
+
+[Learn about the key benefits of the systematic testing approach](overview/benefits.md)
 
 [Install the NuGet package and CLI tool, it is super easy](get-started/install.md)
 
-[Learn how to use Coyote in practice](tutorials/overview.md)
+[Learn how to use the tool in practice](tutorials/overview.md)
 
-[Read about core concepts behind Coyote](concepts/non-determinism.md)
+[Read about the core concepts](concepts/non-determinism.md)
 
-[Try to find concurrency bugs in this interactive demo](https://innovation.microsoft.com/en-us/exploring-project-coyote)
+[Try to find concurrency bugs in this interactive demo (upstream Microsoft Coyote)](https://innovation.microsoft.com/en-us/exploring-project-coyote)
 
-[Learn how various Azure teams are using Coyote](case-studies/azure-batch-service.md)
-
-[Contribute on Github](https://github.com/microsoft/coyote/)
+[Learn how various Azure teams used the original Microsoft Coyote in production](case-studies/azure-batch-service.md)

@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Coyote is a library and tool for testing concurrent C# code and deterministically reproducing bugs.</Description>
-    <PackageId>Microsoft.Coyote</PackageId>
+    <Description>InterleaveX is a fork of Microsoft Coyote — a library and tool for testing concurrent C# code and deterministically reproducing bugs.</Description>
+    <PackageId>InterleaveX</PackageId>
     <PackageTags>systematic-testing;specifications;concurrency;dotnet;csharp</PackageTags>
     <OutputPath>..\..\bin\</OutputPath>
     <Framework462Supported>false</Framework462Supported>

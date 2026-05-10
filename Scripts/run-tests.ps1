@@ -76,24 +76,24 @@ foreach ($kvp in $targets.GetEnumerator()) {
 }
 
 if ($cli.IsPresent -and $IsWindows) {
-    Write-Comment -text "Running the Coyote CLI NuGet tool installation test." -color "blue"
+    Write-Comment -text "Running the InterleaveX CLI NuGet tool installation test." -color "blue"
 
     $ErrorActionPreference = 'Stop'
     $temp_path = "bin/temp"
     $cli_tool_path = "$PSScriptRoot/../$temp_path"
     New-Item -Path $cli_tool_path -ItemType Directory -Force | out-null
-    if (Test-Path $cli_tool_path/coyote.exe) {
-        Write-Comment -text "Uninstalling the Microsoft.Coyote.CLI package."
-        dotnet tool uninstall Microsoft.Coyote.CLI --tool-path $temp_path
+    if (Test-Path $cli_tool_path/interleavex.exe) {
+        Write-Comment -text "Uninstalling the InterleaveX.CLI package."
+        dotnet tool uninstall InterleaveX.CLI --tool-path $temp_path
     }
 
-    Write-Comment -text "Installing the Microsoft.Coyote.CLI package."
-    dotnet tool install --add-source $PSScriptRoot/../bin/nuget Microsoft.Coyote.CLI --no-cache --tool-path $temp_path
+    Write-Comment -text "Installing the InterleaveX.CLI package."
+    dotnet tool install --add-source $PSScriptRoot/../bin/nuget InterleaveX.CLI --no-cache --tool-path $temp_path
 
-    $help = (& "$cli_tool_path/coyote" -?) -join '\n'
+    $help = (& "$cli_tool_path/interleavex" -?) -join '\n'
     Remove-Item $cli_tool_path -Recurse
-    if (!$help.Contains("coyote [command] [options]")) {
-        Write-Error "### Unexpected output from coyote command"
+    if (!$help.Contains("interleavex [command] [options]")) {
+        Write-Error "### Unexpected output from interleavex command"
         Write-Error $help
         Exit 1
     }

@@ -1,9 +1,9 @@
 ## Build from source
 
-If you plan to contribute a Pull Request to Coyote then you need to be able to build the source code
-and run the tests.
+If you plan to contribute a Pull Request to InterleaveX then you need to be able to build the
+source code and run the tests.
 
-<a href="https://github.com/microsoft/coyote" class="btn btn-primary mt-20" target="_blank">Clone
+<a href="https://github.com/tradingfuturo/interleavex" class="btn btn-primary mt-20" target="_blank">Clone
 the github repo</a>
 
 ### Prerequisites
@@ -16,9 +16,10 @@ the github repo</a>
 on Windows.
 - [Visual Studio Code](https://code.visualstudio.com/Download) is handy to have on other platforms.
 
-### Building the Coyote project
+### Building the InterleaveX project
 
-Clone the [Coyote repo](https://github.com/microsoft/coyote), then open `Coyote.sln` and build.
+Clone the [InterleaveX repo](https://github.com/tradingfuturo/interleavex), then open
+`InterleaveX.sln` and build.
 
 You can also use the following `PowerShell` command line from a Visual Studio 2022 Developer
 Command Prompt:
@@ -29,28 +30,28 @@ powershell -f Scripts/build.ps1
 
 ### Building the NuGet packages
 
-In the Coyote project run this `PowerShell` command line from a Visual Studio 2022 Developer
+In the InterleaveX project run this `PowerShell` command line from a Visual Studio 2022 Developer
 Command Prompt:
 
 ```plain
 powershell -f Scripts/build.ps1 -nuget
 ```
 
-### Installing the Coyote command line tool package
+### Installing the InterleaveX command line tool package
 
-You can install the `coyote` tool from this locally built package using:
+You can install the `interleavex` tool from this locally built package using:
 
 ```plain
-dotnet tool install --global --add-source ./bin/nuget Microsoft.Coyote.CLI
+dotnet tool install --global --add-source ./bin/nuget InterleaveX.CLI
 ```
 
 To update your version of the tool you will have to first uninstall the previous version using:
 
 ```plain
-dotnet tool uninstall --global Microsoft.Coyote.CLI
+dotnet tool uninstall --global InterleaveX.CLI
 ```
 
-Now you are ready to [start using Coyote](using-coyote.md).
+Now you are ready to [start using InterleaveX](using-coyote.md).
 
 ### Running the tests
 

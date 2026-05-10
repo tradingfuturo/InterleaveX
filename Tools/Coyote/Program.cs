@@ -76,7 +76,7 @@ namespace Microsoft.Coyote
                     if (methodsToRun.Count == 0)
                     {
                         throw new InvalidOperationException(
-                            "Cannot detect a Coyote test method declared with the " +
+                            "Cannot detect a test method compatible with InterleaveX (Coyote) declared with the " +
                             $"'[{typeof(TestAttribute).FullName}]' attribute.");
                     }
                 }

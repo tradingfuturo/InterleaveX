@@ -1,6 +1,6 @@
-site_name: Coyote
-site_url: https://microsoft.github.io/coyote/
-repo_url: https://github.com/microsoft/coyote/
+site_name: InterleaveX
+site_url: https://tradingfuturo.github.io/interleavex/
+repo_url: https://github.com/tradingfuturo/interleavex/
 theme:
   name: null
   custom_dir: docs/windmill_dark
@@ -35,20 +35,21 @@ plugins:
 extra:
   social:
   - icon: fontawesome/brands/github
-    link: https://github.com/microsoft/coyote
+    link: https://github.com/tradingfuturo/interleavex
   generator: false
-  base_url: /coyote/
+  base_url: /interleavex/
 nav:
 - Home: index.md
 - Overview:
+  - Fork rationale (read first): overview/fork-rationale.md
   - Key benefits: overview/benefits.md
   - How does it work: overview/how.md
   - Videos: overview/videos.md
   - Publications: overview/publications.md
   - FAQ: overview/faq.md
-- Get started with Coyote:
-  - Installing Coyote: get-started/install.md
-  - Using Coyote: get-started/using-coyote.md
+- Get started with InterleaveX:
+  - Installing InterleaveX: get-started/install.md
+  - Using InterleaveX: get-started/using-coyote.md
   - Building from source: get-started/build-source.md
   - Telemetry: get-started/telemetry.md
 - Tutorials:

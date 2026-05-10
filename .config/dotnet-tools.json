@@ -20,10 +20,10 @@
         "ilverify"
       ]
     },
-    "microsoft.coyote.cli": {
+    "interleavex.cli": {
       "version": "1.7.11",
       "commands": [
-        "coyote"
+        "interleavex"
       ]
     }
   }

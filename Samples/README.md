@@ -1,6 +1,11 @@
-# Coyote Samples
+# InterleaveX Samples
 
-This directory contains two sets of Coyote samples.
+These samples were inherited from Microsoft Coyote and demonstrate
+InterleaveX's capabilities. The API surface is unchanged from upstream, so the
+sample code itself works against either `Microsoft.Coyote.*` or `InterleaveX.*`
+packages — only the package references differ.
+
+This directory contains two sets of samples.
 
 The first set of samples shows how you can use Coyote to systematically test unmodified C#
 task-based applications and services:
@@ -35,9 +40,11 @@ to build reliable applications and services:
 
 To build and run the samples, you will need to:
 
-- Install the [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet).
-- Install the [.NET 8.0 version of the coyote
-  tool](https://microsoft.github.io/coyote/get-started/install/).
+- Install the [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet) (or newer).
+- Install the InterleaveX CLI tool: `dotnet tool install --global InterleaveX.CLI`.
+  (Installation guidance inherited from the upstream Microsoft Coyote
+  [docs](https://microsoft.github.io/coyote/get-started/install/) applies; only
+  the package and command names differ.)
 
 Once you are ready, build the samples by running the following script from the root of the
 repository in `powershell`:
@@ -45,23 +52,24 @@ repository in `powershell`:
 ./Samples/Scripts/build.ps1
 ```
 
-You can find the compiled binaries in the `bin` directory. You can use the `coyote` tool to
+You can find the compiled binaries in the `bin` directory. Use the `interleavex` tool to
 automatically test these samples and find bugs. First, read how to use the tool
 [here](../get-started/using-coyote.md). Then, follow the instructions in each sample.
 
-## Using the local Coyote packages
+## Using the local packages
 
-By default, the samples use the published `Microsoft.Coyote` [NuGet
-package](https://www.nuget.org/packages/Microsoft.Coyote/).
-
-If you want instead to use the locally built Coyote binaries, then run the following script in
+By default, the samples reference the published `Microsoft.Coyote` NuGet
+packages (the original upstream packages). The samples have not yet been
+migrated to consume `InterleaveX.*` packages — this is tracked as a follow-up.
+If you want to use locally built binaries, run the following script in
 `powershell`:
+
 ```
 ./Samples/Scripts/build.ps1 -local
 ```
 
-Finally, if you want instead to use the locally built Coyote NuGet packages, then run the following
-script in `powershell`:
+To use locally built NuGet packages:
+
 ```
 ./Samples/Scripts/build.ps1 -local -nuget
 ```

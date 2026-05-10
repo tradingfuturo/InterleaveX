@@ -1,18 +1,18 @@
 <Project>
   <Import Project="version.props"/>
   <PropertyGroup>
-    <Product>Coyote</Product>
-    <Authors>Microsoft</Authors>
-    <Company>Microsoft Corporation</Company>
-    <Copyright>© Microsoft Corporation. All rights reserved.</Copyright>
-    <RepositoryUrl>https://github.com/microsoft/coyote</RepositoryUrl>
+    <Product>InterleaveX</Product>
+    <Authors>InterleaveX maintainers</Authors>
+    <Company>InterleaveX maintainers</Company>
+    <Copyright>© Microsoft Corporation (original Coyote, MIT). © 2026 InterleaveX maintainers (fork additions, GPL-3.0).</Copyright>
+    <RepositoryUrl>https://github.com/tradingfuturo/interleavex</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
   </PropertyGroup>
   <PropertyGroup>
-    <PackageProjectUrl>https://microsoft.github.io/coyote/</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/tradingfuturo/interleavex</PackageProjectUrl>
     <PackageIcon>images\icon.png</PackageIcon>
     <PackageReadmeFile>docs\readme.md</PackageReadmeFile>
-    <PackageReleaseNotes>https://github.com/microsoft/coyote/blob/main/History.md</PackageReleaseNotes>
+    <PackageReleaseNotes>https://github.com/tradingfuturo/interleavex/blob/main/History.md</PackageReleaseNotes>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageOutputPath>$(MSBuildThisFileDirectory)/../bin/nuget</PackageOutputPath>
   </PropertyGroup>

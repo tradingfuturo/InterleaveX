@@ -1,13 +1,13 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>The Coyote systematic testing engine.</Description>
+    <Description>InterleaveX systematic testing engine (a fork of Microsoft Coyote).</Description>
     <AssemblyName>Microsoft.Coyote.Test</AssemblyName>
     <RootNamespace>Microsoft.Coyote.Test</RootNamespace>
     <OutputPath>..\..\bin\</OutputPath>
     <Framework462Supported>false</Framework462Supported>
   </PropertyGroup>
   <PropertyGroup>
-    <PackageId>Microsoft.Coyote.Test</PackageId>
+    <PackageId>InterleaveX.Test</PackageId>
     <PackageTags>systematic-testing;specifications;concurrency;dotnet;csharp</PackageTags>
     <IncludeSymbols>true</IncludeSymbols>
   </PropertyGroup>

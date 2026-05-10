@@ -1,17 +1,25 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it as below."
+message: "InterleaveX is a fork of Microsoft Coyote. If you cite this software, please also cite the original Microsoft Coyote work below."
 authors:
-- family-names: "Deligiannis"
-  given-names: "Pantazis"
-  orcid: "https://orcid.org/0000-0001-7582-4520"
-- family-names: "Lovett"
-  given-names: "Chris"
-- family-names: "Lal"
-  given-names: "Akash"
-title: "Coyote"
+- name: "InterleaveX maintainers"
+title: "InterleaveX (a fork of Microsoft Coyote)"
 version: 1.7.11
-date-released: 2020-02-28
-url: "https://github.com/microsoft/coyote"
+date-released: 2026-05-10
+url: "https://github.com/tradingfuturo/interleavex"
+references:
+  - type: software
+    title: "Microsoft Coyote"
+    authors:
+    - family-names: "Deligiannis"
+      given-names: "Pantazis"
+      orcid: "https://orcid.org/0000-0001-7582-4520"
+    - family-names: "Lovett"
+      given-names: "Chris"
+    - family-names: "Lal"
+      given-names: "Akash"
+    url: "https://github.com/microsoft/coyote"
+    version: 1.7.11
+    date-released: 2020-02-28
 preferred-citation:
   type: article
   authors:

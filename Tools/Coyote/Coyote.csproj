@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>The self-contained Coyote command-line tool.</Description>
-    <AssemblyName>coyote</AssemblyName>
+    <Description>Self-contained InterleaveX command-line tool (a fork of Microsoft Coyote).</Description>
+    <AssemblyName>interleavex</AssemblyName>
     <RootNamespace>Microsoft.Coyote</RootNamespace>
     <BuildOutputTargetFolder>tools</BuildOutputTargetFolder>
     <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
@@ -11,7 +11,7 @@
     <NoWarn>$(NoWarn),1591</NoWarn>
   </PropertyGroup>
   <PropertyGroup>
-    <PackageId>Microsoft.Coyote.Tool</PackageId>
+    <PackageId>InterleaveX.Tool</PackageId>
     <PackageTags>systematic-testing;specifications;concurrency;dotnet;csharp</PackageTags>
     <IncludeSymbols>true</IncludeSymbols>
   </PropertyGroup>

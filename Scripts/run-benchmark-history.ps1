@@ -38,7 +38,7 @@ function RestoreBenchmark() {
     Copy-Item "$source/Tests/Performance.Tests" -Recurse "$RootDir/Tests/Performance.Tests"
     Remove-Item "$RootDir/Tools/BenchmarkRunner" -Recurse -Force
     Copy-Item "$source/Tools/BenchmarkRunner" -Recurse "$RootDir/Tools/BenchmarkRunner"
-    Invoke-Expression "sed -i 's/\\Performance.Tests.csproj/\\Microsoft.Coyote.Performance.Tests.csproj/' $RootDir\Coyote.sln"
+    Invoke-Expression "sed -i 's/\\Performance.Tests.csproj/\\Microsoft.Coyote.Performance.Tests.csproj/' $RootDir\InterleaveX.sln"
 }
 
 $benchmarks_dir = "$RootDir/Tools/BenchmarkRunner/bin/net8.0"

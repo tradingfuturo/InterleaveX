@@ -14,12 +14,12 @@ function CheckPSVersion() {
 function Invoke-CoyoteTool([String]$cmd, [String]$dotnet, [String]$framework, [String]$target, [String]$key) {
     Write-Comment -prefix "..." -text "Rewriting '$target' ($framework)"
 
-    $tool = Join-Path -Path "." -ChildPath "bin" -AdditionalChildPath @($framework, "coyote.exe")
+    $tool = Join-Path -Path "." -ChildPath "bin" -AdditionalChildPath @($framework, "interleavex.exe")
     $command = "$cmd $target"
 
     if (-not (Test-Path $tool)) {
         $tool = $dotnet
-        $coyote = Join-Path -Path "." -ChildPath "bin" -AdditionalChildPath @($framework, "coyote.dll")
+        $coyote = Join-Path -Path "." -ChildPath "bin" -AdditionalChildPath @($framework, "interleavex.dll")
         $command = "$coyote $cmd $target"
     }
 

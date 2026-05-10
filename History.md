@@ -1,3 +1,30 @@
+## InterleaveX fork (2026-05-10 onward)
+
+InterleaveX is a fork of Microsoft Coyote, beginning at upstream version
+1.7.11. See [docs/overview/fork-rationale.md](docs/overview/fork-rationale.md)
+for the fork's purpose and maintenance scope. Entries below the InterleaveX
+section in this file are upstream Microsoft Coyote release notes, retained for
+historical reference.
+
+### vNext (InterleaveX)
+- Rebranded product name, NuGet package IDs (`InterleaveX`, `InterleaveX.Core`,
+  `InterleaveX.Actors`, `InterleaveX.Test`, `InterleaveX.Tool`,
+  `InterleaveX.CLI`), CLI command (`interleavex`), and documentation to
+  InterleaveX.
+- Preserved upstream `Microsoft.Coyote.*` C# namespaces, assembly DLL names
+  (`Microsoft.Coyote.dll`, `Microsoft.Coyote.Actors.dll`,
+  `Microsoft.Coyote.Test.dll`), and internal type names for source/binary
+  compatibility with upstream consumers.
+- Established dual-licensing: upstream code remains MIT (Microsoft); fork
+  additions are GPL-3.0 (see `NOTICE.md` at the working dir root).
+- A `coyote` CLI alias for the new `interleavex` command is planned via a
+  separate compatibility tool package; until that ships, users may shell-alias
+  `coyote` to `interleavex`.
+
+---
+
+## Upstream Microsoft Coyote release notes (retained for reference)
+
 ## vNext
 - Added support for the `net9.0` target framework.
 - Added support for the `net10.0` target framework.

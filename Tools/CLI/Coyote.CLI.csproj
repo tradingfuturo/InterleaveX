@@ -1,8 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>The Coyote .NET command-line tool.</Description>
-    <AssemblyName>coyote</AssemblyName>
-    <ToolCommandName>$(AssemblyName)</ToolCommandName>
+    <Description>InterleaveX .NET command-line tool (a fork of Microsoft Coyote).</Description>
+    <AssemblyName>interleavex</AssemblyName>
+    <ToolCommandName>interleavex</ToolCommandName>
     <RootNamespace>Microsoft.Coyote</RootNamespace>
     <OutputType>Exe</OutputType>
     <OutputPath>..\..\bin\</OutputPath>
@@ -10,7 +10,7 @@
     <Framework462Supported>false</Framework462Supported>
   </PropertyGroup>
   <PropertyGroup>
-    <PackageId>Microsoft.Coyote.CLI</PackageId>
+    <PackageId>InterleaveX.CLI</PackageId>
     <PackageTags>systematic-testing;specifications;concurrency;dotnet;csharp;cli;tool</PackageTags>
     <IncludeSymbols>true</IncludeSymbols>
     <PackAsTool>true</PackAsTool>

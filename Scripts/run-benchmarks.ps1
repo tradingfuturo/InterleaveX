@@ -35,7 +35,7 @@ $benchmark_runner = "BenchmarkRunner.exe"
 $artifacts_dir = "$current_dir/benchmark_$commit"
 
 if (-Not (Test-Path -Path "$benchmarks_dir")) {
-    throw "Please build coyote project first"
+    throw "Please build the InterleaveX project first"
 }
 
 $custom = "D:/git/lovettchris/BenchmarkDotNet/src/BenchmarkDotNet/bin/Release/netstandard2.0"
@@ -49,7 +49,7 @@ if (Test-Path -Path $artifacts_dir -PathType Container) {
     Remove-Item $artifacts_dir -Recurse
 }
 
-Write-Comment -prefix "." -text "Running the Coyote performance benchmarks, saving to $artifacts_dir" -color "yellow"
+Write-Comment -prefix "." -text "Running the InterleaveX performance benchmarks, saving to $artifacts_dir" -color "yellow"
 
 Invoke-Expression "$benchmarks_dir/$benchmark_runner -outdir $artifacts_dir -commit $commit $cosmos"
 

@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-name: Coyote Performance CI
+name: InterleaveX Performance CI
 on:
   push:
     branches: [ main ]
@@ -10,7 +10,7 @@ on:
       - '**.md'
 jobs:
   build-and-test:
-    name: Performance Test Coyote
+    name: Performance Test InterleaveX
     runs-on: self-hosted
     env:
       COYOTE_CLI_TELEMETRY_OPTOUT: 1
@@ -29,7 +29,7 @@ jobs:
           dotnet-version: '8.0.x'
       - name: Setup Powershell
         run: ./Scripts/install-pwsh.cmd
-      - name: Build Coyote projects
+      - name: Build InterleaveX projects
         run: ./Scripts/build.ps1 -ci
         shell: pwsh
       - name: Run Performance Benchmark 1

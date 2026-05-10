@@ -14,7 +14,7 @@ Import-Module $ScriptDir/common.psm1 -Force
 
 CheckPSVersion
 
-Write-Comment -text "Building Coyote." -color "blue"
+Write-Comment -text "Building InterleaveX." -color "blue"
 
 if ($host.Version.Major -lt 7)
 {
@@ -57,51 +57,51 @@ if ($ci.IsPresent) {
 }
 
 Write-Comment -text "Using configuration '$configuration'." -color "magenta"
-$solution = Join-Path -Path $ScriptDir -ChildPath ".." -AdditionalChildPath "Coyote.sln"
+$solution = Join-Path -Path $ScriptDir -ChildPath ".." -AdditionalChildPath "InterleaveX.sln"
 $command = "build -c $configuration /p:Platform=""Any CPU"" $extra_frameworks $solution"
 
-$error_msg = "Failed to build Coyote"
+$error_msg = "Failed to build InterleaveX"
 Invoke-ToolCommand -tool $dotnet -cmd $command -error_msg $error_msg
 
 if ($nuget.IsPresent -and $ci.IsPresent) {
     if ($IsWindows) {
-        Write-Comment -text "Building the Coyote NuGet packages." -color "blue"
+        Write-Comment -text "Building the InterleaveX NuGet packages." -color "blue"
         $cmd = "pack -c $configuration $extra_frameworks"
 
-        Write-Comment -text "Building the 'Microsoft.Coyote.Core' package." -color "magenta"
+        Write-Comment -text "Building the 'InterleaveX.Core' package." -color "magenta"
         $command = "$cmd --no-build $PSScriptRoot/../Source/Core/Core.csproj"
-        $error_msg = "Failed to build the 'Microsoft.Coyote.Core' package"
+        $error_msg = "Failed to build the 'InterleaveX.Core' package"
         Invoke-ToolCommand -tool $dotnet -cmd $command -error_msg $error_msg
 
-        Write-Comment -text "Building the 'Microsoft.Coyote.Actors' package." -color "magenta"
+        Write-Comment -text "Building the 'InterleaveX.Actors' package." -color "magenta"
         $command = "$cmd --no-build $PSScriptRoot/../Source/Actors/Actors.csproj"
-        $error_msg = "Failed to build the 'Microsoft.Coyote.Actors' package"
+        $error_msg = "Failed to build the 'InterleaveX.Actors' package"
         Invoke-ToolCommand -tool $dotnet -cmd $command -error_msg $error_msg
 
-        Write-Comment -text "Building the 'Microsoft.Coyote.Test' package." -color "magenta"
+        Write-Comment -text "Building the 'InterleaveX.Test' package." -color "magenta"
         $command = "$cmd --no-build $PSScriptRoot/../Source/Test/Test.csproj"
-        $error_msg = "Failed to build the 'Microsoft.Coyote.Test' package"
+        $error_msg = "Failed to build the 'InterleaveX.Test' package"
         Invoke-ToolCommand -tool $dotnet -cmd $command -error_msg $error_msg
 
-        Write-Comment -text "Building the 'Microsoft.Coyote.Tool' package." -color "magenta"
+        Write-Comment -text "Building the 'InterleaveX.Tool' package." -color "magenta"
         $command = "$cmd --no-build $PSScriptRoot/../Tools/Coyote/Coyote.csproj"
-        $error_msg = "Failed to build the 'Microsoft.Coyote.Tool' package"
+        $error_msg = "Failed to build the 'InterleaveX.Tool' package"
         Invoke-ToolCommand -tool $dotnet -cmd $command -error_msg $error_msg
 
-        Write-Comment -text "Building the 'Microsoft.Coyote.CLI' package." -color "magenta"
+        Write-Comment -text "Building the 'InterleaveX.CLI' package." -color "magenta"
         $command = "$cmd $PSScriptRoot/../Tools/CLI/Coyote.CLI.csproj"
-        $error_msg = "Failed to build the 'Microsoft.Coyote.CLI' package"
+        $error_msg = "Failed to build the 'InterleaveX.CLI' package"
         Invoke-ToolCommand -tool $dotnet -cmd $command -error_msg $error_msg
 
-        Write-Comment -text "Building the 'Microsoft.Coyote' meta-package." -color "magenta"
-        $command = "$cmd $PSScriptRoot/NuGet/Coyote.Meta.csproj"
-        $error_msg = "Failed to build the 'Microsoft.Coyote' meta-package"
+        Write-Comment -text "Building the 'InterleaveX' meta-package." -color "magenta"
+        $command = "$cmd $PSScriptRoot/NuGet/InterleaveX.Meta.csproj"
+        $error_msg = "Failed to build the 'InterleaveX' meta-package"
         Invoke-ToolCommand -tool $dotnet -cmd $command -error_msg $error_msg
     } else {
-        Write-Comment -text "Building the Coyote NuGet packages supports only Windows." -color "yellow"
+        Write-Comment -text "Building the InterleaveX NuGet packages supports only Windows." -color "yellow"
     }
 } elseif ($IsWindows) {
-    Write-Comment -text "Skipped building the Coyote NuGet packages (enable with -nuget -ci)." -color "yellow"
+    Write-Comment -text "Skipped building the InterleaveX NuGet packages (enable with -nuget -ci)." -color "yellow"
 }
 
 Write-Comment -text "Done." -color "green"

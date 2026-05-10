@@ -1,13 +1,13 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>The Coyote actor runtime and library.</Description>
+    <Description>InterleaveX actor runtime and library (a fork of Microsoft Coyote).</Description>
     <AssemblyName>Microsoft.Coyote.Actors</AssemblyName>
     <RootNamespace>Microsoft.Coyote.Actors</RootNamespace>
     <OutputPath>..\..\bin\</OutputPath>
     <Framework462Supported>false</Framework462Supported>
   </PropertyGroup>
   <PropertyGroup>
-    <PackageId>Microsoft.Coyote.Actors</PackageId>
+    <PackageId>InterleaveX.Actors</PackageId>
     <PackageTags>actors;state-machines;asynchronous;reactive;systematic-testing</PackageTags>
     <IncludeSymbols>true</IncludeSymbols>
   </PropertyGroup>

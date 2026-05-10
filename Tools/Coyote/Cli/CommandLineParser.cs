@@ -110,8 +110,8 @@ namespace Microsoft.Coyote.Cli
             this.RewriteCommand = this.CreateRewriteCommand(this.RewritingOptions);
 
             // Create the root command.
-            var rootCommand = new RootCommand("The Coyote systematic testing tool.\n\n" +
-                $"Learn how to use Coyote at {Documentation.LearnAboutCoyoteUrl}.\nLearn what is new at {Documentation.LearnWhatIsNewUrl}.");
+            var rootCommand = new RootCommand("InterleaveX — systematic testing tool for concurrent C# code (a fork of Microsoft Coyote).\n\n" +
+                $"Learn how to use InterleaveX (inheriting upstream Coyote docs) at {Documentation.LearnAboutCoyoteUrl}.\nLearn what is new at {Documentation.LearnWhatIsNewUrl}.");
             this.AddGlobalOption(rootCommand, verbosityOption);
             this.TestCommand.AddGlobalOption(consoleLoggingOption);
             this.ReplayCommand.AddGlobalOption(consoleLoggingOption);
@@ -579,7 +579,7 @@ namespace Microsoft.Coyote.Cli
             partialControlOption.AddValidator(result => ValidateOptionValueIsAllowed(result, allowedPartialControlModes));
 
             // Build command.
-            var command = new Command("test", "Run tests using the Coyote systematic testing engine.\n" +
+            var command = new Command("test", "Run tests using the InterleaveX systematic testing engine.\n" +
                 $"Learn more at {Documentation.LearnAboutTestUrl}.");
             this.AddArgument(command, pathArg);
             this.AddOption(command, methodOption);
@@ -671,7 +671,7 @@ namespace Microsoft.Coyote.Cli
             traceFileArg.AddValidator(result => ValidateArgumentValueIsExpectedFile(result, ".trace"));
 
             // Build command.
-            var command = new Command("replay", "Replay bugs that Coyote discovered during systematic testing.\n" +
+            var command = new Command("replay", "Replay bugs discovered by InterleaveX during systematic testing.\n" +
                 $"Learn more at {Documentation.LearnAboutReplayUrl}.");
             this.AddArgument(command, pathArg);
             this.AddArgument(command, traceFileArg);
@@ -720,7 +720,7 @@ namespace Microsoft.Coyote.Cli
             var rewriteUnitTestsOption = new Option<bool>(
                 name: "--rewrite-unit-tests",
                 getDefaultValue: () => options.IsRewritingUnitTests,
-                description: "Rewrite unit tests to automatically inject the Coyote testing engine.")
+                description: "Rewrite unit tests to automatically inject the InterleaveX (Coyote) testing engine.")
             {
                 Arity = ArgumentArity.Zero,
                 IsHidden = true
@@ -756,7 +756,7 @@ namespace Microsoft.Coyote.Cli
 
             // Build command.
             var command = new Command("rewrite", "Rewrite your assemblies to inject logic that allows " +
-                "Coyote to take control of the execution during systematic testing.\n" +
+                "InterleaveX (Coyote) to take control of the execution during systematic testing.\n" +
                 $"Learn more at {Documentation.LearnAboutRewritingUrl}.");
             this.AddArgument(command, pathArg);
             this.AddOption(command, rewriteMemoryLocationsOption);
@@ -1209,13 +1209,13 @@ namespace Microsoft.Coyote.Cli
             .Any(result => result.Option.Name is "help" && !result.IsImplicit);
 
         /// <summary>
-        /// Prints the detailed Coyote version.
+        /// Prints the detailed InterleaveX version banner.
         /// </summary>
         private static void PrintDetailedCoyoteVersion()
         {
-            Console.WriteLine("Microsoft (R) Coyote version {0} for .NET{1}",
+            Console.WriteLine("InterleaveX version {0} for .NET{1} (a fork of Microsoft Coyote)",
                 typeof(CommandLineParser).Assembly.GetName().Version, GetDotNetVersion());
-            Console.WriteLine("Copyright (C) Microsoft Corporation. All rights reserved.\n");
+            Console.WriteLine("Copyright (C) Microsoft Corporation (original Coyote, MIT). Copyright (C) 2026 InterleaveX maintainers (fork additions, GPL-3.0).\n");
         }
 
         /// <summary>

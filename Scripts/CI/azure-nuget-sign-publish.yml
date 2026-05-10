@@ -1,3 +1,10 @@
+# NOTE (InterleaveX fork): This Azure Pipelines pipeline relies on Microsoft's
+# internal NuGet code-signing service ('CoyoteNugetSign') and the
+# 'CoyoteNugetPublish' service connection — neither is available to the
+# InterleaveX fork. This file is retained as a reference for the upstream
+# Microsoft Coyote release pipeline. The fork's own publish workflow needs to
+# be authored separately.
+
 pool:
   vmImage: 'windows-latest'
 
@@ -23,7 +30,7 @@ steps:
     version: 2.1.x
 
 - task: PowerShell@2
-  displayName: 'Build Coyote projects'
+  displayName: 'Build InterleaveX projects'
   inputs:
     targetType: filePath
     filePath: '.\Scripts\build.ps1'
