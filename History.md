@@ -6,7 +6,16 @@ for the fork's purpose and maintenance scope. Entries below the InterleaveX
 section in this file are upstream Microsoft Coyote release notes, retained for
 historical reference.
 
-### vNext (InterleaveX)
+This fork is maintained by TradingFuturo, LLC (https://pipflow.com). It was
+originally developed for internal use and subsequently published in response to
+community interest. We maintain a suite of 200+ Coyote-based tests and target
+Microsoft .NET 10 in the development of the PipFlow Platform®, our AI-driven
+order-flow trading platform, where InterleaveX helps us detect and minimize
+concurrency defects across our codebase.
+
+PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
+
+### (InterleaveX)
 - Rebranded product name, NuGet package IDs (`InterleaveX`, `InterleaveX.Core`,
   `InterleaveX.Actors`, `InterleaveX.Test`, `InterleaveX.Tool`,
   `InterleaveX.CLI`), CLI command (`interleavex`), and documentation to
@@ -25,7 +34,7 @@ historical reference.
 
 ## Upstream Microsoft Coyote release notes (retained for reference)
 
-## vNext
+## InterleaveX
 - Added support for the `net9.0` target framework.
 - Added support for the `net10.0` target framework.
 - Added rewriting support for the `System.Threading.Lock` type introduced in
