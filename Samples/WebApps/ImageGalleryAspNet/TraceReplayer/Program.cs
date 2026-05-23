@@ -20,7 +20,7 @@ namespace ImageGallery.Tests
         /// </remarks>
         public static void Main(string[] args)
         {
-            // NOTE: This is just a hack to make it easy to invoke `coyote replay` for the
+            // NOTE: This is just a hack to make it easy to invoke `interleavex replay` for the
             // ASP.NET MSTest for the purposes of this sample.
 
             if (args.Length != 2)

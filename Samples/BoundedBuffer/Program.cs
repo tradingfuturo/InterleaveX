@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 using System;
@@ -143,7 +143,7 @@ namespace Microsoft.Coyote.Samples.BoundedBuffer
         {
             if (!RunningMain && !Microsoft.Coyote.Rewriting.RewritingEngine.IsAssemblyRewritten(typeof(Program).Assembly))
             {
-                throw new Exception(string.Format("Error: please rewrite this assembly using coyote rewrite {0}",
+                throw new Exception(string.Format("Error: please rewrite this assembly using interleavex rewrite {0}",
                     typeof(Program).Assembly.Location));
             }
         }

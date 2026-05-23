@@ -20,9 +20,9 @@ This file contains a generated GUID representing the local device which helps te
 vague idea of the number of folks that are using the `coyote` tool.
 
 The following metrics are collected:
-- the number of times `coyote test` is invoked and the time taken to complete each test.
-- the number of times `coyote replay` is invoked and the time taken to complete the replay.
-- the number of bugs reported by `coyote test`.
+- the number of times `interleavex test` is invoked and the time taken to complete each test.
+- the number of times `interleavex replay` is invoked and the time taken to complete the replay.
+- the number of bugs reported by `interleavex test`.
 - whether or not `coyote` is running in the debugger, which is an indication the user is trying to
   debug an interesting bug found by coyote.
 - the version of the .NET framework.

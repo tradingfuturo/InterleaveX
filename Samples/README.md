@@ -17,7 +17,7 @@ task-based applications and services:
   service.
 - [Coffee Machine Failover](./CoffeeMachineTasks): demonstrates how to systematically test
   the failover logic in your task-based applications.
-- [BoundedBuffer](./BoundedBuffer): demonstrates how to use `coyote rewrite` to find deadlocks in
+- [BoundedBuffer](./BoundedBuffer): demonstrates how to use `interleavex rewrite` to find deadlocks in
   unmodified C# code.
 
 The second set of samples shows how you can use the Coyote

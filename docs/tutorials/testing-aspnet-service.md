@@ -73,7 +73,7 @@ The `ImageGallery.sln` solution consists of five projects (all will be discussed
 - `Tests` - this contains two regular unit tests that use `MSTest`.
 - `Tests.Coyote` - this invokes the two tests in `Tests` wrapping them with the Coyote testing
   engine.
-- `TraceReplayer` - makes it easy to reproduce the bugs found by `coyote test`.
+- `TraceReplayer` - makes it easy to reproduce the bugs found by `interleavex test`.
 
 ## The Image Gallery sample service
 
@@ -125,7 +125,7 @@ because there is a race condition in the `AccountController` controller logic, t
 can fail due to an unhandled exception (500 error code) and this failure is nondeterministic. The
 issue is that the controller first checks if the account exists and, if it does, it then updates
 it. But after the "does account exists check", the delete request could run, deleting the account!
-The update then tries to run which triggers the bug! Interestingly the non-coyote test run rarely
+The update then tries to run which triggers the bug! Interestingly the non-interleavex test run rarely
 finds this bug although it is possible to see it with the ImageGallery web front end if you use
 multiple browser windows and do batch upload and delete operations in each.
 
@@ -192,7 +192,7 @@ binaries (requires a post build task to get around this). Instead, once you buil
 the tests, run the following from the root directory of the repo:
 
 ```
-coyote rewrite rewrite.coyote.json
+interleavex rewrite rewrite.coyote.json
 dotnet test bin/coyote/ImageGalleryTests.Coyote.dll
 ```
 
@@ -215,7 +215,7 @@ Which also tells you how to reliably reproduce the bug using Coyote.
 
 As you can see above, the `TestConcurrentAccountRequests` failed. This bug is nondeterministic, and
 if you try debug it without Coyote it might not always happen. However, Coyote gives you a reliable
-repro. Right now, someone can use the replay functionality from the `coyote replay` tool or
+repro. Right now, someone can use the replay functionality from the `interleavex replay` tool or
 programmatically through the replay API, but for the purposes of this sample there is a simple
 `TraceReplayer` executable that takes the name of the test and the trace file produced by Coyote,
 and replays it in the VS debugger. To do this, just invoke the command mentioned in the error above
@@ -270,7 +270,7 @@ storage emulator from the Azure storage `explorer`.
 In this tutorial you learned:
 
 1. How to mock external systems like Azure Cosmos DB and Azure Storage for systematic testing.
-2. How to use the `coyote rewrite` command line to rewrite an ASP.NET service with task-based
+2. How to use the `interleavex rewrite` command line to rewrite an ASP.NET service with task-based
    concurrency for systematic testing with Coyote.
 3. How to run a systematic test of unmodified code with Coyote inside an MSTest.
 4. How to replay a buggy trace of unmodified code with Coyote.

@@ -59,7 +59,7 @@ find the `coyote` test tool and setup your environment to use it.
 Enter the following from the command line:
 
 ```plain
-coyote test ./Samples/bin/net8.0/HelloWorldActors.dll --iterations 30
+interleavex test ./Samples/bin/net8.0/HelloWorldActors.dll --iterations 30
 ```
 
 The result is:
@@ -217,7 +217,7 @@ public static void Main()
 
 Notice that Coyote actors run in parallel, so you have to stop the program from terminating
 prematurely, which can be done with a `Console.ReadLine` call.  In order for this program to also be
-testable using the `coyote test` tool, you need to declare a test method as follows:
+testable using the `interleavex test` tool, you need to declare a test method as follows:
 
 ```csharp
 [Microsoft.Coyote.SystematicTesting.Test]
@@ -227,20 +227,20 @@ public static void Execute(IActorRuntime runtime)
 }
 ```
 
-The `coyote test` tool will call this method.  But it will **not** call your `Main` entry point. So
+The `interleavex test` tool will call this method.  But it will **not** call your `Main` entry point. So
 this `Execute` method needs to be standalone.  It cannot depend on anything except statically
 initialized variables.  There is no way to get command line arguments from `coyote` test through to
 this method.
 
 This `Execute` method is very simple, it just creates the `TestActor`.  In Coyote once an actor is
-created it lives forever until it is halted.  Note that Coyote programs can run forever, the `coyote test`
+created it lives forever until it is halted.  Note that Coyote programs can run forever, the `interleavex test`
 tool has ways of interrupting and restarting this `Execute` method based on `--iterations` and
 `--max-steps` arguments provided to the test tool.
 
 So now you know what happened when you ran the following command line:
 
 ```plain
-coyote test ./Samples/bin/net8.0/HelloWorldActors.exe --iterations 30
+interleavex test ./Samples/bin/net8.0/HelloWorldActors.exe --iterations 30
 ```
 
 A special coyote `TestingEngine` was created, it invoked the `Execute` method 30 times, and during
@@ -248,7 +248,7 @@ those executions the test engine took over all concurrent activity and the non-d
 `RandomInteger`) to ensure the program covered lots of async non-deterministic choices, and recorded
 all this in a way that when a bug was found, it is able to reproduce that bug.  See also [Using
 Coyote](../../get-started/using-coyote.md) for information on how to replay a test that found a bug
-using `coyote replay`.
+using `interleavex replay`.
 
 ## Summary
 
@@ -259,5 +259,5 @@ In this tutorial you learned:
 3. The importance of the inbox to simplify parallel programming.
 4. How to run the HelloWorldActors sample from the command-line.
 5. How to use `Assert` in Coyote code.
-6. How to write a `[Test]` method for use in `coyote test` runs.
-7. How to run that test using the `coyote test` tool.
+6. How to write a `[Test]` method for use in `interleavex test` runs.
+7. How to run that test using the `interleavex test` tool.

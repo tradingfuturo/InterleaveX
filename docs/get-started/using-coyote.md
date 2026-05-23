@@ -4,11 +4,11 @@ After you have [installed Coyote](install.md), to run the `coyote` tool use the 
 command:
 
 ```plain
-coyote -?
+interleavex -?
 ```
 
 This will list the full command line options. If you are using the .NET Core version of the tool
-then you can simply run `dotnet coyote.dll` instead.
+then you can simply run `dotnet interleavex.dll` instead.
 
 ### Rewrite your binaries for testing
 
@@ -21,14 +21,14 @@ to rewrite, see [rewriting binaries](../concepts/binary-rewriting.md).
 To invoke the rewriter use the following command:
 
 ```plain
-coyote rewrite ${PATH}
+interleavex rewrite ${PATH}
 ```
 
 `${PATH}` is the path to the assembly (`*.dll`, `*.exe`) to rewrite or to a [JSON rewriting
 configuration file](../concepts/binary-rewriting.md#configuration) that lists all assemblies to
 rewrite.
 
-Type `coyote rewrite -?` to see the full command line options. You can also read this [introductory
+Type `interleavex rewrite -?` to see the full command line options. You can also read this [introductory
 tutorial](../tutorials/first-concurrency-unit-test.md) to see how Coyote can be used to rewrite the
 binary of a simple application for for testing.
 
@@ -41,14 +41,14 @@ deterministically reproduce bugs in your code while also enforcing your safety a
 To invoke the tester use the following command:
 
 ```plain
-coyote test ${YOUR_PROGRAM}
+interleavex test ${YOUR_PROGRAM}
 ```
 
 `${YOUR_PROGRAM}` is the path to your application or library that contains a method annotated
 with the `[Microsoft.Coyote.SystematicTesting.Test]` attribute. This method is the entry point to the
 test.
 
-Type `coyote test -?` to see the full command line options.
+Type `interleavex test -?` to see the full command line options.
 
 If you omit the `-m` flag, Coyote will automatically discover and run all `[Test]` methods in the
 specified assembly, printing per-test banners and an aggregate summary at the end. You can use
@@ -141,13 +141,13 @@ extended to the fuzzing scheduling policy, improving its ability to discover har
 ### Reproducing and debugging traces
 
 The `coyote` replayer can be used to deterministically reproduce and debug buggy executions (found
-by `coyote test`). To run the replayer use the following command:
+by `interleavex test`). To run the replayer use the following command:
 
 ```plain
-coyote replay ${YOUR_PROGRAM} ${TRACE}.trace
+interleavex replay ${YOUR_PROGRAM} ${TRACE}.trace
 ```
 
-Where `${TRACE}}.trace` is the JSON trace file dumped by `coyote test`.
+Where `${TRACE}}.trace` is the JSON trace file dumped by `interleavex test`.
 
 You can attach the Visual Studio debugger on this trace by using `--break`. When using this flag,
 Coyote will automatically instrument a breakpoint when the bug is found. You can also insert your
@@ -156,7 +156,7 @@ own breakpoints in the source code as usual.
 `--break` uses `System.Diagnostics.Debugger.Launch` which does not seem to work on MacOS or Linux,
 see troubleshooting below for an alternate way of debugging replay schedules.
 
-See the replay options section of the help output from invoking `coyote -?`.
+See the replay options section of the help output from invoking `interleavex -?`.
 
 ### Supported scenarios
 
@@ -208,7 +208,7 @@ graph collapses all machine instances into one group, so you can more easily see
 of that machine type.
 
 See [animating state machine demo](../concepts/actors/state-machine-demo.md) for a visual
-explanation of what `coyote test` does when it is looking for bugs. In the animation you will see
+explanation of what `interleavex test` does when it is looking for bugs. In the animation you will see
 why the test failed, two of the server nodes have taken on the `Leader` role, which is not allowed.
 
 See also the [DGML diagram](../assets/images/raft.dgml) which you can open in Visual Studio.
@@ -242,7 +242,7 @@ on MacOS or Linux. So another way to debug a replay is to follow these steps:
 1. Create a new Run Configuration
 
 2. Execute the coyote binary, which you can find in ~/.dotnet/tools/coyote if you installed the
-`dotnet tool` called `Microsoft.Coyote.CLI`.
+`dotnet tool` called `InterleaveX.CLI`.
 
 3. Add the arguments ${YOUR_PROGRAM} ${TRACE}.trace
 

@@ -56,7 +56,7 @@ if the machine needs to be fixed. See [Liveness Checking](../../how-to/liveness-
 
 A number of excellent bugs were found by Coyote during the development of this sample, and this
 illustrates the fact that Coyote can be applied to any type of asynchronous software, not just cloud
-services. There is still one bug remaining in the code which you can find using `coyote test`, and
+services. There is still one bug remaining in the code which you can find using `interleavex test`, and
 it happens after failover just to prove the usefulness of this testing methodology.
 
 ## What you will need
@@ -94,7 +94,7 @@ The following diagram shows the states and actions in our example implementation
 
 ![image](../../assets/images/CoffeeMachine.svg)
 
-When you run the executable without using `coyote test` (this is called running in `production
+When you run the executable without using `interleavex test` (this is called running in `production
 mode`), you will see the following console output. Notice in the output below that the
 `FailoverDriver` forces the termination of the `CoffeeMachine` right in the middle of making a
 coffee. Then when the `CoffeeMachine` is restarted, the `FailoverDriver` requests another coffee
@@ -185,11 +185,11 @@ stop with an error message saying the machine needs to be manually refilled.
 
 ### Coyote testing
 
-You can now use [coyote test](../../get-started/using-coyote.md) to exercise the code and see if any bugs
+You can now use [interleavex test](../../get-started/using-coyote.md) to exercise the code and see if any bugs
 can be found. From the [samples](https://github.com/microsoft/coyote/tree/main/Samples) directory:
 
 ```plain
-coyote test ./Samples/bin/net8.0/CoffeeMachineActors.dll -i 100 -ms 2000 -s prioritization -sv 10 --actor-graph
+interleavex test ./Samples/bin/net8.0/CoffeeMachineActors.dll -i 100 -ms 2000 -s prioritization -sv 10 --actor-graph
 ```
 
 Chances are this will find a bug quickly, one of the safety assertions will fire and you will see
@@ -276,7 +276,7 @@ to work perfectly in the production code where we see this output:
 And the reason it works is because your Operating System is scheduling both of these async threads
 in a way that is relatively `fair` meaning one does not run for a long time without the other being
 scheduled also. But what if these two systems were running in a distributed world and one of them
-hangs for a long time? This is the kind of thread scheduling that `coyote test` is testing where one
+hangs for a long time? This is the kind of thread scheduling that `interleavex test` is testing where one
 machine can run way ahead of another.
 
 You need to take this into account when using this kind of [timer based async
@@ -287,7 +287,7 @@ based eventing is used to model the `ShotCompleteEvent`, `WaterHotEvent`, `Water
 `HopperEmptyEvent`.
 
 This shows how Coyote can help find actual design flaws in your code so you can design a system that
-is more robust in the face of unexpected faults. The `coyote test` engine provides several
+is more robust in the face of unexpected faults. The `interleavex test` engine provides several
 different `scheduling strategies` that test different kinds of fairness algorithms. These are
 designed to find different kinds of bugs.
 
@@ -339,7 +339,7 @@ this.Monitor<LivenessMonitor>(new LivenessMonitor.IdleEvent());
 ```
 
 The `Busy` state is marked as a `[Hot]` state and the `Idle` state is marked as a `[Cold]` state.
-During testing if `coyote test` finds the `LivenessMonitor` to be stuck in the `[Hot]` state too
+During testing if `interleavex test` finds the `LivenessMonitor` to be stuck in the `[Hot]` state too
 long it raises an exception and the test fails.
 
 ### Reliable termination handshake

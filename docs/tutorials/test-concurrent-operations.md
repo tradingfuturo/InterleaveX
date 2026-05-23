@@ -62,12 +62,12 @@ without first creating an account you cannot test its deletion! The test then in
 `DeleteAccount` requests, without waiting so that they can run at the same time, then waits for both
 to complete before finally asserting that only one deletion happened (and the other was ignored).
 
-Run this `TestConcurrentAccountDeletion` test using Coyote (remember to use `coyote rewrite`
+Run this `TestConcurrentAccountDeletion` test using Coyote (remember to use `interleavex rewrite`
 first!):
 
 ```plain
-coyote rewrite .\AccountManager.dll
-coyote test .\AccountManager.dll -m TestConcurrentAccountDeletion -i 100
+interleavex rewrite .\AccountManager.dll
+interleavex test .\AccountManager.dll -m TestConcurrentAccountDeletion -i 100
 ```
 
 When you run this `TestConcurrentAccountDeletion` test using Coyote, you'll find that Coyote finds
@@ -223,8 +223,8 @@ Now run your `TestConcurrentAccountCreationAndDeletion` test with Coyote (rememb
 the assembly first!) and see if it passes.
 
 ```plain
-coyote rewrite .\AccountManager.dll
-coyote test .\AccountManager.dll -m TestConcurrentAccountCreationAndDeletion -i 100
+interleavex rewrite .\AccountManager.dll
+interleavex test .\AccountManager.dll -m TestConcurrentAccountCreationAndDeletion -i 100
 ```
 
 The test passed without reporting any bugs which gives you confidence in the correctness of your code.
@@ -286,14 +286,14 @@ You can then build the sample by following the instructions
 To rewrite and test the sample with Coyote you can use the following commands (as discussed above):
 
 ```plain
-coyote rewrite .\AccountManager.dll
-coyote test .\AccountManager.dll -m TestConcurrentAccountDeletion -i 100
+interleavex rewrite .\AccountManager.dll
+interleavex test .\AccountManager.dll -m TestConcurrentAccountDeletion -i 100
 ```
 
 If you find a bug you can replay with the following command (providing the correct .trace file
-reported from the previous coyote test that failed):
+reported from the previous interleavex test that failed):
 ```plain
-coyote replay .\AccountManager.dll AccountManager_0_0.trace
+interleavex replay .\AccountManager.dll AccountManager_0_0.trace
     -m TestConcurrentAccountDeletion
 ```
 

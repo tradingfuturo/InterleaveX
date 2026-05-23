@@ -908,13 +908,13 @@ namespace Microsoft.Coyote.Cli
                 case "path":
                     if (command.Name is "test" || command.Name is "replay")
                     {
-                        // In the case of 'coyote test' or 'replay', the path is the assembly to be tested.
+                        // In the case of 'interleavex test' or 'replay', the path is the assembly to be tested.
                         string path = Path.GetFullPath(result.GetValueOrDefault<string>());
                         this.Configuration.AssemblyToBeAnalyzed = path;
                     }
                     else if (command.Name is "rewrite")
                     {
-                        // In the case of 'coyote rewrite', the path is the JSON this.Configuration file
+                        // In the case of 'interleavex rewrite', the path is the JSON this.Configuration file
                         // with the binary rewriting options.
                         string filename = result.GetValueOrDefault<string>();
                         if (Directory.Exists(filename))

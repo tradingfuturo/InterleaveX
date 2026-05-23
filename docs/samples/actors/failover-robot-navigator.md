@@ -53,7 +53,7 @@ Do note:
     scenarios involving a robot that operates with the help of object recognition and route
     planning.
  2. The green nodes represent the product code we are testing here, and everything else is mock test
-    infrastructure. The main goal is to show the use of `coyote test` in finding concurrency issues
+    infrastructure. The main goal is to show the use of `interleavex test` in finding concurrency issues
     even at the design stage when the actual implementation hasn't started. For this reason we've
     only provided mock implementations of the cognitive service, the route planner, and the storage
     service. The `Navigator` doesn't know these are mock implementations.
@@ -127,7 +127,7 @@ Now you can run the `DrinksServingRobotActors` application:
 ./Samples/bin/net8.0/DrinksServingRobotActors.exe
 ```
 
-When you run the executable like this without using `coyote test` (this is called running in
+When you run the executable like this without using `interleavex test` (this is called running in
 _production mode_), you will get infinite console output, that you can to terminate by pressing
 ENTER, similar to this:
 
@@ -234,11 +234,11 @@ random times. Each halted machine is terminated and discarded, then a new `Navig
 started. Each new `Navigator` instance figures out the exact state it should continue from, and you
 see that the `Robot` continues without incident.
 
-You can now use `coyote test` to test the code and see if any bugs can be found. From the
+You can now use `interleavex test` to test the code and see if any bugs can be found. From the
 `CoyoteSamples` folder enter this command:
 
 ```plain
-coyote test ./Samples/bin/net8.0/DrinksServingRobotActors.dll -i 1000 -ms 2000 -s prioritization -sv 10
+interleavex test ./Samples/bin/net8.0/DrinksServingRobotActors.dll -i 1000 -ms 2000 -s prioritization -sv 10
 ```
 
 Chances are this will find a bug quickly, and you will see output from the test like this:
@@ -289,7 +289,7 @@ see something like this:
 <StrategyLog> Found 11.11% buggy schedules.
 ```
 
-So the `DrinksServingRobot` has a liveness bug. Just 0.6 seconds were enough for coyote test to find
+So the `DrinksServingRobot` has a liveness bug. Just 0.6 seconds were enough for interleavex test to find
 this liveness bug, with 30 test iterations each doing up to 2000 async operations.  This bug is hard
 to reproduce in a production run of the DrinksServingRobot.
 
@@ -455,23 +455,23 @@ this.Monitor<LivenessMonitor>(new LivenessMonitor.IdleEvent());
 ```
 
 The `Busy` state is marked as a `[Hot]` state and the `Idle` state is marked as a `[Cold]` state.
-During testing if `coyote test` finds the `LivenessMonitor` to be stuck in the `[Hot]` state for too
+During testing if `interleavex test` finds the `LivenessMonitor` to be stuck in the `[Hot]` state for too
 long it raises an exception and the test fails.  This is in fact the failure that is detected during
 the test.
 
 ### Explanation of the bug
 
-Remember the last lines of the coyote test execution log file:
+Remember the last lines of the interleavex test execution log file:
 
 ```shell
 <ErrorLog> Monitor 'Microsoft.Coyote.Samples.DrinksServingRobot.LivenessMonitor' detected
 liveness bug in hot state 'Busy' at the end of program execution.
 ```
 
-If you add to the coyote test command line `--actor-graph`, and test again:
+If you add to the interleavex test command line `--actor-graph`, and test again:
 
 ```plain
-coyote test .\Samples\bin\net8.0\DrinksServingRobotActors.dll -i 1000 -ms 2000 -s prioritization -sv 10 --actor-graph
+interleavex test .\Samples\bin\net8.0\DrinksServingRobotActors.dll -i 1000 -ms 2000 -s prioritization -sv 10 --actor-graph
 ```
 
 you'll see in the output of the tester that a DGML diagram has been produced:
@@ -605,7 +605,7 @@ Unfortunately, this is too late...
 
 So when is the right moment to set `this.DrinkOrderPending` to `false`?
 
-This is a classic timing bug then, and the coyote tester was able to uncover this bug because it
+This is a classic timing bug then, and the interleavex tester was able to uncover this bug because it
 takes control of all the timing and ordering of messages between the actors. The problem is the
 Navigator considers the drink request complete (and clears the Storage of that request) when it
 returns the DrivingInstructionsEvent. This event is handled by the robot in the method ReachClient.
@@ -636,11 +636,11 @@ the exact place to set `DrinkOrderPending` to `false`.
 
 and to move it into the `ReachClient()` method (or just uncomment the fix that is hidden there).
 
-After you perform this fix and rebuild the sample, try running coyote test again with the same
+After you perform this fix and rebuild the sample, try running interleavex test again with the same
 command line which previously reported the liveness bug:
 
 ```plain
-coyote test ./Samples/bin/net8.0/DrinksServingRobotActors.dll -i 1000 -ms 2000 -s prioritization -sv 10
+interleavex test ./Samples/bin/net8.0/DrinksServingRobotActors.dll -i 1000 -ms 2000 -s prioritization -sv 10
 ```
 
 And now no bug will be found -- you should get result similar to this:
@@ -661,7 +661,7 @@ And now no bug will be found -- you should get result similar to this:
 . Done
 ```
 
-If you want to have a high degree of certainty that no bug is found, run the coyote tester with a
+If you want to have a high degree of certainty that no bug is found, run the interleavex tester with a
 sufficiently big number of iterations, say 100,000.
 
 ## Summary
@@ -677,7 +677,7 @@ In this tutorial you learned:
 1. How to do failover testing using a Coyote `FailoverDriver` state machine.
 2. How to use Coyote to test failover in a service.
 3. How to use `--strategy prioritization` testing to find tricky bugs.
-4. How to specify the `--actor-graph` argument so that the coyote test tool would produce a snapshot-DGML
+4. How to specify the `--actor-graph` argument so that the interleavex test tool would produce a snapshot-DGML
   diagram of the final state of the system when the bug was found.
 5. How to use `RaisePushStateEvent()` and `RaisePopStateEvent()` to achieve additional simplicity in
   handling common events in one place.

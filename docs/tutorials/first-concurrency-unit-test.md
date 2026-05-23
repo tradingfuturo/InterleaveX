@@ -302,7 +302,7 @@ luck (i.e. the operating system scheduler). Coyote gives you _exactly_ this.
 To use Coyote on your task-based program is very easy in most cases. All you need to do is to invoke
 the `coyote` tool to [rewrite](../get-started/using-coyote.md) your assembly (for testing only)
 so that Coyote can inject logic that allows it to take control of the schedule of C# tasks. Then,
-you can invoke the `coyote test` tool which [systematically
+you can invoke the `interleavex test` tool which [systematically
 explores](../concepts/concurrency-unit-testing.md) task interleavings to uncover bug. What is even
 better is that if a bug is uncovered, Coyote allows you to deterministically reproduce it every
 single time.
@@ -310,7 +310,7 @@ single time.
 Now run your test under the control of Coyote. First use Coyote to rewrite the assembly:
 
 ```plain
-coyote rewrite .\AccountManager.dll
+interleavex rewrite .\AccountManager.dll
 . Rewriting AccountManager.dll
 ... Rewriting the 'AccountManager.dll' assembly
 ... Writing the modified 'AccountManager.dll' assembly to AccountManager.dll
@@ -324,7 +324,7 @@ rewrite` as discussed [here](../get-started/using-coyote.md#configuration).
 Awesome, now lets try use Coyote on the above concurrent test:
 
 ```plain
-coyote test .\AccountManager.dll -m TestConcurrentAccountCreation -i 100
+interleavex test .\AccountManager.dll -m TestConcurrentAccountCreation -i 100
 ```
 
 **Note**: for this to work the unit test method needs to use the
@@ -368,10 +368,10 @@ Indeed after 20 iterations and 0.15 seconds Coyote finds a bug:
 ```
 
 Cool, the flakey test is no longer flakey! Coyote can also help you reproduce and debug it. You can
-simply run `coyote replay` giving the `.trace` file that Coyote outputs upon finding a bug:
+simply run `interleavex replay` giving the `.trace` file that Coyote outputs upon finding a bug:
 
 ```plain
-coyote replay .\AccountManager.dll AccountManager_0_0.trace
+interleavex replay .\AccountManager.dll AccountManager_0_0.trace
     -m TestConcurrentAccountCreation
 . Reproducing trace in .\Output\AccountManager.dll\CoyoteOutput\AccountManager_0_1.trace
 ... Task 0 is using 'replay' strategy.
@@ -426,13 +426,13 @@ Options:
 To rewrite and test the sample with Coyote you can use the following commands (as discussed above):
 
 ```plain
-coyote rewrite .\AccountManager.dll
-coyote test .\AccountManager.dll -m TestConcurrentAccountCreation -i 100
+interleavex rewrite .\AccountManager.dll
+interleavex test .\AccountManager.dll -m TestConcurrentAccountCreation -i 100
 ```
 
 If you find a bug you can replay with the following command:
 ```plain
-coyote replay .\AccountManager.dll AccountManager_0_0.trace
+interleavex replay .\AccountManager.dll AccountManager_0_0.trace
     -m TestConcurrentAccountCreation
 ```
 

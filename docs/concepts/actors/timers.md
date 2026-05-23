@@ -150,7 +150,7 @@ Timers that run during systematic testing, however, are quite different and are 
 that with a random decision to timeout or not to timeout.  This makes your test run much faster. But
 it can also make your test see a lot more timeout events that you may be expecting.  This is good
 for finding bugs, but can overwhelm the test with timeout events.  To reduce the number of timeouts
-there is a `--timeout-delay` command line option on the `coyote test` tool.  This timeout delay is
+there is a `--timeout-delay` command line option on the `interleavex test` tool.  This timeout delay is
 given to the mock timer and it will only fire a timeout when `RandomInteger(delay) == 0`.  The
 default value of `--timeout-delay` is 10, which means timeouts only fire once every 10 times the
 timer gets scheduled by the systematic testing runtime.  This turns out to be a pretty good default

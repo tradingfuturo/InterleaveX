@@ -54,8 +54,8 @@ using intelligent [systematic testing](../../concepts/concurrency-unit-testing.m
 For example, if you take the `BoundedBuffer.dll` from the above sample you can do the following:
 
 ```
-coyote rewrite BoundedBuffer.dll
-coyote test BoundedBuffer.dll -m TestBoundedBufferMinimalDeadlock --iterations 100
+interleavex rewrite BoundedBuffer.dll
+interleavex test BoundedBuffer.dll -m TestBoundedBufferMinimalDeadlock --iterations 100
 ```
 
 This will report a deadlock error because Coyote has deadlock detection during testing. You will get

@@ -254,8 +254,8 @@ public static async Task TestAccountUpdate()
 Build the code, rewrite the assembly and run the test using Coyote for `10` iterations:
 
 ```plain
-coyote rewrite .\AccountManager.ETags.dll
-coyote test .\AccountManager.ETags.dll -m TestAccountUpdate -i 10
+interleavex rewrite .\AccountManager.ETags.dll
+interleavex test .\AccountManager.ETags.dll -m TestAccountUpdate -i 10
 ```
 
 The test succeeds.

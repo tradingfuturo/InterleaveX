@@ -9,7 +9,7 @@ example, when [two requests execute concurrently](../tutorials/first-concurrency
 your service, as if it was deployed in production.
 
 To use Coyote, you do not need to change a single line in your production code! Using [binary
-rewriting](../concepts/binary-rewriting.md), the `coyote rewrite` tool will instrument your
+rewriting](../concepts/binary-rewriting.md), the `interleavex rewrite` tool will instrument your
 program-under-test with hooks and stubs that allow Coyote to take control of `Task` objects and
 related concurrency types from the .NET Task Parallel Library. This is where the magic happens.
 Coyote controls the execution of each `Task` so that it can explore various different interleavings
@@ -22,13 +22,13 @@ This approach requires you to change the design of your application, but gives y
 battle-tested inside Azure) constructs for building highly-reliable applications.
 
 Regardless if you use Coyote binary rewriting on your unmodified program or wrote your code using
-Coyote actors, the next step is to use Coyote to systematically test your code! The `coyote test`
+Coyote actors, the next step is to use Coyote to systematically test your code! The `interleavex test`
 tool takes over the scheduling of a Coyote program. It is able to do this reliably because it deeply
 understands the concurrency in .NET applications. The tool knows all concurrent operations in a test
 as well as sources of synchronization between them. By controlling the program schedule, Coyote can
 reliably explore different interleavings of operations.
 
-The `coyote test` tool uses several state-of-the-art exploration strategies that have been known to
+The `interleavex test` tool uses several state-of-the-art exploration strategies that have been known to
 find very deep bugs easily. The tool can run a _portfolio_ of available strategies in parallel,
 maximizing chances of revealing bugs. Coyote refers to these exploration strategies as _scheduling
 strategies_ and makes it easy to incorporate new strategies, as they come out of
@@ -42,7 +42,7 @@ coverage, especially _concurrency_ coverage, in a short amount of time. In a sim
 can also take over other sources of non-determinism, such as the delivery of timeouts or injection
 of failures.
 
-If a bug is found, the `coyote test` tool reports a _reproducible_ bug trace that provides the
+If a bug is found, the `interleavex test` tool reports a _reproducible_ bug trace that provides the
 global order of all scheduling decisions and nondeterministic choices made during the execution of a
 test. The trace can be replayed reliably over and over again, until the bug is identified. This
 makes a bug reported by the tool significantly easier to debug than regular unit-/integration-tests

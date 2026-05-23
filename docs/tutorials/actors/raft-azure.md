@@ -67,7 +67,7 @@ Now you can run the Raft.Azure application:
 "./Samples/bin/net8.0/Raft.Azure.exe" --connection-string "%CONNECTION_STRING%" --topic-name rafttopic --num-requests 5 --local-cluster-size 5
 ```
 
-Note: you don't want to try and run Raft.Azure client using the `coyote test` tool until you
+Note: you don't want to try and run Raft.Azure client using the `interleavex test` tool until you
 complete the [mocking](raft-mocking.md) of the Azure Message Bus calls.
 
 ## Design
@@ -149,7 +149,7 @@ handle `ClientRequestEvents` in a reliable way. `Server` instances can failover,
 protocol is able to figure out which server should handle which client request, and how to replicate
 the logs across all servers for safe keeping and reliability. The whole idea is that with this
 cluster there is no single point of failure. Clearly for this to be reliable, it must also be bug
-free, and therefore is an excellent candidate for thorough testing by the `coyote test` tool.
+free, and therefore is an excellent candidate for thorough testing by the `interleavex test` tool.
 
 The `RunClient` method shows how you can use the `cluster`, namely, sending a `ClientRequestEvent`
 and waiting for the async response that comes back from the service bus in the

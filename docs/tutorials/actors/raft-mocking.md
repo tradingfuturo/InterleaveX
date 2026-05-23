@@ -11,7 +11,7 @@ will do in this tutorial. First you will `mock` the Azure Service Bus which allo
 tester](../../get-started/using-coyote.md) to perform thousands of tests per second and thereby find
 bugs in the application code more efficiently.
 
-Then you will use the `coyote test` tool to explore the code using different test strategies until
+Then you will use the `interleavex test` tool to explore the code using different test strategies until
 you achieve a high level of confidence that the code is rock solid.
 
 ## What you will need
@@ -30,10 +30,10 @@ You can build the sample by following the instructions
 
 ## Run the Raft.Mocking application
 
-Now you can run `coyote test` tool on the Raft.Mocking application:
+Now you can run `interleavex test` tool on the Raft.Mocking application:
 
 ```plain
-coyote test ./Samples/bin/net8.0/Raft.Mocking.dll -i 1000 -ms 200 --coverage activity
+interleavex test ./Samples/bin/net8.0/Raft.Mocking.dll -i 1000 -ms 200 --coverage activity
 ```
 
 You should see the test succeed with output like this, including a coverage report and graph:
@@ -111,7 +111,7 @@ Here you see all the `Actor` objects in green, and `Monitor` in blue and `StateM
 including the `Leader` state. The `MockStateMachineTimer` is a helper `Actor` provided as a mock
 implementation `CreateTimer` and `CreatePeriodicTimer` API's.
 
-There are many different `coyote test` command line options you can play with to test different things
+There are many different `interleavex test` command line options you can play with to test different things
 and really increase your confidence level in the code you are testing. For example there are 4 different
 test scheduling options you can play with:
 
@@ -122,12 +122,12 @@ test scheduling options you can play with:
 | `--strategy fair-prioritization` `--strategy-value N` | Choose the fair priority-based scheduling strategy with `N` maximum number of priority switch points |
 | `--strategy portfolio` | Choose the portfolio scheduling strategy |
 
-These options change how `coyote test` explores the large state space of possible schedules for your
+These options change how `interleavex test` explores the large state space of possible schedules for your
 async operations. The last option is interesting because it allows you to test many different
 scheduling strategies at once:
 
 ```plain
-coyote test ./Samples/bin/net8.0/Raft.Mocking.dll -i 1000 -ms 200 --coverage activity -s portfolio
+interleavex test ./Samples/bin/net8.0/Raft.Mocking.dll -i 1000 -ms 200 --coverage activity -s portfolio
 ```
 
 When you use this the test will print the chosen strategies at the top of the test output:
@@ -220,11 +220,11 @@ In this tutorial you learned:
 
 1. How to mock external systems like Azure Service Bus to make a Coyote test run fast.
 
-2. How to use the `coyote test` command line to explore different test strategies.
+2. How to use the `interleavex test` command line to explore different test strategies.
 
 3. How to read a Coyote coverage report and view the coverage graph.
 
-4. How to inject test logic like the `SafetyMonitor` in to the `coyote test` scenario that monitors
+4. How to inject test logic like the `SafetyMonitor` in to the `interleavex test` scenario that monitors
    the overall correctness of your system in a way that has minimal overhead in your production
    code.
 
@@ -232,5 +232,5 @@ In this tutorial you learned:
    integration testing process.
 
 You can also explore the `Raft.Nondeterminism.dll` version of this sample that injects a bug in the
-system by randomly sending duplicate `VoteRequestEvents`. Then you can see how the `coyote test`
+system by randomly sending duplicate `VoteRequestEvents`. Then you can see how the `interleavex test`
 tool is able to spot the resulting bugs because of the `SafetyMonitor`.

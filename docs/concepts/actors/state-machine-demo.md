@@ -6,7 +6,7 @@
 
 {% include 'player-controls.html' %}
 
-This graph was generated from a `coyote test` with the `--xml-trace` and `--actor-graph` options on
+This graph was generated from a `interleavex test` with the `--xml-trace` and `--actor-graph` options on
 a `StateMachine` based coyote application that implements the `Raft` protocol. The fact that coyote
 `StateMachines` expose explicit state information makes it possible for `coyote` to visualize what
 is going on in a level of detail that is hard to extract from other kinds of C# code. This

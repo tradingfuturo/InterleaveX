@@ -48,12 +48,12 @@ PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
 - Added the `IActorRuntime.HaltActorAsync` and `IActorRuntime.HaltAllActorsAsync`
   APIs for externally halting actors and awaiting their full cleanup, including
   `OnHaltAsync` completion.
-- The `coyote test` command now automatically discovers and runs all `[Test]`
+- The `interleavex test` command now automatically discovers and runs all `[Test]`
   methods when the `-m` flag is omitted, printing per-test banners and an
   aggregate summary. Added the `--list-tests` CLI option for discovering test
   names without running them, and `--stop-on-first-failure` for aborting after
   the first non-success result.
-- The `coyote test` command now emits diagnostic warnings when `[Test]`-decorated
+- The `interleavex test` command now emits diagnostic warnings when `[Test]`-decorated
   methods have invalid signatures (e.g. non-public, unsupported parameters)
   instead of silently ignoring them.
 - Enhanced the portfolio strategy mode with Q-learning and extended it to the

@@ -22,11 +22,11 @@ You can build the sample by following the instructions
 
 ## Run the sample
 
-Let's see if Coyote can find the bug in this sample. Type `coyote -?` to see the help page to make
+Let's see if Coyote can find the bug in this sample. Type `interleavex -?` to see the help page to make
 sure you have installed it correctly. Now you are ready to run a `coyote` test as follows:
 
 ```plain
-coyote test ./Samples/bin/net8.0/Monitors.dll --iterations 1000 -ms 200
+interleavex test ./Samples/bin/net8.0/Monitors.dll --iterations 1000 -ms 200
 ```
 
 This also runs perfectly up to 1000 iterations. So this is indeed a hard bug to find. It can be
@@ -35,7 +35,7 @@ points `--strategy prioritization` (or with the default `random` exploration str
 much larger number of iterations, typically more than 100,000 of them).
 
 ```plain
-coyote test ./Samples/bin/net8.0/Monitors.dll --iterations 1000 -ms 200 -s prioritization -sv 10
+interleavex test ./Samples/bin/net8.0/Monitors.dll --iterations 1000 -ms 200 -s prioritization -sv 10
 ```
 
 Even then you might need to run it a few times to catch the bug. Set `--iterations` to a bigger
@@ -56,10 +56,10 @@ The `*.txt` file is the text log of the iteration that found the bug. The `*.tra
 information needed to reproduce the bug.
 
 Finding a hard to find bug is one thing, but if you can't reproduce this bug while debugging there
-is no point. So the `*.trace` can be used with the `coyote replay` command as follows:
+is no point. So the `*.trace` can be used with the `interleavex replay` command as follows:
 
 ```plain
-coyote replay ./Samples/bin/net8.0/Monitors.dll
+interleavex replay ./Samples/bin/net8.0/Monitors.dll
     .\Samples\bin\net8.0\Output\Monitors.exe\CoyoteOutput\Monitors_0_0.trace
 
 . Reproducing trace in ./Samples/bin/net8.0/Monitors.exe
@@ -74,7 +74,7 @@ tool can help you with that also. If you run the following command line it will 
 diagram of the state machines that are being tested:
 
 ```plain
-coyote test ./Samples/bin/net8.0/Monitors.dll --iterations 10 --max-steps 20 --actor-graph
+interleavex test ./Samples/bin/net8.0/Monitors.dll --iterations 10 --max-steps 20 --actor-graph
 ```
 
 You will see the following output:

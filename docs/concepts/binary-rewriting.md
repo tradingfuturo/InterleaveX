@@ -10,7 +10,7 @@ execution and various sources of nondeterminism in a program.
 To invoke the rewriter use the following command:
 
 ```plain
-coyote rewrite ${PATH}
+interleavex rewrite ${PATH}
 ```
 
 `${PATH}` is the path to the assembly (`*.dll`, `*.exe`) to rewrite or to a [JSON rewriting
@@ -18,7 +18,7 @@ configuration file](#configuration) (`*.json`). For automation, this can be conv
 post-build task, like this:
 ```xml
 <Target Name="CoyoteRewrite" AfterTargets="AfterBuild">
-  <Exec Command="dotnet $(PathToCoyote)/coyote.dll rewrite ${PATH}"/>
+  <Exec Command="dotnet $(PathToCoyote)/interleavex.dll rewrite ${PATH}"/>
 </Target>
 ```
 
@@ -52,7 +52,7 @@ that case the original assemblies will be replaced.
 - `Assemblies` is the list of specific assemblies in `AssembliesPath` to be rewritten. You must
   explicitly list all the assemblies to rewrite (pattern matching, `*` and `.` are not supported).
 
-Then pass this JSON file on the command line: `coyote rewrite config.json`.
+Then pass this JSON file on the command line: `interleavex rewrite config.json`.
 
 ### Which DLLs to rewrite?
 
@@ -123,7 +123,7 @@ the `--max-steps` command line argument. This termination is done using a specia
 
 These will inadvertently catch the special Coyote exception, which then stops `--max-steps` from
 working. The recommended fix is to add a `when (!(e is Microsoft.Coyote.RuntimeException))` filter.
-The good news is that `coyote rewrite` can take care of this for you automatically so you do not
+The good news is that `interleavex rewrite` can take care of this for you automatically so you do not
 need to modify any of your exception handlers.
 
 ### Supported rewriting targets

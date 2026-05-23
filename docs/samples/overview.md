@@ -18,7 +18,7 @@ The first set shows how you can use Coyote to systematically test unmodified C# 
   how to systematically test the failover logic in your task-based applications. Read the
   accompanying tutorial available [here](../tutorials/test-failover.md).
 - [BoundedBuffer](https://github.com/microsoft/coyote/tree/main/Samples/BoundedBuffer): demonstrates
-  how to use `coyote rewrite` to find deadlocks in unmodified C# code. Read more about this sample
+  how to use `interleavex rewrite` to find deadlocks in unmodified C# code. Read more about this sample
   [here](tasks/bounded-buffer.md).
 
 The second set shows how you can use the more advanced

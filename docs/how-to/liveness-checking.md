@@ -29,10 +29,10 @@ the [coyote tool](../get-started/using-coyote.md) as follows, setting N steps as
 From the [samples](https://github.com/microsoft/coyote/tree/main/Samples) directory:
 
 ```plain
-coyote test ./Samples/bin/net8.0/CoffeeMachineActors.dll -i 10 -ms 200 -s portfolio
+interleavex test ./Samples/bin/net8.0/CoffeeMachineActors.dll -i 10 -ms 200 -s portfolio
 ```
 
-The `coyote test` tool will produce output, ending with something like the following:
+The `interleavex test` tool will produce output, ending with something like the following:
 
 ```plain
 ... Testing statistics:
@@ -49,10 +49,10 @@ Note the line that reads `Exceeded the max-steps bound of '200' in 95.00% of the
 means that the program execution exceeded 200 steps several times (95% of the times) to reach
 termination. The line above it indicates that execution lengths ranged from 153 steps to 1066 steps,
 averaging 457 steps. Going by this output, let's decide to increase the bound to 1000 and re-run
-`coyote test`.
+`interleavex test`.
 
 ```plain
-coyote test ./Samples/bin/net8.0/CoffeeMachineActors.dll -i 10 -ms 1000 -s portfolio
+interleavex test ./Samples/bin/net8.0/CoffeeMachineActors.dll -i 10 -ms 1000 -s portfolio
 ```
 
 This time the output will be something like:
@@ -94,7 +94,7 @@ where A is continuously scheduled without giving B a chance. Such an infinite ex
 _unfair_ because B is starved over an infinitely long period of time, which is unrealistic in modern
 systems.
 
-The `coyote test` tool works by taking over the scheduling of the Coyote program. It uses one of
+The `interleavex test` tool works by taking over the scheduling of the Coyote program. It uses one of
 several _schedulers_: algorithms that decide which actor to schedule next. A scheduler is called
 _fair_ if it is not expected to generate unfair executions. For example, the random scheduler, which
 makes decisions on the next actor to schedule randomly, is fair. In the program described above, it
@@ -126,6 +126,6 @@ following paper from Microsoft Research.
 2017.](https://www.microsoft.com/en-us/research/publication/lasso-detection-using-partial-state-caching-2/)
 
 To avoid having to think which scheduler works best for which situation, we recommend running
-`coyote test` using the portfolio scheduler (enabled with the `--strategy portfolio` option) which
+`interleavex test` using the portfolio scheduler (enabled with the `--strategy portfolio` option) which
 consists of a carefully tuned selection of fair schedulers (including `random`, `prioritization` and
 `fair-prioritization`).

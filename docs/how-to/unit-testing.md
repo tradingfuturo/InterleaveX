@@ -5,7 +5,7 @@ Common unit testing frameworks like
 [xUnit.net](https://xunit.net/) and [nunit](https://nunit.org/) cannot easily call the `coyote`
 command line tool for testing. In this case you can use the Coyote `TestingEngine` directly.
 
-Note that before running a Coyote test, you must first use `coyote rewrite` from the `coyote`
+Note that before running a Coyote test, you must first use `interleavex rewrite` from the `coyote`
 command line tool (typically as a post-build task) to rewrite your binaries so that Coyote can
 inject logic that takes control of the concurrent execution during testing. Learn more about this
 step in [rewriting binaries](../get-started/using-coyote.md#building-the-samples).
@@ -73,7 +73,7 @@ fail.
 Coyote found 1 bug.
 ```
 
-Most of the command line options you see on `coyote test` are available in the `Configuration`
+Most of the command line options you see on `interleavex test` are available in the `Configuration`
 class. Use the `With*` helper methods to set the various configurations, for example, to specify
 `--strategy prioritization` together with `--strategy-value 10` use the following:
 
@@ -102,7 +102,7 @@ See log file: d:\temp\test\mytest_0.txt
 See log file: d:\temp\test\mytest_0.trace
 ```
 
-And the log file contains the familiar output of `coyote test` as follows:
+And the log file contains the familiar output of `interleavex test` as follows:
 
 ```xml
 <TestLog> Running test.
@@ -154,7 +154,7 @@ will do that for you so it can provide the non-production systematic test versio
 
 ## Replaying a trace
 
-You can also easily replay and debug a trace, similar to using `coyote replay` from the command line
+You can also easily replay and debug a trace, similar to using `interleavex replay` from the command line
 tool. To do this you need to configure the `TestingEngine` to run in replay mode:
 ```csharp
 var trace = ...

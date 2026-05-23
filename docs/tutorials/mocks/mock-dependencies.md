@@ -94,8 +94,8 @@ public static async Task TestAccountCreation()
 After building the code, rewrite the assembly and run the test using Coyote for `10` iterations:
 
 ```plain
-coyote rewrite .\AccountManager.dll
-coyote test .\AccountManager.dll -m TestAccountCreation -i 10
+interleavex rewrite .\AccountManager.dll
+interleavex test .\AccountManager.dll -m TestAccountCreation -i 10
 ```
 
 The test succeeds.
@@ -159,8 +159,8 @@ Build the code again, and then rewrite the assembly and run the test using Coyot
 iterations:
 
 ```plain
-coyote rewrite .\AccountManager.dll
-coyote test .\AccountManager.dll -m TestConcurrentAccountCreation -i 10
+interleavex rewrite .\AccountManager.dll
+interleavex test .\AccountManager.dll -m TestConcurrentAccountCreation -i 10
 ```
 
 This time the test immediately (and always) fails!

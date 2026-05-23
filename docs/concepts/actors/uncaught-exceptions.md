@@ -6,11 +6,11 @@ in [asynchronous
 programming](https://docs.microsoft.com/en-us/dotnet/standard/parallel-programming/exception-handling-task-parallel-library),
 one should be careful with unhandled exceptions.
 
-In test mode (i.e., when running a test with `coyote test ...`), all unhandled exceptions are an
+In test mode (i.e., when running a test with `interleavex test ...`), all unhandled exceptions are an
 error and the test will fail. The `coyote` tester will stop the execution at that point and report
 an error.
 
-In production mode (i.e., when running a Coyote program outside of `coyote test`), the Coyote
+In production mode (i.e., when running a Coyote program outside of `interleavex test`), the Coyote
 runtime intercepts any unhandled exception in an actor. The exception is then delivered to the
 `OnFailure` delegate of the runtime. At this point, it is your responsibility to take the
 appropriate action. For instance, you can cause the program to crash and create a dump (for

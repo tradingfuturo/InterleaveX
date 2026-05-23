@@ -43,7 +43,7 @@ in production runs of a Coyote program. For instance, `SharedCounter` uses
 operations, `SharedRegister` uses small critical sections implemented using locks and
 `SharedDictionary` uses a
 [`ConcurrentDictionary`](https://docs.microsoft.com/en-us/dotnet/api/system.collections.concurrent.concurrentdictionary-2?view=netframework-4.7).
-However, during test mode (i.e., while running tests under `coyote test`) the implementation
+However, during test mode (i.e., while running tests under `interleavex test`) the implementation
 automatically switches to use an actor that serializes all accesses to the object. Thus, `coyote
 test` sees a normal Coyote program with no synchronization operations other than actor creation and
 message passing.

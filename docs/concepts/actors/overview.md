@@ -59,7 +59,7 @@ that type. Note that Coyote never gives you the actual object reference for an a
 ensures your code does not get too tightly coupled.
 
 By limiting yourself to the Coyote API's for interacting with an actor, you also get all the
-benefits of `coyote test` in terms of understanding more deeply how to test all asynchronous
+benefits of `interleavex test` in terms of understanding more deeply how to test all asynchronous
 interactions and ensure your specifications are maintained correctly. There is a lot of literature
 on actor models that explain in more depth the importance of this message passing programming model
 which is especially popular in the world of distributed systems. Event based programming is also
@@ -209,7 +209,7 @@ so that you can call external async systems in your production code, but this ha
 You are not allowed to directly create parallel tasks inside an actor (e.g. by using `Task.Run`) as
 that can introduce race conditions (if you need to parallelize a workload, you can simply create
 more actors). Also, during testing, you should not use `Task.Delay` or `Task.Yield` in your event
-handlers. It is ok to have truly async behavior in production, but at test time the `coyote test`
+handlers. It is ok to have truly async behavior in production, but at test time the `interleavex test`
 tool wants to know about, so that it can control, all async behavior of your actor. If it detects
 some uncontrolled async behavior an error will be reported.
 
