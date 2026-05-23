@@ -32,7 +32,7 @@
     <PackageReference Include="StyleCop.Analyzers" Version="1.0.2" PrivateAssets="All" />
   </ItemGroup>
   <ItemGroup Condition="'$(UseLocalCoyote)'=='false'">
-    <PackageReference Include="Microsoft.Coyote" Version="$(Version)" />
+    <PackageReference Include="InterleaveX" Version="$(Version)" />
   </ItemGroup>
   <ItemGroup Condition="'$(UseLocalCoyote)'=='true'">
     <ProjectReference Include="$(MSBuildThisFileDirectory)\..\..\Source\Core\Core.csproj" />
