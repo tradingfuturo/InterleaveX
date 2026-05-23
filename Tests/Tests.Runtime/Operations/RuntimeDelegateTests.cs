@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+using System;
 using System.Threading.Tasks;
 using Microsoft.Coyote.Logging;
 using Microsoft.Coyote.SystematicTesting;
@@ -24,10 +25,10 @@ namespace Microsoft.Coyote.Runtime.Tests
             // contravariance through the runtime extension.
             var configuration = this.GetConfiguration().WithTestingIterations(5);
             var logWriter = new LogWriter(configuration);
-            using var engine = new TestingEngine(configuration, (ICoyoteRuntime runtime) =>
+            using var engine = new TestingEngine(configuration, (Action<ICoyoteRuntime>)((ICoyoteRuntime runtime) =>
             {
                 Specifications.Specification.Assert(runtime != null, "Runtime should not be null.");
-            }, logWriter);
+            }), logWriter);
 
             engine.Run();
             var numErrors = engine.TestReport.NumOfFoundBugs;
@@ -42,11 +43,11 @@ namespace Microsoft.Coyote.Runtime.Tests
             // contravariance through the runtime extension.
             var configuration = this.GetConfiguration().WithTestingIterations(5);
             var logWriter = new LogWriter(configuration);
-            using var engine = new TestingEngine(configuration, async (ICoyoteRuntime runtime) =>
+            using var engine = new TestingEngine(configuration, (Func<ICoyoteRuntime, Task>)(async (ICoyoteRuntime runtime) =>
             {
                 Specifications.Specification.Assert(runtime != null, "Runtime should not be null.");
                 await Task.CompletedTask;
-            }, logWriter);
+            }), logWriter);
 
             engine.Run();
             var numErrors = engine.TestReport.NumOfFoundBugs;
