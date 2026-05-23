@@ -77,10 +77,17 @@ namespace Microsoft.Coyote.Rewriting
             // TODO: can we reuse it, or do we need a new one for each assembly?
             var assemblyResolver = new DefaultAssemblyResolver();
 
-            // Add known search directories for resolving assemblies.
+            // Add known search directories for resolving assemblies. The directory of the assemblies
+            // being rewritten is searched first, so that shared dependencies -- most importantly the
+            // Microsoft.Coyote runtime assemblies -- resolve to the copies that match the target's
+            // framework, rather than the copies shipped alongside the rewriter, which can target a
+            // different framework. Resolving against a mismatched framework would otherwise bake that
+            // framework's core-library references into the rewritten assembly (for example, the net10
+            // rewriter injecting net10 'System.Private.CoreLib'/'System.Runtime' references into a net8
+            // assembly), making the rewritten assembly fail to load on the target's runtime.
+            assemblyResolver.AddSearchDirectory(this.Options.AssembliesDirectory);
             assemblyResolver.AddSearchDirectory(
                 Path.GetDirectoryName(typeof(Types.Threading.Tasks.Task).Assembly.Location));
-            assemblyResolver.AddSearchDirectory(this.Options.AssembliesDirectory);
             if (this.Options.DependencySearchPaths != null)
             {
                 foreach (var dependencySearchPath in this.Options.DependencySearchPaths)

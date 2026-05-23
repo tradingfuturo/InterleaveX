@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Threading.Tasks;
@@ -183,6 +184,10 @@ namespace Microsoft.Coyote.Rewriting
                     return;
                 }
 
+                // Snapshot the assembly's original references so that any core-library references
+                // introduced during rewriting from a mismatched framework can be normalized below.
+                var originalReferences = assembly.Definition.MainModule.AssemblyReferences.ToArray();
+
                 // Traverse the assembly to invoke each pass.
                 foreach (var pass in this.Passes)
                 {
@@ -192,6 +197,11 @@ namespace Microsoft.Coyote.Rewriting
 
                 // Apply the rewriting signature to the assembly metadata.
                 assembly.ApplyRewritingSignatureAttribute(GetAssemblyRewriterVersion());
+
+                // Normalize any core-library references that rewriting introduced from a mismatched
+                // framework (e.g. the net10 rewriter adding net10 'System.Private.CoreLib' references
+                // to a net8 assembly), so the rewritten assembly loads on the target's runtime.
+                NormalizeCoreLibraryReferences(assembly.Definition.MainModule, originalReferences);
 
                 // Write the binary in the output path with portable symbols enabled.
                 string resolvedOutputPath = this.Options.IsReplacingAssemblies() ? assembly.FilePath : outputPath;
@@ -369,6 +379,82 @@ namespace Microsoft.Coyote.Rewriting
             catch
             {
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// Names of the core-library assemblies whose types the runtime unifies. These can be
+        /// imported during rewriting from the rewriter's own framework rather than the target's.
+        /// </summary>
+        private static readonly string[] CoreLibraryAssemblyNames = new[]
+        {
+            "System.Runtime",
+            "System.Private.CoreLib",
+            "netstandard",
+            "mscorlib"
+        };
+
+        /// <summary>
+        /// Remaps core-library references that rewriting introduced from a framework other than the
+        /// one the rewritten assembly targets back to the assembly's own core-library reference.
+        /// </summary>
+        /// <remarks>
+        /// When the rewriter runs on a different framework than the assembly being rewritten -- for
+        /// example, the net10 'interleavex' tool rewriting a net8 assembly -- importing system types
+        /// (often via reflection) can add references to the rewriter's framework, such as net10
+        /// 'System.Private.CoreLib'. The target's runtime cannot load that assembly, so the rewritten
+        /// assembly would fail with a 'Could not load ... System.Runtime/System.Private.CoreLib'
+        /// exception. Pointing those references back at the assembly's original core library keeps the
+        /// rewritten assembly loadable on its own runtime. This is a no-op in the common case where the
+        /// rewriter and the target share a framework (no mismatched references exist).
+        /// </remarks>
+        private static void NormalizeCoreLibraryReferences(ModuleDefinition module,
+            IList<AssemblyNameReference> originalReferences)
+        {
+            // The assembly's own core-library reference, captured before rewriting.
+            AssemblyNameReference canonical = null;
+            foreach (string name in CoreLibraryAssemblyNames)
+            {
+                canonical = originalReferences.FirstOrDefault(r => r.Name == name);
+                if (canonical != null)
+                {
+                    break;
+                }
+            }
+
+            if (canonical is null)
+            {
+                return;
+            }
+
+            // Core-library references whose version differs from the target's were introduced during
+            // rewriting from a mismatched framework.
+            var mismatched = new HashSet<AssemblyNameReference>(module.AssemblyReferences.Where(
+                r => CoreLibraryAssemblyNames.Contains(r.Name) && r.Version != canonical.Version));
+            if (mismatched.Count is 0)
+            {
+                return;
+            }
+
+            foreach (TypeReference typeReference in module.GetTypeReferences())
+            {
+                if (typeReference.Scope is AssemblyNameReference scope && mismatched.Contains(scope))
+                {
+                    typeReference.Scope = canonical;
+                }
+            }
+
+            foreach (ExportedType exportedType in module.ExportedTypes)
+            {
+                if (exportedType.Scope is AssemblyNameReference scope && mismatched.Contains(scope))
+                {
+                    exportedType.Scope = canonical;
+                }
+            }
+
+            foreach (AssemblyNameReference reference in mismatched)
+            {
+                module.AssemblyReferences.Remove(reference);
             }
         }
 
