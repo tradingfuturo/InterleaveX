@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  
+  
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
+    
+    <link rel="canonical" href="https://tradingfuturo.github.io/interleavex/overview/fork-rationale/">
+    <link rel="shortcut icon" href="/interleavex/img/favicon.ico">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fork rationale (read first) - InterleaveX</title>
+    <link href="/interleavex/css/bootstrap-3.3.7.min.css" rel="stylesheet">
+    <link href="/interleavex/css/font-awesome-4.7.0.css" rel="stylesheet">
+    <link href="/interleavex/css/base.css" rel="stylesheet">
+    <link rel="stylesheet" href="/interleavex/css/highlight.css">
+    <link href="../../css/main.css" rel="stylesheet">
+    <link href="../../css/player-controls.css" rel="stylesheet">
+    <link href="../../css/syntax.css" rel="stylesheet">
+    <!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+    <!--[if lt IE 9]>
+        <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+        <script src="https://oss.maxcdn.com/libs/respond.js/1.3.0/respond.min.js"></script>
+    <![endif]-->
+
+    <script src="/interleavex/js/jquery-3.2.1.min.js"></script>
+    <script src="/interleavex/js/bootstrap-3.3.7.min.js"></script>
+    <script src="/interleavex/js/highlight.pack.js"></script>
+    <script src="https://consentdeliveryfd.azurefd.net/mscc/lib/v2/wcp-consent.js"></script>
+    
+    <base target="_top">
+    <script>
+      var base_url = '/interleavex/';
+      var is_top_frame = false;
+        
+        var pageToc = [
+          {title: "Fork rationale: why InterleaveX exists", url: "#_top", children: [
+          ]},
+          {title: "Who maintains InterleaveX", url: "#who-maintains-interleavex", children: [
+          ]},
+          {title: "Why we forked", url: "#why-we-forked", children: [
+          ]},
+          {title: "What changed", url: "#what-changed", children: [
+          ]},
+          {title: "What did NOT change", url: "#what-did-not-change", children: [
+          ]},
+          {title: "How to migrate", url: "#how-to-migrate", children: [
+          ]},
+          {title: "Acknowledgements", url: "#acknowledgements", children: [
+          ]},
+          {title: "Where to ask questions", url: "#where-to-ask-questions", children: [
+          ]},
+        ];
+
+    </script>
+    <script src="/interleavex/js/base.js"></script>
+      <script src="../../assets/js/analytics.js"></script>
+      <script src="../../assets/js/plugins.js"></script>
+      <script src="../../assets/js/animate_trace.js"></script>
+      <script src="../../assets/js/animation.js"></script>
+      <script src="../../assets/js/progress_bar.js"></script>
+      <script src="../../assets/js/trace_model.js"></script>
+      <script src="../../assets/js/main.js"></script>
+
+</head>
+
+<body>
+<script>
+if (is_top_frame) { $('body').addClass('wm-top-page'); }
+</script>
+
+<div id="cookie-banner"></div>
+
+
+<div class="wrapper wm-page-content">
+  <div class="container-fluid">
+    <a name="_top"></a>
+      
+
+    
+    
+      
+    
+
+  <div class="row wm-article-nav-buttons" role="navigation" aria-label="navigation">
+    
+    <div class="wm-article-nav pull-right">
+      <a href="../benefits/" class="btn btn-xs btn-default pull-right">
+        Next
+        <i class="fa fa-chevron-right" aria-hidden="true"></i>
+      </a>
+      <a href="../benefits/" class="btn btn-xs btn-link">
+        Key benefits
+      </a>
+    </div>
+    
+    <div class="wm-article-nav">
+      <a href="../.." class="btn btn-xs btn-default pull-left">
+        <i class="fa fa-chevron-left" aria-hidden="true"></i>
+        Previous</a><a href="../.." class="btn btn-xs btn-link">
+        Home
+      </a>
+    </div>
+    
+  </div>
+
+      
+
+      <h2 id="fork-rationale-why-interleavex-exists">Fork rationale: why InterleaveX exists</h2>
+<p><strong>InterleaveX is a community-maintained fork of <a href="https://github.com/microsoft/coyote">Microsoft Coyote</a>.</strong> This page explains who maintains it, why the fork was created, what changed and what didn&rsquo;t, and how to migrate from Microsoft.Coyote.</p>
+<p>If you arrived expecting Microsoft Coyote documentation, you are mostly in the right place: the API surface, design, semantics, and the bulk of the documentation on this site are inherited from upstream and apply verbatim. Only the names and the maintenance owner have changed.</p>
+<h2 id="who-maintains-interleavex">Who maintains InterleaveX</h2>
+<p>InterleaveX is maintained by a small group of engineers who run production .NET software that depends on the systematic concurrency testing technique pioneered by Microsoft Coyote. We are not affiliated with Microsoft. We do not represent the original Coyote project, the research, or its design decisions.</p>
+<h2 id="why-we-forked">Why we forked</h2>
+<p>Microsoft Coyote remains the authoritative reference for the design and the research. We forked specifically to keep the toolchain alive on current and upcoming .NET LTS releases for our own production usage:</p>
+<ul>
+<li>Track .NET runtime updates as they ship and ensure the IL rewriter and runtime keep working on new BCL APIs.</li>
+<li>Continue evolving instrumentation against new BCL types our codebases adopt (concurrency primitives, web stack changes, etc.).</li>
+<li>Fix bugs we encounter in our own use of the tool.</li>
+</ul>
+<p>We are not forking the design or attempting to compete with upstream. When in doubt, we prefer to mirror upstream choices and contribute fixes back where appropriate.</p>
+<h2 id="what-changed">What changed</h2>
+<p>This fork is a <strong>branding-only rebrand</strong> at the user-visible layer. The internal layer is intentionally preserved.</p>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Product name</td>
+<td>Microsoft Coyote → InterleaveX</td>
+</tr>
+<tr>
+<td>NuGet package IDs</td>
+<td><code>Microsoft.Coyote.*</code> → <code>InterleaveX.*</code> (<code>InterleaveX</code>, <code>InterleaveX.Core</code>, <code>InterleaveX.Actors</code>, <code>InterleaveX.Test</code>, <code>InterleaveX.Tool</code>, <code>InterleaveX.CLI</code>)</td>
+</tr>
+<tr>
+<td>CLI command</td>
+<td><code>coyote</code> → <code>interleavex</code> (a <code>coyote</code> alias is planned via a separate compatibility tool package; meanwhile users may shell-alias)</td>
+</tr>
+<tr>
+<td>Strong-name signing key</td>
+<td>New fork-owned <code>.snk</code></td>
+</tr>
+<tr>
+<td>Documentation</td>
+<td>This site is rebranded to InterleaveX; upstream <code>aka.ms/learn-coyote</code> and similar URLs in CLI help are deliberately retained as upstream-doc references</td>
+</tr>
+<tr>
+<td>Licensing</td>
+<td>Dual-licensed: upstream Microsoft code remains MIT; new fork additions are GPL-3.0 (see <a href="https://github.com/tradingfuturo/interleavex/blob/main/NOTICE.md"><code>NOTICE.md</code></a> at the repo root)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-did-not-change">What did NOT change</h2>
+<ul>
+<li><strong>C# namespaces stay <code>Microsoft.Coyote.*</code></strong>: 32 namespaces across the codebase, kept exactly as upstream defines them.</li>
+<li><strong>Assembly DLL names stay <code>Microsoft.Coyote.dll</code>, <code>Microsoft.Coyote.Actors.dll</code>, <code>Microsoft.Coyote.Test.dll</code></strong>: these are required by the IL rewriter&rsquo;s hardcoded recognition of &ldquo;runtime types,&rdquo; and renaming them would change rewriter behavior.</li>
+<li><strong>Class names stay</strong>: <code>CoyoteRuntime</code>, <code>ICoyoteRuntime</code>, and other public types preserve their original names so consumer source code references continue to compile.</li>
+<li><strong>Test project assembly names stay <code>Microsoft.Coyote.Tests.*</code></strong>: required for the unchanged <code>InternalsVisibleTo</code> declarations.</li>
+</ul>
+<p>This means <strong>migrating from <code>Microsoft.Coyote.*</code> to InterleaveX does not require any source-code changes</strong>. The using statements, the type references, the API calls — all stay.</p>
+<h2 id="how-to-migrate">How to migrate</h2>
+<p>If you have a project consuming upstream Microsoft Coyote, switch to InterleaveX by updating only your NuGet references:</p>
+<pre><code class="language-diff">- &lt;PackageReference Include=&quot;Microsoft.Coyote&quot; Version=&quot;1.7.11&quot; /&gt;
++ &lt;PackageReference Include=&quot;InterleaveX&quot; Version=&quot;...&quot; /&gt;
+</code></pre>
+<p>Or for the granular packages:</p>
+<pre><code class="language-diff">- &lt;PackageReference Include=&quot;Microsoft.Coyote.Core&quot;   Version=&quot;1.7.11&quot; /&gt;
+- &lt;PackageReference Include=&quot;Microsoft.Coyote.Actors&quot; Version=&quot;1.7.11&quot; /&gt;
+- &lt;PackageReference Include=&quot;Microsoft.Coyote.Test&quot;   Version=&quot;1.7.11&quot; /&gt;
++ &lt;PackageReference Include=&quot;InterleaveX.Core&quot;        Version=&quot;...&quot; /&gt;
++ &lt;PackageReference Include=&quot;InterleaveX.Actors&quot;      Version=&quot;...&quot; /&gt;
++ &lt;PackageReference Include=&quot;InterleaveX.Test&quot;        Version=&quot;...&quot; /&gt;
+</code></pre>
+<p>For the global CLI tool:</p>
+<pre><code class="language-pwsh"># Uninstall the upstream Coyote tool if previously installed
+dotnet tool uninstall --global Microsoft.Coyote.CLI
+
+# Install the InterleaveX CLI
+dotnet tool install --global InterleaveX.CLI
+</code></pre>
+<p>Note: if your code uses strong-name pinning (e.g., <code>[InternalsVisibleTo("Microsoft.Coyote, PublicKey=...")]</code> referencing the old key, or a specific signed-binding redirect), you will need to repin against the InterleaveX public-key token.</p>
+<h2 id="acknowledgements">Acknowledgements</h2>
+<p>InterleaveX would not exist without Microsoft Coyote. We are deeply grateful to the Microsoft Coyote team for:</p>
+<ul>
+<li>The original research and design of systematic concurrency testing.</li>
+<li>The implementation of the IL rewriter, the actor runtime, and the testing engine.</li>
+<li>Releasing the project under the permissive MIT license, which makes this fork — and many other downstream uses — possible.</li>
+</ul>
+<p>The full Microsoft copyright and MIT license are preserved in this repository at <a href="https://github.com/tradingfuturo/interleavex/blob/main/LICENSE"><code>LICENSE</code></a>.</p>
+<h2 id="where-to-ask-questions">Where to ask questions</h2>
+<ul>
+<li>For the <strong>original Coyote design, research, or upstream releases</strong>: refer to the <a href="https://github.com/microsoft/coyote">Microsoft Coyote repository</a>.</li>
+<li>For <strong>InterleaveX-specific maintenance, bugs, or fork-tracked issues</strong>: file an issue against the InterleaveX fork repository (URL pending).</li>
+</ul>
+
+    <br>
+      
+
+    
+    
+      
+    
+
+  <div class="row wm-article-nav-buttons" role="navigation" aria-label="navigation">
+    
+    <div class="wm-article-nav pull-right">
+      <a href="../benefits/" class="btn btn-xs btn-default pull-right">
+        Next
+        <i class="fa fa-chevron-right" aria-hidden="true"></i>
+      </a>
+      <a href="../benefits/" class="btn btn-xs btn-link">
+        Key benefits
+      </a>
+    </div>
+    
+    <div class="wm-article-nav">
+      <a href="../.." class="btn btn-xs btn-default pull-left">
+        <i class="fa fa-chevron-left" aria-hidden="true"></i>
+        Previous</a><a href="../.." class="btn btn-xs btn-link">
+        Home
+      </a>
+    </div>
+    
+  </div>
+
+      <br>
+  </div>
+</div>
+
+<footer class="wm-page-content">
+  
+
+<section class="footer-join pt-40 pb-80">
+  <div class="container-fluid">
+    <div class="row text-center">
+      <div class="col-sm-8 col-sm-offset-2">
+      </div>
+    </div>
+    <div class="row">
+   </div>
+  </div>
+</section>
+<section class="footer-dark pt-60">
+  <div class="container-fluid">
+    <div class="row">
+      <div class="hidden-xs col-sm-5 col-lg-6">
+        <a href="" title="homepage" class="logo-footer">
+          <img src="/interleavex/assets/images/icon.png" alt="Coyote">
+        </a>
+      </div>
+
+      <div class="col-sm-2 col-xs-4 footer-dark-col">
+        <nav>
+          <h4>Coyote</h4>
+          <ul class="list-unstyled">
+            <li><a href="/interleavex/">Home</a></li>
+            <li><a href="/interleavex/get-started/install/">Install</a></li>
+            <li><a href="https://github.com/tradingfuturo/interleavex/"><i class="fa fa-github"></i>
+GitHub</a></li>
+          </ul>
+        </nav>
+      </div>
+
+      <div class="col-sm-2 col-xs-4 footer-dark-col">
+        <nav>
+          <h4>Resources</h4>
+          <ul class="list-unstyled">
+            <li><a href="/interleavex/tutorials/first-concurrency-unit-test/">Getting started</a></li>
+            <li><a href="/interleavex/tutorials/overview/">Tutorials</a></li>
+            <li><a href="/interleavex/ref/Microsoft.Coyote">API documentation</a></li>
+          </ul>
+        </nav>
+      </div>
+
+      <div class="col-sm-2 col-xs-4 footer-dark-col">
+        <nav>
+          <h4>Community</h4>
+          <ul class="list-unstyled">
+            <li><a href="https://github.com/microsoft/coyote/discussions"><i class="fa fa-github"></i>
+GitHub</a></li>
+            <li><a href="https://twitter.com/coyote_dev" target="_blank"><i class="fa fa-twitter"></i> Twitter</a></li>
+            <li><a href="https://teams.microsoft.com/l/channel/19%3a1fe966b4fdc544bca648d89bf25c3c56%40thread.tacv2/General?groupId=7a6d8afc-c23d-4e5d-b9cb-9124118c0220&tenantId=72f988bf-86f1-41af-91ab-2d7cd011db47" target="_blank">Teams (Internal)</a></li>
+          </ul>
+        </nav>
+      </div>
+    </div>
+
+    <div class="row footnote pt-50 pb-20">
+      <div class="col-sm-12">
+        <hr>
+      </div>
+      <div class="col-sm-7">
+        <ul class="list-unstyled list-inline footnote-copy">
+          <li><a href="https://go.microsoft.com/fwlink/?LinkId=521839" target="_blank">Privacy & Cookies</a></li>
+          <li><a href="https://go.microsoft.com/fwlink/?linkid=2259814" target="_blank">Consumer Health Privacy</a></li>
+          <li><a href="https://go.microsoft.com/fwlink/?LinkID=206977" target="_blank">Terms of Use</a></li>
+          <li><a href="https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks" target="_blank">Trademarks</a></li>
+          <li><a href="https://github.com/microsoft/coyote/blob/main/LICENSE" target="_blank">License</a></li>
+        </ul>
+      </div>
+      <div class="col-sm-5 text-right footnote-copy">
+        <ul class="list-unstyled list-inline">
+          <li><span id="copyright"></span></li>
+          <li><a href="https://www.microsoft.com/" target="_blank"><img class="img-responsive" src="/interleavex/assets/images/microsoft-logo.svg?v=3" alt="Microsoft">&nbsp;</a></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+</footer>
+
+
+<script type="text/javascript">
+    $(document).ready(function () {
+      $('table').each(function () {
+        $(this).addClass("table");
+        $(this).addClass("table-bordered");
+        $(this).addClass("table-striped");
+        $(this).addClass("table-condensed");
+      });
+
+    });
+</script>
+
+</body>
+</html>
