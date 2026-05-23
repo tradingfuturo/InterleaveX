@@ -67,6 +67,12 @@ foreach ($kvp in $targets.GetEnumerator()) {
             $command = $command + ' -r "' + [IO.Path]::Combine($PSScriptRoot, "..", "bin", $f, "*.dll") + '"'
             $command = $command + ' -r "' + [IO.Path]::Combine($dotnet_runtime_path, $runtime_version, "*.dll") + '"'
             $command = $command + ' -r "' + [IO.Path]::Combine($aspnet_runtime_path, $runtime_version, "*.dll") + '"'
+            # Exclude the compiler-generated <PrivateImplementationDetails>.InlineArrayAsReadOnlySpan
+            # helper. ilverify (10.0.0) raises a false-positive ReturnPtrToStack on it because it does
+            # not model [InlineArray] ref semantics. This helper is emitted by Roslyn for collection
+            # expressions and is unrelated to the binary rewriter: the identical error is present in the
+            # pre-rewrite (obj) assembly, so excluding it does not weaken corruption detection.
+            $command = $command + ' -e "InlineArrayAsReadOnlySpan"'
             Invoke-ToolCommand -tool $ilverify -cmd $command -error_msg "found corrupted assembly rewriting"
         }
 
