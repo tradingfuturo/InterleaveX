@@ -321,7 +321,11 @@ namespace Microsoft.Coyote.Rewriting
                 }
             }
 
-            // Copy all the dependent assemblies.
+            // Copy all the dependent assemblies, but do not overwrite an assembly that is already
+            // present in the output directory with the same version. The output directory can contain
+            // target-framework-appropriate copies of these assemblies (for example, deployed via NuGet
+            // for a different target framework than the rewriter itself runs on); overwriting them with
+            // the rewriter's own copies would introduce a target framework mismatch at runtime.
             foreach (var type in new Type[]
                 {
                     typeof(CoyoteRuntime),
@@ -333,6 +337,14 @@ namespace Microsoft.Coyote.Rewriting
                 })
             {
                 string assemblyPath = type.Assembly.Location;
+                string destination = Path.Combine(this.Options.OutputDirectory, Path.GetFileName(assemblyPath));
+                if (File.Exists(destination) && GetAssemblyVersion(destination) == type.Assembly.GetName().Version)
+                {
+                    this.LogWriter.LogDebug("..... Preserving the existing '{0}' assembly in the output directory",
+                        Path.GetFileName(assemblyPath));
+                    continue;
+                }
+
                 CopyFile(assemblyPath, this.Options.OutputDirectory);
             }
 
@@ -344,6 +356,21 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         private static void CopyFile(string filePath, string destination) =>
             File.Copy(filePath, Path.Combine(destination, Path.GetFileName(filePath)), true);
+
+        /// <summary>
+        /// Returns the assembly version of the specified file, or null if it cannot be read.
+        /// </summary>
+        private static Version GetAssemblyVersion(string filePath)
+        {
+            try
+            {
+                return AssemblyName.GetAssemblyName(filePath).Version;
+            }
+            catch
+            {
+                return null;
+            }
+        }
 
         /// <summary>
         /// Copies the specified file to the destination with retries.
