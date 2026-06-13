@@ -81,6 +81,7 @@ namespace Microsoft.Coyote.Rewriting
             // Populate the map with the known synchronization types.
             this.KnownTypes[NameCache.Monitor] = typeof(Types.Threading.Monitor);
             this.KnownTypes[NameCache.SemaphoreSlim] = typeof(Types.Threading.SemaphoreSlim);
+            this.KnownTypes[NameCache.ReaderWriterLockSlim] = typeof(Types.Threading.ReaderWriterLockSlim);
             this.KnownTypes[NameCache.Interlocked] = typeof(Types.Threading.Interlocked);
             this.KnownTypes[NameCache.Volatile] = typeof(Types.Threading.Volatile);
             this.KnownTypes[NameCache.SpinWait] = typeof(Types.Threading.SpinWait);

@@ -159,7 +159,6 @@ namespace Microsoft.Coyote.Rewriting
                     type.Name is nameof(System.Threading.ManualResetEventSlim) ||
                     type.Name is nameof(System.Threading.Mutex) ||
                     type.Name is nameof(System.Threading.ReaderWriterLock) ||
-                    type.Name is nameof(System.Threading.ReaderWriterLockSlim) ||
                     type.Name is nameof(System.Threading.RegisteredWaitHandle) ||
                     type.Name is nameof(System.Threading.Semaphore) ||
                     type.Name is nameof(System.Threading.SpinLock) ||
