@@ -171,6 +171,111 @@ namespace Microsoft.Coyote.BugFinding.Tests
         }
 
         [Fact(Timeout = 5000)]
+        public void TestReaderWriterLockSlimThrowsOnInvalidReadExit()
+        {
+            this.TestWithException<SynchronizationLockException>(() =>
+            {
+                using var rwlock = new ReaderWriterLockSlim();
+                rwlock.ExitReadLock();
+            },
+            replay: true);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestReaderWriterLockSlimThrowsOnInvalidWriteExit()
+        {
+            this.TestWithException<SynchronizationLockException>(() =>
+            {
+                using var rwlock = new ReaderWriterLockSlim();
+                rwlock.ExitWriteLock();
+            },
+            replay: true);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestReaderWriterLockSlimThrowsOnInvalidUpgradeableExit()
+        {
+            this.TestWithException<SynchronizationLockException>(() =>
+            {
+                using var rwlock = new ReaderWriterLockSlim();
+                rwlock.ExitUpgradeableReadLock();
+            },
+            replay: true);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestUpgradeableReadLockCanUpgradeToWrite()
+        {
+            this.Test(() =>
+            {
+                using var rwlock = new ReaderWriterLockSlim();
+
+                rwlock.EnterUpgradeableReadLock();
+                Specification.Assert(rwlock.IsUpgradeableReadLockHeld, "Upgradeable read lock not reported held.");
+                Specification.Assert(!rwlock.IsWriteLockHeld, "Write lock unexpectedly held.");
+
+                rwlock.EnterWriteLock();
+                Specification.Assert(rwlock.IsUpgradeableReadLockHeld, "Upgradeable read lock not reported held after write upgrade.");
+                Specification.Assert(rwlock.IsWriteLockHeld, "Write lock not reported held after upgrade.");
+
+                rwlock.ExitWriteLock();
+                Specification.Assert(rwlock.IsUpgradeableReadLockHeld, "Upgradeable read lock not reported held after write exit.");
+                Specification.Assert(!rwlock.IsWriteLockHeld, "Write lock still reported held after exit.");
+                rwlock.ExitUpgradeableReadLock();
+            });
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestUpgradeableReadLockAllowsConcurrentReader()
+        {
+            this.TestWithError(() =>
+            {
+                using var rwlock = new ReaderWriterLockSlim();
+                int concurrent = 0;
+                bool bothInside = false;
+
+                var upgradeable = Task.Run(() =>
+                {
+                    rwlock.EnterUpgradeableReadLock();
+                    concurrent++;
+                    SchedulingPoint.Interleave();
+                    bothInside |= concurrent is 2;
+                    concurrent--;
+                    rwlock.ExitUpgradeableReadLock();
+                });
+
+                var reader = Task.Run(() =>
+                {
+                    rwlock.EnterReadLock();
+                    concurrent++;
+                    SchedulingPoint.Interleave();
+                    bothInside |= concurrent is 2;
+                    concurrent--;
+                    rwlock.ExitReadLock();
+                });
+
+                Task.WaitAll(upgradeable, reader);
+
+                Specification.Assert(!bothInside, "Expected assertion failed!");
+            },
+            configuration: this.GetConfiguration().WithTestingIterations(200),
+            expectedError: "Expected assertion failed!",
+            replay: true);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestReadLockCannotUpgradeToUpgradeableReadLock()
+        {
+            this.TestWithException<LockRecursionException>(() =>
+            {
+                using var rwlock = new ReaderWriterLockSlim();
+                rwlock.EnterReadLock();
+                rwlock.EnterUpgradeableReadLock();
+            },
+            replay: true);
+        }
+
+        [Fact(Timeout = 5000)]
         public void TestReaderWriterLockSlimWithRecursiveWriteDeadlock()
         {
             this.TestWithError(() =>

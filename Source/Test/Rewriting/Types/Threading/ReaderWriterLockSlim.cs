@@ -5,8 +5,10 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using Microsoft.Coyote.Runtime;
+using SystemLockRecursionException = System.Threading.LockRecursionException;
 using SystemLockRecursionPolicy = System.Threading.LockRecursionPolicy;
 using SystemReaderWriterLockSlim = System.Threading.ReaderWriterLockSlim;
+using SystemSynchronizationLockException = System.Threading.SynchronizationLockException;
 using SystemThread = System.Threading.Thread;
 using SystemTimeout = System.Threading.Timeout;
 
@@ -18,11 +20,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
     /// <remarks>
     /// This type is intended for compiler use rather than use directly in code. The model allows
     /// concurrent readers and an exclusive writer, scheduled by the Coyote runtime. It does not
-    /// model lock recursion or the upgradeable-read role faithfully: recursive acquisition is
-    /// treated as a fresh acquisition (a thread that recursively takes the write lock therefore
-    /// deadlocks, which the runtime reports), and an upgradeable read lock is modelled as an
-    /// exclusive (write-style) acquisition — stricter than the BCL, so it never produces a false
-    /// data race, though it does not explore reader concurrency alongside an upgradeable holder.
+    /// model lock recursion faithfully: recursive acquisition is treated as a fresh acquisition
+    /// unless explicitly rejected to avoid impossible upgrade deadlocks.
     /// </remarks>
     [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public static class ReaderWriterLockSlim
@@ -135,7 +134,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         {
             if (instance is Wrapper wrapper)
             {
-                wrapper.EnterWrite(SystemTimeout.Infinite);
+                wrapper.EnterUpgradeableRead(SystemTimeout.Infinite);
                 return;
             }
 
@@ -146,7 +145,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// Tries to acquire the lock in upgradeable-read mode, with an optional time-out.
         /// </summary>
         public static bool TryEnterUpgradeableReadLock(SystemReaderWriterLockSlim instance, int millisecondsTimeout) =>
-            instance is Wrapper wrapper ? wrapper.EnterWrite(millisecondsTimeout) : instance.TryEnterUpgradeableReadLock(millisecondsTimeout);
+            instance is Wrapper wrapper ? wrapper.EnterUpgradeableRead(millisecondsTimeout) :
+                instance.TryEnterUpgradeableReadLock(millisecondsTimeout);
 
         /// <summary>
         /// Tries to acquire the lock in upgradeable-read mode, with an optional time-out.
@@ -161,7 +161,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         {
             if (instance is Wrapper wrapper)
             {
-                wrapper.ExitWrite();
+                wrapper.ExitUpgradeableRead();
                 return;
             }
 
@@ -182,6 +182,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static bool get_IsWriteLockHeld(SystemReaderWriterLockSlim instance) =>
             instance is Wrapper wrapper ? wrapper.IsCurrentWriter() : instance.IsWriteLockHeld;
+
+        /// <summary>
+        /// Gets a value that indicates whether the current thread has entered the lock in upgradeable-read mode.
+        /// </summary>
+        public static bool get_IsUpgradeableReadLockHeld(SystemReaderWriterLockSlim instance) =>
+            instance is Wrapper wrapper ? wrapper.IsCurrentUpgradeableReader() : instance.IsUpgradeableReadLockHeld;
 
         /// <summary>
         /// Gets the total number of threads that have entered the lock in read mode.
@@ -233,9 +239,19 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             private readonly Queue<ControlledOperation> PausedWriters;
 
             /// <summary>
+            /// Operations paused waiting to acquire the upgradeable-read lock.
+            /// </summary>
+            private readonly Queue<ControlledOperation> PausedUpgradeableReaders;
+
+            /// <summary>
             /// The operation currently holding the lock in write mode, if any.
             /// </summary>
             private ControlledOperation Writer;
+
+            /// <summary>
+            /// The operation currently holding the lock in upgradeable-read mode, if any.
+            /// </summary>
+            private ControlledOperation UpgradeableReader;
 
             internal Wrapper(CoyoteRuntime runtime, SystemLockRecursionPolicy recursionPolicy)
                 : base(recursionPolicy)
@@ -246,7 +262,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 this.Readers = new HashSet<ControlledOperation>();
                 this.PausedReaders = new Queue<ControlledOperation>();
                 this.PausedWriters = new Queue<ControlledOperation>();
+                this.PausedUpgradeableReaders = new Queue<ControlledOperation>();
                 this.Writer = null;
+                this.UpgradeableReader = null;
             }
 
             /// <summary>
@@ -261,6 +279,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     {
                         runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.EnterReadLock");
                         return true;
+                    }
+
+                    if (this.Writer == current)
+                    {
+                        throw new SystemLockRecursionException(
+                            "A read lock may not be acquired with the write lock held in this mode.");
                     }
 
                     if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
@@ -298,7 +322,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 {
                     if (runtime.TryGetExecutingOperation(out ControlledOperation current))
                     {
-                        this.Readers.Remove(current);
+                        if (!this.Readers.Remove(current))
+                        {
+                            throw new SystemSynchronizationLockException();
+                        }
+                    }
+                    else
+                    {
+                        runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.ExitReadLock");
+                        return;
                     }
 
                     // A writer can only proceed once every reader has released.
@@ -323,12 +355,19 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         return true;
                     }
 
+                    if (this.Readers.Contains(current))
+                    {
+                        throw new SystemLockRecursionException(
+                            "Write lock may not be acquired with read lock held.");
+                    }
+
                     if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
                     {
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Acquire);
                     }
 
-                    while (this.Writer != null || this.Readers.Count > 0)
+                    while (this.Writer != null || this.Readers.Count > 0 ||
+                        (this.UpgradeableReader != null && this.UpgradeableReader != current))
                     {
                         if (millisecondsTimeout is 0)
                         {
@@ -356,7 +395,99 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 CoyoteRuntime runtime = this.GetRuntime();
                 using (runtime.EnterSynchronizedSection())
                 {
+                    if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
+                    {
+                        runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.ExitWriteLock");
+                        return;
+                    }
+
+                    if (this.Writer != current)
+                    {
+                        throw new SystemSynchronizationLockException();
+                    }
+
                     this.Writer = null;
+                    this.ReleaseWaiters();
+                }
+            }
+
+            /// <summary>
+            /// Acquires the upgradeable-read lock, pausing while another upgradeable reader or writer holds it.
+            /// </summary>
+            internal bool EnterUpgradeableRead(int millisecondsTimeout)
+            {
+                CoyoteRuntime runtime = this.GetRuntime();
+                using (runtime.EnterSynchronizedSection())
+                {
+                    if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
+                    {
+                        runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.EnterUpgradeableReadLock");
+                        return true;
+                    }
+
+                    if (this.Readers.Contains(current))
+                    {
+                        throw new SystemLockRecursionException(
+                            "Upgradeable lock may not be acquired with read lock held.");
+                    }
+
+                    if (this.Writer == current)
+                    {
+                        throw new SystemLockRecursionException(
+                            "Upgradeable lock may not be acquired with write lock held in this mode.");
+                    }
+
+                    if (this.UpgradeableReader == current)
+                    {
+                        throw new SystemLockRecursionException(
+                            "Recursive upgradeable lock acquisitions not allowed in this mode.");
+                    }
+
+                    if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
+                    {
+                        runtime.ScheduleNextOperation(current, SchedulingPointType.Acquire);
+                    }
+
+                    while (this.Writer != null || this.UpgradeableReader != null)
+                    {
+                        if (millisecondsTimeout is 0)
+                        {
+                            return false;
+                        }
+
+                        runtime.LogWriter.LogDebug(
+                            "[coyote::debug] Operation {0} is waiting to upgradeable-read-acquire '{1}' on thread '{2}'.",
+                            current.DebugInfo, this.DebugName, SystemThread.CurrentThread.ManagedThreadId);
+                        current.PauseWithResource(this.ResourceId);
+                        this.PausedUpgradeableReaders.Enqueue(current);
+                        runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
+                    }
+
+                    this.UpgradeableReader = current;
+                    return true;
+                }
+            }
+
+            /// <summary>
+            /// Releases the upgradeable-read lock for the current operation.
+            /// </summary>
+            internal void ExitUpgradeableRead()
+            {
+                CoyoteRuntime runtime = this.GetRuntime();
+                using (runtime.EnterSynchronizedSection())
+                {
+                    if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
+                    {
+                        runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.ExitUpgradeableReadLock");
+                        return;
+                    }
+
+                    if (this.UpgradeableReader != current)
+                    {
+                        throw new SystemSynchronizationLockException();
+                    }
+
+                    this.UpgradeableReader = null;
                     this.ReleaseWaiters();
                 }
             }
@@ -366,6 +497,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
             internal bool IsCurrentWriter() =>
                 this.GetRuntime().TryGetExecutingOperation(out ControlledOperation current) && this.Writer == current;
+
+            internal bool IsCurrentUpgradeableReader() =>
+                this.GetRuntime().TryGetExecutingOperation(out ControlledOperation current) && this.UpgradeableReader == current;
 
             internal int ReaderCount() => this.Readers.Count;
 
@@ -378,6 +512,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 while (this.PausedWriters.Count > 0)
                 {
                     this.PausedWriters.Dequeue().TryEnable(this.ResourceId);
+                }
+
+                while (this.PausedUpgradeableReaders.Count > 0)
+                {
+                    this.PausedUpgradeableReaders.Dequeue().TryEnable(this.ResourceId);
                 }
 
                 while (this.PausedReaders.Count > 0)
