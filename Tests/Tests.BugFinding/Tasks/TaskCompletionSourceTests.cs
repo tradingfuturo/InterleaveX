@@ -390,6 +390,63 @@ namespace Microsoft.Coyote.BugFinding.Tests
             expectedError: "Reached test assertion.",
             replay: true);
         }
+
+        [Fact(Timeout = 5000)]
+        public void TestAsynchronousSetResultWithAsyncContinuations()
+        {
+            // Regression: completing a TCS from one operation while another awaits its task must re-enable the
+            // awaiter atomically. With RunContinuationsAsynchronously the continuation is posted asynchronously;
+            // before SetResult ran under the runtime lock, the scheduler could observe "no operation enabled,
+            // one paused" in the gap and report a spurious deadlock.
+            this.Test(async () =>
+            {
+                var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var waiter = Task.Run(async () => await tcs.Task);
+                var completer = Task.Run(() => tcs.SetResult());
+
+                await Task.WhenAll(waiter, completer);
+                Specification.Assert(tcs.Task.Status is TaskStatus.RanToCompletion,
+                    "Found unexpected status {0}.", tcs.Task.Status);
+            },
+            configuration: this.GetConfiguration().WithTestingIterations(200));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestGatedSetResultAwaitedInsideWhenAll()
+        {
+            // Regression: the awaiter blocks on the gate inside a Task.WhenAll (the composition that surfaced the
+            // spurious deadlock in practice), and the gate is completed from a separate operation. Must always
+            // complete across every interleaving.
+            this.Test(async () =>
+            {
+                var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var waiter = Task.Run(async () => await Task.WhenAll(tcs.Task, Task.CompletedTask));
+                var completer = Task.Run(() => tcs.SetResult());
+
+                await Task.WhenAll(waiter, completer);
+                Specification.Assert(tcs.Task.Status is TaskStatus.RanToCompletion,
+                    "Found unexpected status {0}.", tcs.Task.Status);
+            },
+            configuration: this.GetConfiguration().WithTestingIterations(200));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestConcurrentTrySetResult()
+        {
+            // Two operations race to complete the same TCS: exactly one TrySetResult wins and the task completes.
+            this.Test(async () =>
+            {
+                var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var setter1 = Task.Run(() => tcs.TrySetResult());
+                var setter2 = Task.Run(() => tcs.TrySetResult());
+
+                bool[] results = await Task.WhenAll(setter1, setter2);
+                Specification.Assert(results[0] ^ results[1], "Exactly one TrySetResult must win.");
+                Specification.Assert(tcs.Task.Status is TaskStatus.RanToCompletion,
+                    "Found unexpected status {0}.", tcs.Task.Status);
+            },
+            configuration: this.GetConfiguration().WithTestingIterations(200));
+        }
     }
 }
 #endif
