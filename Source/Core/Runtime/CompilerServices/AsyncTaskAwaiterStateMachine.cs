@@ -58,7 +58,6 @@ namespace Microsoft.Coyote.Runtime.CompilerServices
                         this.CurrentStatus = Status.Waiting;
                         if (this.RunContinuationAsynchronously)
                         {
-                            var stateMachine = this;
                             this.Runtime.Schedule(this.MoveNext);
                         }
                         else
@@ -72,10 +71,23 @@ namespace Microsoft.Coyote.Runtime.CompilerServices
                     // Wait for the task processing the result to complete synchronously.
                     TaskServices.WaitUntilTaskCompletes(this.Runtime, current, this.AwaitedTask);
 
-                    // Complete the state machine with the result.
-                    TResult result = this.AwaitedTask.Result;
+                    // Complete the state machine by mirroring the awaited task's outcome, so that a
+                    // faulted or canceled source propagates as-is instead of surfacing an
+                    // AggregateException (reading '.Result' on a faulted task would wrap it, and a
+                    // completed channel must surface its ChannelClosedException/cancellation intact).
                     this.CurrentStatus = Status.Completed;
-                    this.CompletionSource.SetResult(result);
+                    if (this.AwaitedTask.IsCanceled)
+                    {
+                        this.CompletionSource.SetCanceled();
+                    }
+                    else if (this.AwaitedTask.IsFaulted)
+                    {
+                        this.CompletionSource.SetException(this.AwaitedTask.Exception.InnerExceptions);
+                    }
+                    else
+                    {
+                        this.CompletionSource.SetResult(this.AwaitedTask.Result);
+                    }
                 }
                 catch (Exception exception)
                 {

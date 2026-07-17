@@ -91,6 +91,12 @@ namespace Microsoft.Coyote.Rewriting
             this.KnownTypes[NameCache.WaitHandle] = typeof(Types.Threading.WaitHandle);
 
 #if NET
+            // Populate the map with the known channel factory. Only the static 'Channel' factory is
+            // redirected; the returned ControlledChannel<T> derives from the abstract Channel<T>, so every
+            // reader/writer call dispatches virtually into controlled code (Channel<T>/ChannelReader<T>/
+            // ChannelWriter<T> deliberately stay the real BCL types and are NOT registered).
+            this.KnownTypes[NameCache.Channel] = typeof(Types.Threading.Channels.Channel);
+
             // Populate the map with the known HTTP and web-related types.
             this.KnownTypes[NameCache.HttpClient] = typeof(Types.Net.Http.HttpClient);
             this.KnownTypes[NameCache.HttpRequestMessage] = typeof(Types.Net.Http.HttpRequestMessage);

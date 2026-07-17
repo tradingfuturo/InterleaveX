@@ -2300,10 +2300,22 @@ namespace Microsoft.Coyote.Runtime
                 {
                     string message = $"Executing thread '{Thread.CurrentThread.ManagedThreadId}' is not controlled and " +
                         $"is invoking the {methodName} synchronization method, which can cause deadlocks during testing.";
-                    if (this.Configuration.IsSystematicFuzzingFallbackEnabled)
+                    if (this.Configuration.IsPartiallyControlledConcurrencyAllowed ||
+                        this.Configuration.IsSystematicFuzzingFallbackEnabled)
                     {
+                        // An uncontrolled thread (e.g. a Timer callback) is completing/releasing a controlled
+                        // synchronization primitive. The caller performs the mutation under the runtime lock, so it
+                        // stays atomic with respect to the scheduler; a paused controlled operation awaiting it is
+                        // re-enabled by the periodic deadlock monitor. Tolerate it exactly as the other
+                        // uncontrolled-concurrency notifications do (see TryHandleUncontrolledConcurrency).
                         this.LogWriter.LogWarning("[coyote::warning] {0}", message);
                         this.IsUncontrolledConcurrencyDetected = true;
+                        if (this.Configuration.IsPartiallyControlledConcurrencyAllowed)
+                        {
+                            // Stay attached to the controlled scheduler and let the caller finish the operation.
+                            return;
+                        }
+
                         this.Detach(ExecutionStatus.ConcurrencyUncontrolled);
                     }
                     else

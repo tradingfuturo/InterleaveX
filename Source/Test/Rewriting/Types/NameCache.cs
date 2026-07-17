@@ -6,6 +6,7 @@ using SystemCompiler = System.Runtime.CompilerServices;
 using SystemConcurrentCollections = System.Collections.Concurrent;
 using SystemGenericCollections = System.Collections.Generic;
 #if NET
+using SystemChannels = System.Threading.Channels;
 using SystemNetHttp = System.Net.Http;
 #endif
 using SystemTasks = System.Threading.Tasks;
@@ -91,6 +92,8 @@ namespace Microsoft.Coyote.Rewriting.Types
         internal static string ConcurrentStack { get; } = typeof(SystemConcurrentCollections.ConcurrentStack<>).FullName;
 
 #if NET
+        internal static string Channel { get; } = typeof(SystemChannels.Channel).FullName;
+
         internal static string HttpClient { get; } = typeof(SystemNetHttp.HttpClient).FullName;
         internal static string HttpRequestMessage { get; } = typeof(SystemNetHttp.HttpRequestMessage).FullName;
 #endif
