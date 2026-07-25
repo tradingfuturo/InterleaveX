@@ -132,39 +132,42 @@ namespace Microsoft.Coyote.Rewriting
         {
             this.IsMethodBodyModified = true;
             this.Processor.Replace(instruction, newInstruction);
-            foreach (var i in this.Processor.Body.Instructions)
+
+            // Fix up any exception handler boundaries that point to the old instruction. This does not
+            // depend on the instruction loop below, so it is only done once.
+            if (this.Processor.Body.HasExceptionHandlers)
             {
-                if (this.Processor.Body.HasExceptionHandlers)
+                foreach (var handler in this.Processor.Body.ExceptionHandlers)
                 {
-                    foreach (var handler in this.Processor.Body.ExceptionHandlers)
+                    if (handler.TryStart == instruction)
                     {
-                        if (handler.TryStart == instruction)
-                        {
-                            handler.TryStart = newInstruction;
-                        }
+                        handler.TryStart = newInstruction;
+                    }
 
-                        if (handler.TryEnd == instruction)
-                        {
-                            handler.TryEnd = newInstruction;
-                        }
+                    if (handler.TryEnd == instruction)
+                    {
+                        handler.TryEnd = newInstruction;
+                    }
 
-                        if (handler.FilterStart == instruction)
-                        {
-                            handler.FilterStart = newInstruction;
-                        }
+                    if (handler.FilterStart == instruction)
+                    {
+                        handler.FilterStart = newInstruction;
+                    }
 
-                        if (handler.HandlerStart == instruction)
-                        {
-                            handler.HandlerStart = newInstruction;
-                        }
+                    if (handler.HandlerStart == instruction)
+                    {
+                        handler.HandlerStart = newInstruction;
+                    }
 
-                        if (handler.HandlerEnd == instruction)
-                        {
-                            handler.HandlerEnd = newInstruction;
-                        }
+                    if (handler.HandlerEnd == instruction)
+                    {
+                        handler.HandlerEnd = newInstruction;
                     }
                 }
+            }
 
+            foreach (var i in this.Processor.Body.Instructions)
+            {
                 // Fix up branch instructions so they branch to the new instruction instead.
                 if (i.Operand is Instruction target && target == instruction)
                 {

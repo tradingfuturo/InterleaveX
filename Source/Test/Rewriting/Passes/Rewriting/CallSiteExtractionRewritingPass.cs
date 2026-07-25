@@ -42,19 +42,13 @@ namespace Microsoft.Coyote.Rewriting
                 string methodName = GetFullyQualifiedMethodName(this.Method);
                 Instruction loadStrInstruction = this.Processor.Create(OpCodes.Ldstr, methodName);
 
-                TypeDefinition providerType = this.Module.ImportReference(typeof(Operation)).Resolve();
-                if (providerType is null)
-                {
-                    return;
-                }
-
-                MethodReference notificationMethod = providerType.Methods.FirstOrDefault(m => m.Name == nameof(Operation.RegisterCallSite));
+                MethodReference notificationMethod = this.TryImportMethod(
+                    typeof(Operation), nameof(Operation.RegisterCallSite));
                 if (notificationMethod is null)
                 {
                     return;
                 }
 
-                notificationMethod = this.Module.ImportReference(notificationMethod);
                 Instruction callInstruction = this.Processor.Create(OpCodes.Call, notificationMethod);
 
                 this.Processor.InsertBefore(nextInstruction, this.Processor.Create(OpCodes.Nop));

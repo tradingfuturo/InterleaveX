@@ -59,14 +59,16 @@ namespace Microsoft.Coyote.Rewriting
                 {
                     this.LogWriter.LogDebug("............. [+] injected uncontrolled '{0}' invocation exception", invocationName);
 
-                    TypeDefinition providerType = this.Method.Module.ImportReference(typeof(ExceptionProvider)).Resolve();
-                    MethodReference providerMethod = isDataNondeterministic ?
-                        providerType.Methods.FirstOrDefault(m => m.Name is nameof(ExceptionProvider.ThrowUncontrolledDataInvocationException)) :
-                        providerType.Methods.FirstOrDefault(m => m.Name is nameof(ExceptionProvider.ThrowUncontrolledInvocationException));
-                    providerMethod = this.Method.Module.ImportReference(providerMethod);
+                    MethodReference providerMethod = this.TryImportMethod(typeof(ExceptionProvider), isDataNondeterministic ?
+                        nameof(ExceptionProvider.ThrowUncontrolledDataInvocationException) :
+                        nameof(ExceptionProvider.ThrowUncontrolledInvocationException));
 
-                    this.Processor.InsertBefore(instruction, Instruction.Create(OpCodes.Ldstr, invocationName));
-                    this.Processor.InsertBefore(instruction, Instruction.Create(OpCodes.Call, providerMethod));
+                    // Construct both instructions before inserting either of them, so that an
+                    // unresolvable provider method cannot leave a partially injected method body.
+                    Instruction loadStrInstruction = Instruction.Create(OpCodes.Ldstr, invocationName);
+                    Instruction callInstruction = Instruction.Create(OpCodes.Call, providerMethod);
+                    this.Processor.InsertBefore(instruction, loadStrInstruction);
+                    this.Processor.InsertBefore(instruction, callInstruction);
 
                     this.IsMethodBodyModified = true;
                 }

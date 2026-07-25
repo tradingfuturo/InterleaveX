@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Coyote.Logging;
@@ -15,11 +16,6 @@ namespace Microsoft.Coyote.Rewriting
     /// </summary>
     internal abstract class Pass
     {
-        /// <summary>
-        /// The set of assemblies that are being visited.
-        /// </summary>
-        protected IEnumerable<AssemblyInfo> VisitedAssemblies { get; private set; }
-
         /// <summary>
         /// The current assembly being visited.
         /// </summary>
@@ -51,6 +47,16 @@ namespace Microsoft.Coyote.Rewriting
         private static readonly Dictionary<string, string> CachedQualifiedNames = new Dictionary<string, string>();
 
         /// <summary>
+        /// The file paths of the assemblies that are being visited.
+        /// </summary>
+        private readonly HashSet<string> VisitedAssemblyPaths;
+
+        /// <summary>
+        /// Cache of methods imported in the module that is currently being visited.
+        /// </summary>
+        private readonly Dictionary<Type, Dictionary<string, MethodReference>> ImportedMethods;
+
+        /// <summary>
         /// Responsible for writing to the installed <see cref="ILogger"/>.
         /// </summary>
         protected internal readonly LogWriter LogWriter;
@@ -70,7 +76,9 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         protected Pass(IEnumerable<AssemblyInfo> visitedAssemblies, LogWriter logWriter)
         {
-            this.VisitedAssemblies = visitedAssemblies;
+            this.VisitedAssemblyPaths = new HashSet<string>(
+                visitedAssemblies.Select(assembly => assembly.FilePath), StringComparer.Ordinal);
+            this.ImportedMethods = new Dictionary<Type, Dictionary<string, MethodReference>>();
             this.LogWriter = logWriter;
         }
 
@@ -98,6 +106,9 @@ namespace Microsoft.Coyote.Rewriting
             this.TypeDef = null;
             this.Method = null;
             this.Processor = null;
+
+            // Imported references are scoped to a module, so invalidate the cache.
+            this.ImportedMethods.Clear();
         }
 
         /// <summary>
@@ -111,9 +122,9 @@ namespace Microsoft.Coyote.Rewriting
             this.Method = null;
             this.Processor = null;
             this.IsCompilerGeneratedType = type.CustomAttributes.Any(
-                attr => attr.AttributeType.FullName == typeof(SystemCompiler.CompilerGeneratedAttribute).FullName);
+                attr => IsTypeOf(attr.AttributeType, typeof(SystemCompiler.CompilerGeneratedAttribute)));
             this.IsAsyncStateMachineType = type.Interfaces.Any(
-                i => i.InterfaceType.FullName == typeof(SystemCompiler.IAsyncStateMachine).FullName);
+                i => IsTypeOf(i.InterfaceType, typeof(SystemCompiler.IAsyncStateMachine)));
         }
 
         /// <summary>
@@ -195,6 +206,45 @@ namespace Microsoft.Coyote.Rewriting
         }
 
         /// <summary>
+        /// Returns the specified method of the given provider type, imported in the module that is
+        /// currently being visited, or null if it cannot be resolved.
+        /// </summary>
+        /// <remarks>
+        /// Resolving and importing a method is expensive, so the result is cached until the next
+        /// module is visited, including a failed lookup, so that it is not retried for every
+        /// instruction. Invoke this from a visitor, so that any <see cref="AssemblyResolutionException"/>
+        /// is handled by the same handler as the rest of the visit.
+        /// </remarks>
+        protected MethodReference TryImportMethod(Type providerType, string methodName)
+        {
+            if (!this.ImportedMethods.TryGetValue(providerType, out Dictionary<string, MethodReference> methods))
+            {
+                methods = new Dictionary<string, MethodReference>();
+                this.ImportedMethods.Add(providerType, methods);
+            }
+
+            if (!methods.TryGetValue(methodName, out MethodReference method))
+            {
+                TypeDefinition resolvedType = this.Module.ImportReference(providerType).Resolve();
+                MethodDefinition resolvedMethod = resolvedType?.Methods.FirstOrDefault(m => m.Name == methodName);
+                method = resolvedMethod is null ? null : this.Module.ImportReference(resolvedMethod);
+                methods.Add(methodName, method);
+            }
+
+            return method;
+        }
+
+        /// <summary>
+        /// Checks if the specified type reference denotes the specified runtime type.
+        /// </summary>
+        /// <remarks>
+        /// The namespace and name are compared separately, as this is much cheaper than comparing
+        /// the full name, which Cecil rebuilds on each access.
+        /// </remarks>
+        internal static bool IsTypeOf(TypeReference reference, Type type) =>
+            reference.Name == type.Name && reference.Namespace == type.Namespace;
+
+        /// <summary>
         /// Returns true if the specified <see cref="MethodReference"/> can be resolved,
         /// as well as return the resolved method definition, else return false.
         /// </summary>
@@ -211,9 +261,11 @@ namespace Microsoft.Coyote.Rewriting
 
             if (logError && resolved is null && method != null)
             {
-                this.LogWriter.LogWarning($"Unable to resolve the '{method.FullName}' method. " +
+                // Pass the name as a format argument, so that the message (and the full name of the
+                // method, which Cecil rebuilds on each access) is only formatted if it gets logged.
+                this.LogWriter.LogWarning("Unable to resolve the '{0}' method. " +
                     "The method is either unsupported by Coyote, an external method not being rewritten, or the " +
-                    ".NET platform of Coyote and the target assembly do not match.");
+                    ".NET platform of Coyote and the target assembly do not match.", method);
             }
 
             return resolved != null;
@@ -236,9 +288,11 @@ namespace Microsoft.Coyote.Rewriting
 
             if (logError && resolved is null && type != null)
             {
-                this.LogWriter.LogWarning($"Unable to resolve the '{type.FullName}' type. " +
+                // Pass the name as a format argument, so that the message (and the full name of the
+                // type, which Cecil rebuilds on each access) is only formatted if it gets logged.
+                this.LogWriter.LogWarning("Unable to resolve the '{0}' type. " +
                     "The type is either unsupported by Coyote, an external type not being rewritten, or the " +
-                    ".NET platform of Coyote and the target assembly do not match.");
+                    ".NET platform of Coyote and the target assembly do not match.", type);
             }
 
             return resolved != null;
@@ -249,17 +303,16 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         protected static string GetFullyQualifiedTypeName(TypeReference type)
         {
+            if (!(type is GenericInstanceType genericType))
+            {
+                // The qualified name of a non-generic type is just its full name, so caching it
+                // would cost a dictionary lookup keyed on that same full name.
+                return type.FullName;
+            }
+
             if (!CachedQualifiedNames.TryGetValue(type.FullName, out string name))
             {
-                if (type is GenericInstanceType genericType)
-                {
-                    name = $"{genericType.ElementType.FullName.Split('`')[0]}";
-                }
-                else
-                {
-                    name = type.FullName;
-                }
-
+                name = genericType.ElementType.FullName.Split('`')[0];
                 CachedQualifiedNames.Add(type.FullName, name);
             }
 
@@ -292,7 +345,7 @@ namespace Microsoft.Coyote.Rewriting
             if (type != null)
             {
                 if (type.Module == this.Module ||
-                    this.VisitedAssemblies.Any(assembly => assembly.FilePath == type.Module.FileName))
+                    (type.Module.FileName != null && this.VisitedAssemblyPaths.Contains(type.Module.FileName)))
                 {
                     return true;
                 }

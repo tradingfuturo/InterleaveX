@@ -155,6 +155,9 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         internal void Invoke(Pass pass)
         {
+            // Note that members are passed as format arguments, so that the full name of a member,
+            // which Cecil rebuilds into a new string on each access, is only computed if the debug
+            // message actually gets logged.
             pass.VisitAssembly(this);
             foreach (var module in this.Definition.Modules)
             {
@@ -163,18 +166,18 @@ namespace Microsoft.Coyote.Rewriting
                 foreach (var type in module.GetTypes())
                 {
                     if (type.CustomAttributes.Any(
-                        attr => attr.AttributeType.FullName == typeof(SkipRewritingAttribute).FullName))
+                        attr => Pass.IsTypeOf(attr.AttributeType, typeof(SkipRewritingAttribute))))
                     {
                         // Skip rewriting this type.
-                        pass.LogWriter.LogDebug("......... Type: {0} [SKIP]", type.FullName);
+                        pass.LogWriter.LogDebug("......... Type: {0} [SKIP]", type);
                         continue;
                     }
 
-                    pass.LogWriter.LogDebug("......... Type: {0}", type.FullName);
+                    pass.LogWriter.LogDebug("......... Type: {0}", type);
                     pass.VisitType(type);
                     foreach (var field in type.Fields.ToArray())
                     {
-                        pass.LogWriter.LogDebug("........... Field: {0}", field.FullName);
+                        pass.LogWriter.LogDebug("........... Field: {0}", field);
                         pass.VisitField(field);
                     }
 
@@ -185,7 +188,7 @@ namespace Microsoft.Coyote.Rewriting
                             continue;
                         }
 
-                        pass.LogWriter.LogDebug("........... Method {0}", method.FullName);
+                        pass.LogWriter.LogDebug("........... Method {0}", method);
                         pass.VisitMethod(method);
                         if (pass is RewritingPass rewritingPass && rewritingPass.IsMethodBodyModified)
                         {
@@ -283,8 +286,7 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         private CustomAttribute GetCustomAttribute(Type attributeType) =>
             this.Definition.CustomAttributes.FirstOrDefault(
-                attr => attr.AttributeType.Namespace == attributeType.Namespace &&
-                attr.AttributeType.Name == attributeType.Name);
+                attr => Pass.IsTypeOf(attr.AttributeType, attributeType));
 
         /// <summary>
         /// Validates that the assembly can be rewritten.
