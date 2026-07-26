@@ -94,13 +94,19 @@ namespace Microsoft.Coyote.Runtime.CompilerServices
         {
             if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
             {
-                var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
-                this.Runtime.RegisterContinuationGroup(continuation, group);
-                var savedSyncCtx = SynchronizationContext.Current;
-                SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
+                if (!this.Runtime.TryPrepareContinuation(continuation, out SynchronizationContext savedSyncCtx))
+                {
+                    // The controlling runtime is gone, so drop this orphaned continuation.
+                    return;
+                }
+
                 try
                 {
                     this.Awaiter.OnCompleted(continuation);
+                }
+                catch (Exception)
+                {
+                    // Dropped for the reason documented on CoyoteRuntime.TryPrepareContinuation.
                 }
                 finally
                 {
@@ -120,13 +126,19 @@ namespace Microsoft.Coyote.Runtime.CompilerServices
         {
             if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
             {
-                var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
-                this.Runtime.RegisterContinuationGroup(continuation, group);
-                var savedSyncCtx = SynchronizationContext.Current;
-                SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
+                if (!this.Runtime.TryPrepareContinuation(continuation, out SynchronizationContext savedSyncCtx))
+                {
+                    // The controlling runtime is gone, so drop this orphaned continuation.
+                    return;
+                }
+
                 try
                 {
                     this.Awaiter.UnsafeOnCompleted(continuation);
+                }
+                catch (Exception)
+                {
+                    // Dropped for the reason documented on CoyoteRuntime.TryPrepareContinuation.
                 }
                 finally
                 {
@@ -270,13 +282,19 @@ namespace Microsoft.Coyote.Runtime.CompilerServices
         {
             if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
             {
-                var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
-                this.Runtime.RegisterContinuationGroup(continuation, group);
-                var savedSyncCtx = SynchronizationContext.Current;
-                SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
+                if (!this.Runtime.TryPrepareContinuation(continuation, out SynchronizationContext savedSyncCtx))
+                {
+                    // The controlling runtime is gone, so drop this orphaned continuation.
+                    return;
+                }
+
                 try
                 {
                     this.Awaiter.OnCompleted(continuation);
+                }
+                catch (Exception)
+                {
+                    // Dropped for the reason documented on CoyoteRuntime.TryPrepareContinuation.
                 }
                 finally
                 {
@@ -296,13 +314,19 @@ namespace Microsoft.Coyote.Runtime.CompilerServices
         {
             if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
             {
-                var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
-                this.Runtime.RegisterContinuationGroup(continuation, group);
-                var savedSyncCtx = SynchronizationContext.Current;
-                SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
+                if (!this.Runtime.TryPrepareContinuation(continuation, out SynchronizationContext savedSyncCtx))
+                {
+                    // The controlling runtime is gone, so drop this orphaned continuation.
+                    return;
+                }
+
                 try
                 {
                     this.Awaiter.UnsafeOnCompleted(continuation);
+                }
+                catch (Exception)
+                {
+                    // Dropped for the reason documented on CoyoteRuntime.TryPrepareContinuation.
                 }
                 finally
                 {

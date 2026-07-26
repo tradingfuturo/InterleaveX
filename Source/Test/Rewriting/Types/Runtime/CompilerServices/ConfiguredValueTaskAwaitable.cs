@@ -102,37 +102,23 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
             {
                 if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
                 {
-                    SynchronizationContext savedSyncCtx = SynchronizationContext.Current;
-                    bool ctxSet = false;
+                    if (!this.Runtime.TryPrepareContinuation(continuation, out SynchronizationContext savedSyncCtx))
+                    {
+                        // The controlling runtime is gone, so drop this orphaned continuation.
+                        return;
+                    }
+
                     try
                     {
-                        var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
-                        this.Runtime.RegisterContinuationGroup(continuation, group);
-                        SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
-                        ctxSet = true;
                         this.Awaiter.OnCompleted(continuation);
                     }
                     catch (Exception)
                     {
-                        // The continuation belongs to an async operation whose controlling runtime is
-                        // gone (or being torn down) — e.g. a long-lived background loop that leaked
-                        // across testing iterations and is now resuming against a disposed runtime. It
-                        // can no longer be controlled, so drop it instead of letting the failure crash
-                        // the test host. A live, controlled continuation never reaches here: these setup
-                        // calls only fault once the owning runtime's state has been disposed.
-                        //
-                        // The catch is intentionally broad and swallowing: returning the executing
-                        // thread cleanly to the scheduler keeps the runtime consistent. Letting the
-                        // exception propagate instead (it can surface as a ThreadInterruptedException
-                        // when the runtime interrupts threads during teardown) leaves the awaiting
-                        // operation half-registered and deadlocks the run.
+                        // Dropped for the reason documented on CoyoteRuntime.TryPrepareContinuation.
                     }
                     finally
                     {
-                        if (ctxSet)
-                        {
-                            SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
-                        }
+                        SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
                     }
                 }
                 else
@@ -149,37 +135,23 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
             {
                 if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
                 {
-                    SynchronizationContext savedSyncCtx = SynchronizationContext.Current;
-                    bool ctxSet = false;
+                    if (!this.Runtime.TryPrepareContinuation(continuation, out SynchronizationContext savedSyncCtx))
+                    {
+                        // The controlling runtime is gone, so drop this orphaned continuation.
+                        return;
+                    }
+
                     try
                     {
-                        var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
-                        this.Runtime.RegisterContinuationGroup(continuation, group);
-                        SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
-                        ctxSet = true;
                         this.Awaiter.UnsafeOnCompleted(continuation);
                     }
                     catch (Exception)
                     {
-                        // The continuation belongs to an async operation whose controlling runtime is
-                        // gone (or being torn down) — e.g. a long-lived background loop that leaked
-                        // across testing iterations and is now resuming against a disposed runtime. It
-                        // can no longer be controlled, so drop it instead of letting the failure crash
-                        // the test host. A live, controlled continuation never reaches here: these setup
-                        // calls only fault once the owning runtime's state has been disposed.
-                        //
-                        // The catch is intentionally broad and swallowing: returning the executing
-                        // thread cleanly to the scheduler keeps the runtime consistent. Letting the
-                        // exception propagate instead (it can surface as a ThreadInterruptedException
-                        // when the runtime interrupts threads during teardown) leaves the awaiting
-                        // operation half-registered and deadlocks the run.
+                        // Dropped for the reason documented on CoyoteRuntime.TryPrepareContinuation.
                     }
                     finally
                     {
-                        if (ctxSet)
-                        {
-                            SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
-                        }
+                        SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
                     }
                 }
                 else
@@ -280,37 +252,23 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
             {
                 if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
                 {
-                    SynchronizationContext savedSyncCtx = SynchronizationContext.Current;
-                    bool ctxSet = false;
+                    if (!this.Runtime.TryPrepareContinuation(continuation, out SynchronizationContext savedSyncCtx))
+                    {
+                        // The controlling runtime is gone, so drop this orphaned continuation.
+                        return;
+                    }
+
                     try
                     {
-                        var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
-                        this.Runtime.RegisterContinuationGroup(continuation, group);
-                        SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
-                        ctxSet = true;
                         this.Awaiter.OnCompleted(continuation);
                     }
                     catch (Exception)
                     {
-                        // The continuation belongs to an async operation whose controlling runtime is
-                        // gone (or being torn down) — e.g. a long-lived background loop that leaked
-                        // across testing iterations and is now resuming against a disposed runtime. It
-                        // can no longer be controlled, so drop it instead of letting the failure crash
-                        // the test host. A live, controlled continuation never reaches here: these setup
-                        // calls only fault once the owning runtime's state has been disposed.
-                        //
-                        // The catch is intentionally broad and swallowing: returning the executing
-                        // thread cleanly to the scheduler keeps the runtime consistent. Letting the
-                        // exception propagate instead (it can surface as a ThreadInterruptedException
-                        // when the runtime interrupts threads during teardown) leaves the awaiting
-                        // operation half-registered and deadlocks the run.
+                        // Dropped for the reason documented on CoyoteRuntime.TryPrepareContinuation.
                     }
                     finally
                     {
-                        if (ctxSet)
-                        {
-                            SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
-                        }
+                        SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
                     }
                 }
                 else
@@ -327,37 +285,23 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
             {
                 if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
                 {
-                    SynchronizationContext savedSyncCtx = SynchronizationContext.Current;
-                    bool ctxSet = false;
+                    if (!this.Runtime.TryPrepareContinuation(continuation, out SynchronizationContext savedSyncCtx))
+                    {
+                        // The controlling runtime is gone, so drop this orphaned continuation.
+                        return;
+                    }
+
                     try
                     {
-                        var group = this.Runtime.GetExecutingOperationUnsafe()?.Group;
-                        this.Runtime.RegisterContinuationGroup(continuation, group);
-                        SynchronizationContext.SetSynchronizationContext(this.Runtime.GetAntiInlineSyncContext());
-                        ctxSet = true;
                         this.Awaiter.UnsafeOnCompleted(continuation);
                     }
                     catch (Exception)
                     {
-                        // The continuation belongs to an async operation whose controlling runtime is
-                        // gone (or being torn down) — e.g. a long-lived background loop that leaked
-                        // across testing iterations and is now resuming against a disposed runtime. It
-                        // can no longer be controlled, so drop it instead of letting the failure crash
-                        // the test host. A live, controlled continuation never reaches here: these setup
-                        // calls only fault once the owning runtime's state has been disposed.
-                        //
-                        // The catch is intentionally broad and swallowing: returning the executing
-                        // thread cleanly to the scheduler keeps the runtime consistent. Letting the
-                        // exception propagate instead (it can surface as a ThreadInterruptedException
-                        // when the runtime interrupts threads during teardown) leaves the awaiting
-                        // operation half-registered and deadlocks the run.
+                        // Dropped for the reason documented on CoyoteRuntime.TryPrepareContinuation.
                     }
                     finally
                     {
-                        if (ctxSet)
-                        {
-                            SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
-                        }
+                        SynchronizationContext.SetSynchronizationContext(savedSyncCtx);
                     }
                 }
                 else

@@ -493,6 +493,42 @@ namespace Microsoft.Coyote.Runtime
             this.SyncContext.GetAntiInlineContext();
 
         /// <summary>
+        /// Prepares the specified continuation to resume under the control of this runtime, installing the
+        /// anti-inlining synchronization context and yielding the context to restore once the continuation
+        /// has been handed to the underlying awaiter. Returns false if the continuation must be dropped.
+        /// </summary>
+        /// <remarks>
+        /// Returns false when the continuation belongs to an async operation whose controlling runtime is
+        /// gone (or is being torn down) — for example a long-lived background loop that leaked across
+        /// testing iterations and is now resuming against a disposed runtime. Such a continuation can no
+        /// longer be controlled, so the caller must drop it rather than let the failure crash the test
+        /// host. A live, controlled continuation never fails here: this setup only faults once the owning
+        /// runtime's state has been disposed.
+        /// <para>
+        /// The failure is swallowed deliberately and broadly. Returning the executing thread cleanly to
+        /// the scheduler keeps the runtime consistent; letting the exception propagate instead (it
+        /// surfaces as a <see cref="ThreadInterruptedException"/> when the runtime interrupts threads
+        /// during teardown) leaves the awaiting operation half-registered and either deadlocks the run or
+        /// escapes to the thread pool as an unhandled exception that aborts the whole test run.
+        /// </para>
+        /// </remarks>
+        internal bool TryPrepareContinuation(Action continuation, out SynchronizationContext savedSyncContext)
+        {
+            savedSyncContext = SynchronizationContext.Current;
+            try
+            {
+                OperationGroup group = this.GetExecutingOperationUnsafe()?.Group;
+                this.RegisterContinuationGroup(continuation, group);
+                SynchronizationContext.SetSynchronizationContext(this.GetAntiInlineSyncContext());
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
         /// A dictionary that maps continuation actions to their awaiting operation's group.
         /// Used by <see cref="ControlledSynchronizationContext.Post"/> to preserve the group
         /// when a continuation is posted through the synchronization context.
