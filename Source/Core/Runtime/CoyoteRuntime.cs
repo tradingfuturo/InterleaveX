@@ -1720,8 +1720,10 @@ namespace Microsoft.Coyote.Runtime
             unchecked
             {
                 int hash = 19;
+                bool isStateHashed = false;
                 if (this.Configuration.IsImplicitProgramStateHashingEnabled)
                 {
+                    isStateHashed = true;
                     foreach (var operation in this.GetRegisteredOperations())
                     {
                         hash *= 31 + operation.GetHashedState(this.SchedulingPolicy);
@@ -1735,6 +1737,7 @@ namespace Microsoft.Coyote.Runtime
 
                 if (this.StateHashingFunctions.Count > 0)
                 {
+                    isStateHashed = true;
                     int customHash = 19;
                     foreach (var func in this.StateHashingFunctions)
                     {
@@ -1744,7 +1747,15 @@ namespace Microsoft.Coyote.Runtime
                     hash *= 31 + customHash;
                 }
 
-                this.CoverageInfo.DeclareVisitedState(hash);
+                if (isStateHashed)
+                {
+                    // Only record the state when something actually contributed to the hash.
+                    // Otherwise it is a constant, so the visited state set degenerates to a
+                    // meaningless singleton, and recording it takes a lock on every
+                    // scheduling step to no purpose.
+                    this.CoverageInfo.DeclareVisitedState(hash);
+                }
+
                 return hash;
             }
         }
