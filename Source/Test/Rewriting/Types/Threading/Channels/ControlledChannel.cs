@@ -7,7 +7,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Runtime.CompilerServices;
+using CoyoteTasks = Microsoft.Coyote.Rewriting.Types.Threading.Tasks;
 using SystemCancellationToken = System.Threading.CancellationToken;
+using SystemCancellationTokenRegistration = System.Threading.CancellationTokenRegistration;
 using SystemChannels = System.Threading.Channels;
 using SystemTaskCreationOptions = System.Threading.Tasks.TaskCreationOptions;
 using SystemTasks = System.Threading.Tasks;
@@ -165,7 +167,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         private SystemTasks.ValueTask<bool> CompletedReadResult() =>
             this.CompletionError is null
                 ? new SystemTasks.ValueTask<bool>(false)
-                : new SystemTasks.ValueTask<bool>(SystemTasks.Task.FromException<bool>(this.CompletionError));
+                : new SystemTasks.ValueTask<bool>(CoyoteTasks.Task.FromException<bool>(this.CompletionError));
 
         // ─── Read side ───────────────────────────────────────────────────────────────────────────
 
@@ -189,7 +191,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         {
             if (cancellationToken.IsCancellationRequested)
             {
-                return new SystemTasks.ValueTask<bool>(SystemTasks.Task.FromCanceled<bool>(cancellationToken));
+                return new SystemTasks.ValueTask<bool>(CoyoteTasks.Task.FromCanceled<bool>(cancellationToken));
             }
 
             CoyoteRuntime runtime = GetRuntime();
@@ -215,7 +217,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         {
             if (cancellationToken.IsCancellationRequested)
             {
-                return new SystemTasks.ValueTask<T>(SystemTasks.Task.FromCanceled<T>(cancellationToken));
+                return new SystemTasks.ValueTask<T>(CoyoteTasks.Task.FromCanceled<T>(cancellationToken));
             }
 
             CoyoteRuntime runtime = GetRuntime();
@@ -229,7 +231,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
                 if (this.IsCompleted)
                 {
                     return new SystemTasks.ValueTask<T>(
-                        SystemTasks.Task.FromException<T>(CreateClosedException(this.CompletionError)));
+                        CoyoteTasks.Task.FromException<T>(CreateClosedException(this.CompletionError)));
                 }
 
                 var tcs = CreateSource<T>();
@@ -242,7 +244,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         {
             if (cancellationToken.IsCancellationRequested)
             {
-                return new SystemTasks.ValueTask<bool>(SystemTasks.Task.FromCanceled<bool>(cancellationToken));
+                return new SystemTasks.ValueTask<bool>(CoyoteTasks.Task.FromCanceled<bool>(cancellationToken));
             }
 
             CoyoteRuntime runtime = GetRuntime();
@@ -318,7 +320,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         {
             if (cancellationToken.IsCancellationRequested)
             {
-                return new SystemTasks.ValueTask(SystemTasks.Task.FromCanceled(cancellationToken));
+                return new SystemTasks.ValueTask(CoyoteTasks.Task.FromCanceled(cancellationToken));
             }
 
             CoyoteRuntime runtime = GetRuntime();
@@ -330,7 +332,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
                 if (this.IsCompleted)
                 {
                     return new SystemTasks.ValueTask(
-                        SystemTasks.Task.FromException(CreateClosedException(this.CompletionError)));
+                        CoyoteTasks.Task.FromException(CreateClosedException(this.CompletionError)));
                 }
 
                 bool accepted = this.TryWriteLocked(item, out dropped, out hasDropped, out bool full);
@@ -360,7 +362,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         {
             if (cancellationToken.IsCancellationRequested)
             {
-                return new SystemTasks.ValueTask<bool>(SystemTasks.Task.FromCanceled<bool>(cancellationToken));
+                return new SystemTasks.ValueTask<bool>(CoyoteTasks.Task.FromCanceled<bool>(cancellationToken));
             }
 
             CoyoteRuntime runtime = GetRuntime();
@@ -634,7 +636,23 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         {
             if (cancellationToken.CanBeCanceled)
             {
-                cancellationToken.Register(() => tcs.TrySetCanceled(cancellationToken));
+                SystemCancellationTokenRegistration registration =
+                    cancellationToken.Register(() => tcs.TrySetCanceled(cancellationToken));
+
+                // Release the registration once the wait is over. The token routinely outlives the wait (a
+                // consumer loop awaiting on a long-lived token is the common shape), and without this the
+                // source accumulates one live callback per parked reader/writer, each retaining its
+                // completion source and task, until the token itself is collected.
+                //
+                // The disposal is queued to the default scheduler rather than run inline: the completion
+                // that triggers it usually happens inside the runtime's synchronized section, and disposing
+                // there would block that section on a cancellation callback running on another thread.
+                tcs.Task.ContinueWith(
+                    static (_, state) => ((SystemCancellationTokenRegistration)state).Dispose(),
+                    registration,
+                    SystemCancellationToken.None,
+                    SystemTasks.TaskContinuationOptions.DenyChildAttach,
+                    SystemTasks.TaskScheduler.Default);
             }
         }
 

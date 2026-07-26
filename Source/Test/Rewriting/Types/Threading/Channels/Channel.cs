@@ -82,8 +82,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         /// Creates a channel subject to the provided options, invoking <paramref name="itemDropped"/> for each
         /// item dropped from the channel's buffer under a non-<c>Wait</c> full mode.
         /// </summary>
+        /// <remarks>
+        /// A null <paramref name="options"/> is handed to the BCL rather than dereferenced here, so that the
+        /// caller still gets its <see cref="ArgumentNullException"/> instead of a <see cref="NullReferenceException"/>.
+        /// </remarks>
         public static SystemChannels.Channel<T> CreateBounded<T>(SystemChannels.BoundedChannelOptions options,
             Action<T> itemDropped) =>
+            options != null &&
             TryCreateControlled(out SystemChannels.Channel<T> channel, options.Capacity, options.FullMode, itemDropped) ?
             channel : SystemChannels.Channel.CreateBounded<T>(options, itemDropped);
     }
