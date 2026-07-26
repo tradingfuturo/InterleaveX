@@ -231,10 +231,21 @@ namespace Microsoft.Coyote.Runtime
             if (!CoyoteRuntime.IsExecutionSynchronized)
             {
                 var runtime = CoyoteRuntime.Current;
-                if (runtime.SchedulingPolicy != SchedulingPolicy.None &&
-                    runtime.TryGetExecutingOperation(out ControlledOperation current))
+                if (runtime.SchedulingPolicy != SchedulingPolicy.None)
                 {
-                    current.VisitCallSite(method);
+                    // The rewriter injects a call to this method into the prologue of every
+                    // method body, so this runs once per method invocation of the program
+                    // under test. Read the thread-static slot directly to keep the common
+                    // case off the global runtime lock, and fall back to the notifying
+                    // accessor only when this thread has no operation, so that detection of
+                    // uncontrolled threads is unchanged.
+                    ControlledOperation current = CoyoteRuntime.GetExecutingOperationUnsynchronized();
+                    if (current is null)
+                    {
+                        runtime.TryGetExecutingOperation(out current);
+                    }
+
+                    current?.VisitCallSite(method);
                 }
             }
         }

@@ -1602,6 +1602,19 @@ namespace Microsoft.Coyote.Runtime
         }
 
         /// <summary>
+        /// Returns the <see cref="ControlledOperation"/> executing on the current thread,
+        /// or null if there is none, without acquiring the runtime lock.
+        /// </summary>
+        /// <remarks>
+        /// The backing field is thread-static, so a thread reading its own slot requires no
+        /// synchronization. Unlike <see cref="GetExecutingOperation"/> this performs no
+        /// uncontrolled-thread notification, so it must only be used by callers that either
+        /// have no need for that side effect or fall back to the notifying accessor when
+        /// this returns null.
+        /// </remarks>
+        internal static ControlledOperation GetExecutingOperationUnsynchronized() => ExecutingOperation;
+
+        /// <summary>
         /// Tries to return the currently executing <see cref="ControlledOperation"/>,
         /// or false if no such operation is executing.
         /// </summary>

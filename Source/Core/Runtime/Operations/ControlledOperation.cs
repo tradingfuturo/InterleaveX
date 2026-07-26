@@ -62,7 +62,18 @@ namespace Microsoft.Coyote.Runtime
         /// <summary>
         /// The list of visited call sites during execution of this operation.
         /// </summary>
+        /// <remarks>
+        /// Only populated when <see cref="Configuration.IsTraceAnalysisEnabled"/> is set, as
+        /// <see cref="ExecutionGraph"/> is its only consumer. Otherwise just the most recent
+        /// call site is retained, which is all that <see cref="GetHashedState"/> requires,
+        /// so that this does not grow without bound for the lifetime of the operation.
+        /// </remarks>
         internal readonly List<string> VisitedCallSites;
+
+        /// <summary>
+        /// True if the full history of visited call sites must be retained, else false.
+        /// </summary>
+        private readonly bool IsCallSiteHistoryRequired;
 
         /// <summary>
         /// Resources that must be signaled before this operation can resume executing.
@@ -87,8 +98,19 @@ namespace Microsoft.Coyote.Runtime
         /// <summary>
         /// The call site that was last executed by this operation.
         /// </summary>
-        internal string LastCallSite => this.VisitedCallSites.Count is 0 ?
-            string.Empty : this.VisitedCallSites[this.VisitedCallSites.Count - 1];
+        internal string LastCallSite { get; private set; }
+
+        /// <summary>
+        /// The cached hash code of <see cref="LastCallSite"/>, or 0 if not yet computed.
+        /// </summary>
+        /// <remarks>
+        /// Computed lazily rather than when the call site is visited. Visiting happens once
+        /// per method invocation of the program under test, whereas the hash is only read by
+        /// <see cref="GetHashedState"/>, which runs solely when implicit program state
+        /// hashing is enabled. Computing it eagerly measurably penalises configurations that
+        /// never read it. A hash that genuinely computes to 0 is simply recomputed.
+        /// </remarks>
+        private int LastCallSiteHash;
 
         /// <summary>
         /// A value that represents the hashed program state when this operation last executed.
@@ -160,6 +182,9 @@ namespace Microsoft.Coyote.Runtime
             this.Group = group ?? OperationGroup.Create(this);
             this.Continuations = new Queue<Action>();
             this.VisitedCallSites = new List<string>();
+            this.IsCallSiteHistoryRequired = runtime.Configuration.IsTraceAnalysisEnabled;
+            this.LastCallSite = string.Empty;
+            this.LastCallSiteHash = 0;
             this.AwaitedResources = new HashSet<Guid>();
             this.SyncEvent = new ManualResetEventSlim(false);
             this.LastSchedulingPoint = SchedulingPointType.Start;
@@ -322,7 +347,19 @@ namespace Microsoft.Coyote.Runtime
         /// <summary>
         /// Registers the specified call site as visited.
         /// </summary>
-        internal void VisitCallSite(string callSite) => this.VisitedCallSites.Add(callSite);
+        internal void VisitCallSite(string callSite)
+        {
+            if (!ReferenceEquals(this.LastCallSite, callSite))
+            {
+                this.LastCallSite = callSite;
+                this.LastCallSiteHash = 0;
+            }
+
+            if (this.IsCallSiteHistoryRequired)
+            {
+                this.VisitedCallSites.Add(callSite);
+            }
+        }
 
         /// <summary>
         /// Returns the creation sequence based on the specified parent operation.
@@ -374,7 +411,12 @@ namespace Microsoft.Coyote.Runtime
                 if (policy != SchedulingPolicy.None)
                 {
                     hash = (hash * 31) + this.SequenceId.GetHashCode();
-                    hash = (hash * 31) + this.LastCallSite.GetHashCode();
+                    if (this.LastCallSiteHash is 0)
+                    {
+                        this.LastCallSiteHash = this.LastCallSite.GetHashCode();
+                    }
+
+                    hash = (hash * 31) + this.LastCallSiteHash;
                     hash = (hash * 31) + this.LastSchedulingPoint.GetHashCode();
                     hash = (hash * 31) + this.Status.GetHashCode();
                 }

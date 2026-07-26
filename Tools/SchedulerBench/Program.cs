@@ -34,6 +34,7 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
             uint iterations = uint.Parse(GetOption(args, "--iterations", "100"));
             uint seed = uint.Parse(GetOption(args, "--seed", "42"));
             int repeat = int.Parse(GetOption(args, "--repeat", "5"));
+            int warmup = int.Parse(GetOption(args, "--warmup", "3"));
             string label = GetOption(args, "--label", "run");
             bool header = Array.IndexOf(args, "--no-header") < 0;
 
@@ -51,13 +52,18 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
 
             if (header)
             {
-                Console.WriteLine("label,workload,strategy,iterations,run,elapsed_ms,allocated_bytes,paths,steps,bugs");
+                Console.WriteLine("label,workload,strategy,iterations,run,elapsed_ms,cpu_ms,allocated_bytes,paths,steps,bugs");
             }
 
+            // The first few runs are dominated by JIT and are discarded. Without this the
+            // wall-clock spread across runs exceeds 100%, which swamps the effect sizes
+            // these measurements need to resolve.
             var elapsedSamples = new List<double>(repeat);
+            var cpuSamples = new List<double>(repeat);
             var allocatedSamples = new List<long>(repeat);
+            int steps = 0;
 
-            for (int run = 0; run < repeat; run++)
+            for (int run = 0; run < warmup + repeat; run++)
             {
                 RunResult result = RunOnce(workload, strategy, iterations, seed);
                 if (result.Bugs > 0)
@@ -68,23 +74,36 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
                     return 1;
                 }
 
-                elapsedSamples.Add(result.ElapsedMs);
-                allocatedSamples.Add(result.AllocatedBytes);
+                bool isWarmup = run < warmup;
+                if (!isWarmup)
+                {
+                    elapsedSamples.Add(result.ElapsedMs);
+                    cpuSamples.Add(result.CpuMs);
+                    allocatedSamples.Add(result.AllocatedBytes);
+                    steps = result.Steps;
+                }
+
                 Console.WriteLine(
-                    $"{label},{workload},{strategy},{iterations},{run},{result.ElapsedMs:F1}," +
-                    $"{result.AllocatedBytes},{result.Paths},{result.Steps},{result.Bugs}");
+                    $"{label},{workload},{strategy},{iterations},{(isWarmup ? "warmup" : run.ToString())}," +
+                    $"{result.ElapsedMs:F1},{result.CpuMs:F1},{result.AllocatedBytes}," +
+                    $"{result.Paths},{result.Steps},{result.Bugs}");
             }
 
             elapsedSamples.Sort();
+            cpuSamples.Sort();
             allocatedSamples.Sort();
             double medianElapsed = Median(elapsedSamples);
+            double medianCpu = Median(cpuSamples);
             long medianAllocated = (long)Median(allocatedSamples.ConvertAll(v => (double)v));
-            double spread = elapsedSamples.Count > 1 ?
-                (elapsedSamples[elapsedSamples.Count - 1] - elapsedSamples[0]) / medianElapsed * 100 : 0;
+
+            double cpuSpread = cpuSamples.Count > 1 && medianCpu > 0 ?
+                (cpuSamples[cpuSamples.Count - 1] - cpuSamples[0]) / medianCpu * 100 : 0;
+            double allocSpread = allocatedSamples.Count > 1 && medianAllocated > 0 ?
+                (double)(allocatedSamples[allocatedSamples.Count - 1] - allocatedSamples[0]) / medianAllocated * 100 : 0;
 
             Console.WriteLine(
-                $"{label},{workload},{strategy},{iterations},median,{medianElapsed:F1}," +
-                $"{medianAllocated},,,spread={spread:F1}%");
+                $"{label},{workload},{strategy},{iterations},MEDIAN,{medianElapsed:F1},{medianCpu:F1}," +
+                $"{medianAllocated},steps={steps},cpuSpread={cpuSpread:F1}%,allocSpread={allocSpread:F3}%");
             return 0;
         }
 
@@ -115,6 +134,12 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
             GC.WaitForPendingFinalizers();
             GC.Collect();
 
+            // Wall clock is dominated by thread handoffs, which block in the kernel and are
+            // highly sensitive to machine load; its run-to-run spread swamps the effect
+            // sizes of interest. Total processor time excludes blocked time and therefore
+            // tracks the CPU work actually performed, which is what these changes remove.
+            Process process = Process.GetCurrentProcess();
+            TimeSpan cpuBefore = process.TotalProcessorTime;
             long allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
             var stopwatch = Stopwatch.StartNew();
             try
@@ -128,10 +153,12 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
             }
 
             long allocatedAfter = GC.GetTotalAllocatedBytes(precise: true);
+            TimeSpan cpuAfter = process.TotalProcessorTime;
 
             return new RunResult
             {
                 ElapsedMs = stopwatch.Elapsed.TotalMilliseconds,
+                CpuMs = (cpuAfter - cpuBefore).TotalMilliseconds,
                 AllocatedBytes = allocatedAfter - allocatedBefore,
                 Paths = engine.TestReport.NumOfExploredFairPaths + engine.TestReport.NumOfExploredUnfairPaths,
                 Steps = engine.TestReport.TotalExploredFairSteps + engine.TestReport.TotalExploredUnfairSteps,
@@ -162,6 +189,7 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
         private struct RunResult
         {
             internal double ElapsedMs;
+            internal double CpuMs;
             internal long AllocatedBytes;
             internal int Paths;
             internal int Steps;
