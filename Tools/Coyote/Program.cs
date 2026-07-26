@@ -346,7 +346,8 @@ namespace Microsoft.Coyote
             string buggyWorker = coordinator.BuggyWorkerDirectory;
             if (buggyWorker != null)
             {
-                foreach (string path in PromoteWorkerArtifacts(configuration, buggyWorker, directory, fileName))
+                foreach (string path in PromoteWorkerArtifacts(configuration, buggyWorker,
+                    coordinator.BuggyWorkerArtifactBaseline, directory, fileName))
                 {
                     logWriter.LogImportant("..... Writing {0}", path);
                 }
@@ -372,8 +373,10 @@ namespace Microsoft.Coyote
             }
 
             logWriter.LogImportant(report.GetText(configuration, "..."));
+            // Report the workers that actually ran, not the number requested: the plan spawns fewer
+            // when there are too few iterations to give each one a whole portfolio rotation.
             logWriter.LogImportant("... Elapsed {0} sec (wall clock across {1} workers).",
-                stopwatch.Elapsed.TotalSeconds, configuration.ParallelWorkerCount);
+                stopwatch.Elapsed.TotalSeconds, coordinator.WorkerCount);
             return GetExitCodeFromTestReport(report);
         }
 
@@ -382,7 +385,7 @@ namespace Microsoft.Coyote
         /// directory, and returns the paths written.
         /// </summary>
         private static IEnumerable<string> PromoteWorkerArtifacts(Configuration configuration,
-            string workerDirectory, string directory, string fileName)
+            string workerDirectory, int artifactBaseline, string directory, string fileName)
         {
             var paths = new List<string>();
             string source = Path.Combine(workerDirectory, "CoyoteOutput");
@@ -391,9 +394,18 @@ namespace Microsoft.Coyote
                 return paths;
             }
 
-            // A worker writes into an empty directory of its own, so its files always carry
-            // the '_0' suffix that the output file manager assigns first.
-            string workerStem = Path.GetFileNameWithoutExtension(configuration.AssemblyToBeAnalyzed) + "_0";
+            // A worker writes into a directory of its own that the coordinator empties first,
+            // so its files normally carry the '_0' suffix that the output file manager assigns
+            // first. Resolve the suffix from the files actually present rather than assuming
+            // it: if the directory could not be emptied, the worker's artifacts are the ones
+            // with the highest index, and promoting a stale '_0' would advertise a previous
+            // run's trace as the repro for this run's bug.
+            string workerStem = GetWorkerArtifactStem(configuration, source, artifactBaseline);
+            if (workerStem is null)
+            {
+                return paths;
+            }
+
             foreach (string path in Directory.GetFiles(source))
             {
                 string name = Path.GetFileName(path);
@@ -408,6 +420,18 @@ namespace Microsoft.Coyote
             }
 
             return paths;
+        }
+
+        /// <summary>
+        /// Returns the '&lt;assembly&gt;_&lt;index&gt;' stem that the artifacts of the most recent run
+        /// in the specified directory carry, or null if the directory holds no such artifact.
+        /// </summary>
+        private static string GetWorkerArtifactStem(Configuration configuration, string source,
+            int artifactBaseline)
+        {
+            string assembly = Path.GetFileNameWithoutExtension(configuration.AssemblyToBeAnalyzed);
+            return ParallelTestArtifacts.GetArtifactStem(assembly,
+                Directory.GetFiles(source).Select(Path.GetFileName), artifactBaseline);
         }
 
         /// <summary>

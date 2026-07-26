@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Threading;
@@ -68,6 +69,11 @@ namespace Microsoft.Coyote.Cli
         private readonly List<Worker> Workers;
 
         /// <summary>
+        /// Identifies this run, so that the artifacts it looks for cannot be an earlier run's.
+        /// </summary>
+        private readonly string RunId;
+
+        /// <summary>
         /// Set once the workers have been asked to stop.
         /// </summary>
         private int IsStopRequested;
@@ -77,7 +83,19 @@ namespace Microsoft.Coyote.Cli
         /// no worker found one. Its artifacts are the ones promoted to the top level, so
         /// that the documented path to a reproducible trace keeps working.
         /// </summary>
-        internal string BuggyWorkerDirectory
+        internal string BuggyWorkerDirectory => this.BuggyWorker?.Directory;
+
+        /// <summary>
+        /// The highest artifact index that was already in the buggy worker's directory before it ran,
+        /// or -1 if the directory was empty. Anything at or below it is an earlier run's and must not
+        /// be promoted as this run's repro.
+        /// </summary>
+        internal int BuggyWorkerArtifactBaseline => this.BuggyWorker?.PreexistingArtifactIndex ?? -1;
+
+        /// <summary>
+        /// The lowest indexed worker that found a bug, or null if none did.
+        /// </summary>
+        private Worker BuggyWorker
         {
             get
             {
@@ -86,11 +104,33 @@ namespace Microsoft.Coyote.Cli
                     if (worker.Process != null && worker.Process.HasExited &&
                         worker.Process.ExitCode is (int)ExitCode.BugFound)
                     {
-                        return worker.Directory;
+                        return worker;
                     }
                 }
 
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// The number of workers the last run actually started, which is at most the number requested:
+        /// the plan drops workers that would receive less than one full rotation of the portfolio, and
+        /// a worker whose process could not be started never ran at all.
+        /// </summary>
+        internal int WorkerCount
+        {
+            get
+            {
+                int started = 0;
+                foreach (var worker in this.Workers)
+                {
+                    if (worker.Process != null)
+                    {
+                        started++;
+                    }
+                }
+
+                return started;
             }
         }
 
@@ -103,6 +143,7 @@ namespace Microsoft.Coyote.Cli
             this.RawArgs = rawArgs;
             this.LogWriter = logWriter;
             this.Workers = new List<Worker>();
+            this.RunId = Guid.NewGuid().ToString("N");
         }
 
         /// <summary>
@@ -154,10 +195,21 @@ namespace Microsoft.Coyote.Cli
         /// </summary>
         private void StartWorker(string method, ParallelTestPlan.Shard shard, string runDirectory, string stopFile)
         {
+            // Start each worker from an empty directory. The directories of a previous run in
+            // the same output directory would otherwise shift this run's artifact indexes, so
+            // that the trace promoted as the repro is the previous run's, and would let a
+            // worker that dies before writing its report contribute a stale one to the merge.
             string workerDirectory = Path.Combine(runDirectory, $"w{shard.Index}");
+            SafeDeleteDirectory(workerDirectory);
             Directory.CreateDirectory(workerDirectory);
 
-            string reportFile = Path.Combine(workerDirectory, "report.ser");
+            // Name the report after this run rather than reusing a fixed name. Deleting is best
+            // effort, so a fixed name would still let a worker that dies before writing contribute
+            // an earlier run's report whenever neither the directory nor the file could be removed.
+            // A name no earlier run can have produced makes that impossible rather than unlikely.
+            string reportFile = Path.Combine(workerDirectory, $"report-{this.RunId}.ser");
+            SafeDelete(reportFile);
+
             string[] childArgs = ParallelTestPlan.BuildChildArgs(this.RawArgs, method, shard, workerDirectory);
 
             var startInfo = new ProcessStartInfo(GetHostPath())
@@ -182,7 +234,15 @@ namespace Microsoft.Coyote.Cli
             // understate each run's elapsed time, so contribute nothing instead.
             startInfo.Environment["COYOTE_CLI_TELEMETRY_OPTOUT"] = "1";
 
-            var worker = new Worker(shard, reportFile, workerDirectory);
+            // Record what survived the delete, so that the artifacts of an earlier run left behind by a
+            // failed cleanup cannot be promoted as this run's repro. Deleting is best effort, and a
+            // worker can report a bug without leaving a trace, so "the highest index present" is not on
+            // its own enough to identify this run's.
+            var worker = new Worker(shard, reportFile, workerDirectory)
+            {
+                PreexistingArtifactIndex = GetHighestArtifactIndex(this.Configuration, workerDirectory)
+            };
+
             try
             {
                 worker.Process = Process.Start(startInfo);
@@ -374,6 +434,32 @@ namespace Microsoft.Coyote.Cli
         }
 
         /// <summary>
+        /// Returns the highest report artifact index already present in the specified worker directory,
+        /// or -1 if it holds none.
+        /// </summary>
+        private static int GetHighestArtifactIndex(Configuration configuration, string workerDirectory)
+        {
+            string source = Path.Combine(workerDirectory, "CoyoteOutput");
+            if (!Directory.Exists(source))
+            {
+                return -1;
+            }
+
+            try
+            {
+                string assembly = Path.GetFileNameWithoutExtension(configuration.AssemblyToBeAnalyzed);
+                return ParallelTestArtifacts.GetHighestArtifactIndex(assembly,
+                    Directory.GetFiles(source).Select(Path.GetFileName));
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                // The directory cannot be read, so nothing in it can be told apart from this run's
+                // output. Treat everything as pre-existing rather than risk promoting a stale trace.
+                return int.MaxValue;
+            }
+        }
+
+        /// <summary>
         /// Deletes the specified file if it exists.
         /// </summary>
         private static void SafeDelete(string path)
@@ -388,6 +474,30 @@ namespace Microsoft.Coyote.Cli
             catch (IOException)
             {
                 // The file is in use or already gone; either way there is nothing to do.
+            }
+        }
+
+        /// <summary>
+        /// Deletes the specified worker directory and everything below it, if it exists.
+        /// </summary>
+        /// <remarks>
+        /// Only ever called on a directory this class created itself, under the run directory
+        /// of the current parallel run.
+        /// </remarks>
+        private static void SafeDeleteDirectory(string path)
+        {
+            try
+            {
+                if (Directory.Exists(path))
+                {
+                    Directory.Delete(path, recursive: true);
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                // Something below the directory is in use or already gone. The worker still
+                // gets a directory to write into; it just may not be empty, which the report
+                // merge and the artifact promotion both tolerate.
             }
         }
 
@@ -420,6 +530,12 @@ namespace Microsoft.Coyote.Cli
             /// The reason the worker could not be started, if it could not be.
             /// </summary>
             internal string LaunchError { get; set; }
+
+            /// <summary>
+            /// The highest report artifact index already in this worker's directory when it started,
+            /// or -1 if the directory was empty.
+            /// </summary>
+            internal int PreexistingArtifactIndex { get; set; }
 
             /// <summary>
             /// Buffered standard output and error of this worker.
