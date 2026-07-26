@@ -193,9 +193,10 @@ namespace Microsoft.Coyote.Cli
                 Arity = ArgumentArity.ExactlyOne
             };
 
-            var iterationsOption = new Option<int>(
+            var iterationsOption = new Option<uint>(
                 aliases: new[] { "-i", "--iterations" },
-                getDefaultValue: () => (int)configuration.TestingIterations,
+                parseArgument: CreateUnsignedValueParser(() => configuration.TestingIterations),
+                isDefault: true,
                 description: "Number of testing iterations to run.")
             {
                 ArgumentHelpName = "ITERATIONS",
@@ -351,6 +352,7 @@ namespace Microsoft.Coyote.Cli
 
             var seedOption = new Option<uint>(
                 name: "--seed",
+                parseArgument: CreateUnsignedValueParser(),
                 description: "Specify the random value generator seed.")
             {
                 ArgumentHelpName = "VALUE",
@@ -366,27 +368,30 @@ namespace Microsoft.Coyote.Cli
                 Arity = ArgumentArity.ExactlyOne
             };
 
-            var timeoutDelayOption = new Option<int>(
+            var timeoutDelayOption = new Option<uint>(
                 name: "--timeout-delay",
-                getDefaultValue: () => (int)configuration.TimeoutDelay,
+                parseArgument: CreateUnsignedValueParser(() => configuration.TimeoutDelay),
+                isDefault: true,
                 description: "Specify the frequency of timeouts (not a unit of time).")
             {
                 ArgumentHelpName = "DELAY",
                 Arity = ArgumentArity.ExactlyOne
             };
 
-            var deadlockTimeoutOption = new Option<int>(
+            var deadlockTimeoutOption = new Option<uint>(
                 name: "--deadlock-timeout",
-                getDefaultValue: () => (int)configuration.DeadlockTimeout,
+                parseArgument: CreateUnsignedValueParser(() => configuration.DeadlockTimeout),
+                isDefault: true,
                 description: "Specify how much time (in ms) to wait before reporting a potential deadlock.")
             {
                 ArgumentHelpName = "TIMEOUT",
                 Arity = ArgumentArity.ExactlyOne
             };
 
-            var maxFuzzDelayOption = new Option<int>(
+            var maxFuzzDelayOption = new Option<uint>(
                 name: "--max-fuzz-delay",
-                getDefaultValue: () => (int)configuration.MaxFuzzingDelay,
+                parseArgument: CreateUnsignedValueParser(() => configuration.MaxFuzzingDelay),
+                isDefault: true,
                 description: "Specify the maximum time (in number of busy loops) an operation might " +
                     "get delayed during systematic fuzzing.")
             {
@@ -394,18 +399,20 @@ namespace Microsoft.Coyote.Cli
                 Arity = ArgumentArity.ExactlyOne
             };
 
-            var uncontrolledConcurrencyResolutionAttemptsOption = new Option<int>(
+            var uncontrolledConcurrencyResolutionAttemptsOption = new Option<uint>(
                 name: "--resolve-uncontrolled-concurrency-attempts",
-                getDefaultValue: () => (int)configuration.UncontrolledConcurrencyResolutionAttempts,
+                parseArgument: CreateUnsignedValueParser(() => configuration.UncontrolledConcurrencyResolutionAttempts),
+                isDefault: true,
                 description: "Specify how many times to try resolve each instance of uncontrolled concurrency.")
             {
                 ArgumentHelpName = "ATTEMPTS",
                 Arity = ArgumentArity.ExactlyOne
             };
 
-            var uncontrolledConcurrencyResolutionDelayOption = new Option<int>(
+            var uncontrolledConcurrencyResolutionDelayOption = new Option<uint>(
                 name: "--resolve-uncontrolled-concurrency-delay",
-                getDefaultValue: () => (int)configuration.UncontrolledConcurrencyResolutionDelay,
+                parseArgument: CreateUnsignedValueParser(() => configuration.UncontrolledConcurrencyResolutionDelay),
+                isDefault: true,
                 description: "Specify how much time (in number of busy loops) to wait between each attempt to " +
                     "resolve each instance of uncontrolled concurrency.")
             {
@@ -593,7 +600,6 @@ namespace Microsoft.Coyote.Cli
 
             // Add validators.
             pathArg.AddValidator(result => ValidateArgumentValueIsExpectedFile(result, ".dll", ".exe"));
-            iterationsOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
             timeoutOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
             parallelOption.AddValidator(result => ValidateExclusiveOptionValueIsAvailable(result, breakOption));
             workersOption.AddValidator(result => ValidatePrerequisiteOptionValueIsAvailable(result, parallelOption));
@@ -609,13 +615,7 @@ namespace Microsoft.Coyote.Cli
             maxUnfairStepsOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
             maxUnfairStepsOption.AddValidator(result => ValidateExclusiveOptionValueIsAvailable(result, maxStepsOption));
             serializeCoverageInfoOption.AddValidator(result => ValidatePrerequisiteOptionValueIsAvailable(result, coverageOption));
-            seedOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
             livenessTemperatureThresholdOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
-            timeoutDelayOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
-            deadlockTimeoutOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
-            maxFuzzDelayOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
-            uncontrolledConcurrencyResolutionAttemptsOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
-            uncontrolledConcurrencyResolutionDelayOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
             partialControlOption.AddValidator(result => ValidateOptionValueIsAllowed(result, allowedPartialControlModes));
 
             // Build command.
@@ -875,8 +875,59 @@ namespace Microsoft.Coyote.Cli
         }
 
         /// <summary>
+        /// Returns a parser that binds the value of an option whose configuration field is unsigned,
+        /// optionally supplying the default when the option is absent.
+        /// </summary>
+        /// <remarks>
+        /// Declaring these options as <c>Option&lt;int&gt;</c> and casting back to <c>uint</c> put the upper
+        /// half of their domain out of reach: the framework rejects anything above <see cref="int.MaxValue"/>
+        /// while parsing, before any validator runs, so the value could never arrive however it was written.
+        /// Parsing as <c>uint</c> instead needs this delegate rather than a plain <c>getDefaultValue</c>,
+        /// because the framework's own message for a bad value names the CLR type; the wording below is the
+        /// one <see cref="ValidateOptionValueIsUnsignedInteger"/> gives the options that really are signed.
+        /// <para>
+        /// Pass <paramref name="getDefaultValue"/> only together with <c>isDefault: true</c>, which is what
+        /// makes the parser run with no tokens to produce the default. A <paramref name="minimum"/> is
+        /// enforced here rather than by a validator because reading the value back with
+        /// <c>GetValueOrDefault</c> after this parser has reported an error rethrows that error as an
+        /// unhandled exception instead of printing it.
+        /// </para>
+        /// </remarks>
+        private static ParseArgument<uint> CreateUnsignedValueParser(Func<uint> getDefaultValue = null,
+            uint minimum = 0) =>
+            result =>
+            {
+                if (result.Tokens.Count is 0)
+                {
+                    return getDefaultValue?.Invoke() ?? default;
+                }
+
+                string value = result.Tokens[0].Value;
+                if (!uint.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out uint parsed) ||
+                    parsed < minimum)
+                {
+                    result.ErrorMessage = "Please give a positive integer to option " +
+                        $"'{GetParsedOptionName(result)}'.";
+                    return default;
+                }
+
+                return parsed;
+            };
+
+        /// <summary>
+        /// Returns the name of the option the specified argument result belongs to.
+        /// </summary>
+        private static string GetParsedOptionName(ArgumentResult result) =>
+            (result.Parent as OptionResult)?.Option.Name ?? result.Argument.Name;
+
+        /// <summary>
         /// Validates that the specified option result is an unsigned integer.
         /// </summary>
+        /// <remarks>
+        /// Only for options backed by a signed configuration field, where the negative half of the parsed
+        /// range has to be rejected after the fact. Options backed by an unsigned field parse as
+        /// <c>uint</c> instead; see <see cref="CreateUnsignedValueParser"/>.
+        /// </remarks>
         private static void ValidateOptionValueIsUnsignedInteger(OptionResult result)
         {
             if (result.Tokens.Select(token => token.Value).Where(v => !uint.TryParse(v, out _)).Any())
@@ -1016,7 +1067,7 @@ namespace Microsoft.Coyote.Cli
                         this.Configuration.TestMethodName = result.GetValueOrDefault<string>();
                         break;
                     case "iterations":
-                        this.Configuration.TestingIterations = (uint)result.GetValueOrDefault<int>();
+                        this.Configuration.TestingIterations = result.GetValueOrDefault<uint>();
                         break;
                     case "timeout":
                         this.Configuration.TestingTimeout = result.GetValueOrDefault<int>();
@@ -1108,19 +1159,19 @@ namespace Microsoft.Coyote.Cli
                         this.Configuration.UserExplicitlySetLivenessTemperatureThreshold = true;
                         break;
                     case "timeout-delay":
-                        this.Configuration.TimeoutDelay = (uint)result.GetValueOrDefault<int>();
+                        this.Configuration.TimeoutDelay = result.GetValueOrDefault<uint>();
                         break;
                     case "deadlock-timeout":
-                        this.Configuration.DeadlockTimeout = (uint)result.GetValueOrDefault<int>();
+                        this.Configuration.DeadlockTimeout = result.GetValueOrDefault<uint>();
                         break;
                     case "max-fuzz-delay":
-                        this.Configuration.MaxFuzzingDelay = (uint)result.GetValueOrDefault<int>();
+                        this.Configuration.MaxFuzzingDelay = result.GetValueOrDefault<uint>();
                         break;
                     case "resolve-uncontrolled-concurrency-attempts":
-                        this.Configuration.UncontrolledConcurrencyResolutionAttempts = (uint)result.GetValueOrDefault<int>();
+                        this.Configuration.UncontrolledConcurrencyResolutionAttempts = result.GetValueOrDefault<uint>();
                         break;
                     case "resolve-uncontrolled-concurrency-delay":
-                        this.Configuration.UncontrolledConcurrencyResolutionDelay = (uint)result.GetValueOrDefault<int>();
+                        this.Configuration.UncontrolledConcurrencyResolutionDelay = result.GetValueOrDefault<uint>();
                         break;
                     case "trace-analysis":
                         this.Configuration.IsTraceAnalysisEnabled = true;

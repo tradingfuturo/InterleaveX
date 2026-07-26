@@ -200,12 +200,31 @@ namespace Microsoft.Coyote.SystematicTesting
         /// <summary>
         /// Divides rounding towards positive infinity.
         /// </summary>
-        private static uint CeilingDivide(uint dividend, uint divisor) => (dividend + divisor - 1) / divisor;
+        /// <remarks>
+        /// The dividend is decremented before the division rather than the divisor added to it, so that
+        /// a dividend near <see cref="uint.MaxValue"/> cannot wrap. Adding first wraps to a tiny value
+        /// and yields zero, which then divides by zero one step later.
+        /// </remarks>
+        private static uint CeilingDivide(uint dividend, uint divisor) =>
+            dividend is 0 ? 0 : ((dividend - 1) / divisor) + 1;
 
         /// <summary>
-        /// Rounds the specified value up to the nearest multiple of the specified factor.
+        /// Rounds the specified value up to the nearest multiple of the specified factor, saturating at
+        /// <see cref="uint.MaxValue"/>.
         /// </summary>
-        private static uint RoundUpToMultiple(uint value, uint factor) => CeilingDivide(value, factor) * factor;
+        /// <remarks>
+        /// The rounded up value can exceed <see cref="uint.MaxValue"/>, and a wrapped chunk size would
+        /// hand the workers overlapping or empty seed ranges. It saturates at the maximum rather than at
+        /// the largest multiple that fits, because the caller divides the iteration count by this to
+        /// recompute the worker count: the largest multiple can be smaller than the value it was asked
+        /// to round up, which then needs one more worker than was requested to cover the run. Giving up
+        /// the alignment of a chunk this size costs nothing, since it can only ever be the last one.
+        /// </remarks>
+        private static uint RoundUpToMultiple(uint value, uint factor)
+        {
+            uint multiples = CeilingDivide(value, factor);
+            return multiples > uint.MaxValue / factor ? uint.MaxValue : multiples * factor;
+        }
 
         /// <summary>
         /// Rounds the specified value down to the nearest non-zero multiple of the factor.

@@ -146,6 +146,13 @@ if ($cli.IsPresent -and $IsWindows) {
         if ($LASTEXITCODE -eq 0 -or !$orphan.Contains("requires option 'parallel'")) {
             Assert-Failed "'--workers' without '--parallel' should have been rejected" $orphan
         }
+
+        # The iteration count is unsigned in the configuration, so the whole unsigned range has to
+        # reach it. Bounded by a timeout, because the point is that the count is accepted.
+        $unsigned = (& "$cli_tool_path/interleavex" test $bench -m NoBug -i 4294967295 -t 1) -join '\n'
+        if ($LASTEXITCODE -ne 0) {
+            Assert-Failed "An iteration count above int.MaxValue should have been accepted" $unsigned
+        }
     }
 
     Remove-Item $cli_tool_path -Recurse

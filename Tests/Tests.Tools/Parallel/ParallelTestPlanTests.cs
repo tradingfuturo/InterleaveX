@@ -28,6 +28,13 @@ namespace Microsoft.Coyote.Tools.Tests
         private static Configuration GetSingleStrategyConfiguration(uint iterations) =>
             Configuration.Create().WithTestingIterations(iterations).WithRandomStrategy();
 
+        /// <summary>
+        /// A configuration whose portfolio has two strategies rather than five, which is a different
+        /// rounding factor for the shard arithmetic to saturate against.
+        /// </summary>
+        private static Configuration GetFuzzingConfiguration(uint iterations) =>
+            Configuration.Create().WithTestingIterations(iterations).WithSystematicFuzzingEnabled();
+
         private static void AssertShardsCoverExactly(IReadOnlyList<ParallelTestPlan.Shard> shards,
             uint baseSeed, uint iterations)
         {
@@ -129,6 +136,81 @@ namespace Microsoft.Coyote.Tools.Tests
             var shards = ParallelTestPlan.Compute(GetPortfolioConfiguration(40), baseSeed, 4);
             Assert.Equal(shards.Count, shards.Select(s => s.Seed).Distinct().Count());
             Assert.Equal(40u, (uint)shards.Sum(s => (long)s.Iterations));
+        }
+
+        /// <summary>
+        /// Asserts the shard invariants without enumerating every seed, so that iteration counts
+        /// too large to walk can still be checked.
+        /// </summary>
+        private static void AssertShardsPartition(IReadOnlyList<ParallelTestPlan.Shard> shards,
+            uint baseSeed, uint iterations)
+        {
+            Assert.NotEmpty(shards);
+            Assert.DoesNotContain(shards, s => s.Iterations is 0);
+            Assert.Equal(iterations, (uint)shards.Sum(s => (long)s.Iterations));
+
+            // The ranges are contiguous and start where the sequential run would have started.
+            uint expectedSeed = baseSeed;
+            foreach (var shard in shards)
+            {
+                Assert.Equal(expectedSeed, shard.Seed);
+                expectedSeed = unchecked(expectedSeed + shard.Iterations);
+            }
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestShardsForIterationCountsNearMaxValue()
+        {
+            // The arithmetic rounds a chunk up to whole portfolio rotations, which is where a count
+            // close to the maximum used to wrap to zero and then divide by zero. Every count in this
+            // range must still produce a partition of the requested iterations.
+            foreach (uint iterations in new[]
+            {
+                uint.MaxValue, uint.MaxValue - 1, uint.MaxValue - 4, uint.MaxValue - 5, uint.MaxValue - 6
+            })
+            {
+                foreach (uint workers in new uint[] { 1, 4, 8 })
+                {
+                    var shards = ParallelTestPlan.Compute(GetPortfolioConfiguration(iterations), 0, workers);
+                    AssertShardsPartition(shards, 0, iterations);
+                }
+            }
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestShardCountNeverExceedsTheRequest()
+        {
+            // The chunk is rounded up to whole portfolio rotations, and near the maximum that rounding
+            // has to saturate. Saturating downwards leaves the chunk one short of covering the run, so
+            // the worker count recomputed from it comes out one higher than the user asked for — a
+            // process more than they budgeted, each holding a full runtime.
+            foreach (uint iterations in new[] { uint.MaxValue, uint.MaxValue - 1, uint.MaxValue - 2 })
+            {
+                foreach (uint workers in new uint[] { 1, 2, 3, 4 })
+                {
+                    foreach (Configuration configuration in new[]
+                    {
+                        GetPortfolioConfiguration(iterations),
+                        GetFuzzingConfiguration(iterations),
+                        GetSingleStrategyConfiguration(iterations)
+                    })
+                    {
+                        var shards = ParallelTestPlan.Compute(configuration, 0, workers);
+                        Assert.True((uint)shards.Count <= workers,
+                            $"Asked for {workers} worker(s) over {iterations} iteration(s), got {shards.Count} shard(s).");
+                        AssertShardsPartition(shards, 0, iterations);
+                    }
+                }
+            }
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestShardsForMaxValueWithSingleStrategy()
+        {
+            // The portfolio size is one here, so the rounding factor differs and the saturation path
+            // is reached with a different divisor.
+            var shards = ParallelTestPlan.Compute(GetSingleStrategyConfiguration(uint.MaxValue), 7, 4);
+            AssertShardsPartition(shards, 7, uint.MaxValue);
         }
 
         [Fact(Timeout = 5000)]

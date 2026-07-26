@@ -26,6 +26,14 @@ PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
   though the help text advertised the value-less form. Taking no value at all
   removes the ambiguity rather than guessing at it, and `--parallel` may now be
   written anywhere on the command line, including before the assembly path.
+- **Breaking (command line):** the options whose configuration field is unsigned
+  — `--iterations`, `--timeout-delay`, `--deadlock-timeout`, `--max-fuzz-delay`,
+  `--resolve-uncontrolled-concurrency-attempts` and
+  `--resolve-uncontrolled-concurrency-delay` — now parse as unsigned rather than
+  as signed values cast afterwards. Values above `int.MaxValue` were previously
+  rejected by the framework's own type conversion, before any validator ran, so
+  the upper half of the domain could not be expressed however it was written.
+  The wording of the error for a bad value is unchanged.
 - Bounded channels of zero capacity — the rendezvous channel added in .NET 10 —
   are now controlled during testing. Each item passes from a writer to a reader
   directly, and whichever side arrives first is paused by the scheduler; these
