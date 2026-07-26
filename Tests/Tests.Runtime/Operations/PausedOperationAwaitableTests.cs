@@ -138,12 +138,17 @@ namespace Microsoft.Coyote.Runtime.Tests
                 var tcs2 = new TaskCompletionSource<bool>();
                 var task = CoyoteTypes.Threading.Tasks.Task.Run(async () =>
                 {
-                    var op = CoyoteRuntime.Current.GetExecutingOperation();
+                    var group = CoyoteRuntime.Current.GetExecutingOperation().Group;
                     var t = RecursiveAsync(tcs1, 0, 10);
                     CoyoteTypes.Threading.Tasks.TaskCompletionSource<bool>.SetResult(tcs2, true);
                     await t;
-                    Specification.Assert(op == CoyoteRuntime.Current.GetExecutingOperation(),
-                        "Operation of the continuation is not the same.");
+
+                    // Unlike the direct await of a paused operation, which resumes on the same operation,
+                    // awaiting an incomplete task resumes through the synchronization context on a new
+                    // operation that inherits the awaiting operation's group. So the group, not the
+                    // operation, is what is preserved once the recursion above unwinds.
+                    Specification.Assert(group == CoyoteRuntime.Current.GetExecutingOperation().Group,
+                        "Group of the continuation is not the same.");
                 });
 
                 CoyoteRuntime.Current.PauseOperationUntil(default, () => tcs2.Task.IsCompleted);
