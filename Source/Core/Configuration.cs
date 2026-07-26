@@ -49,6 +49,17 @@ namespace Microsoft.Coyote
         internal bool StopOnFirstFailure;
 
         /// <summary>
+        /// Number of worker processes to shard testing iterations across. A value of 1,
+        /// which is the default, runs the iterations in this process without sharding.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately not a data member: this is an orchestration knob for the command
+        /// line tool, and serializing it would change the shape of the configuration that
+        /// is embedded in test and trace reports.
+        /// </remarks>
+        internal uint ParallelWorkerCount;
+
+        /// <summary>
         /// Number of testing iterations.
         /// </summary>
         [DataMember]
@@ -365,6 +376,7 @@ namespace Microsoft.Coyote
 
             this.ExplorationStrategy = ExplorationStrategy.Random;
             this.TestingIterations = 1;
+            this.ParallelWorkerCount = 1;
             this.TestingTimeout = 0;
             this.RandomGeneratorSeed = null;
             this.PortfolioMode = PortfolioMode.Fair;

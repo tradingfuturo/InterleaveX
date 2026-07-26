@@ -575,13 +575,33 @@ namespace Microsoft.Coyote.SystematicTesting
         /// Tries to emit the available coverage reports to the specified directory with the given file name,
         /// and returns the paths of all emitted coverage reports.
         /// </summary>
-        public bool TryEmitCoverageReports(string directory, string fileName, out IEnumerable<string> reportPaths)
+        public bool TryEmitCoverageReports(string directory, string fileName, out IEnumerable<string> reportPaths) =>
+            TryEmitCoverageReports(this.Configuration, this.TestReport.CoverageInfo, this.Scheduler.Graph,
+                directory, fileName, out reportPaths);
+
+        /// <summary>
+        /// Tries to emit the available coverage reports for the specified coverage information.
+        /// </summary>
+        /// <remarks>
+        /// Exposed separately from the instance method so that a coordinator holding only
+        /// merged coverage information, and no engine, can emit the same set of reports.
+        /// </remarks>
+        internal static bool TryEmitCoverageReports(Configuration configuration, ActorCoverageInfo coverageInfo,
+            string directory, string fileName, out IEnumerable<string> reportPaths) =>
+            TryEmitCoverageReports(configuration, coverageInfo, null, directory, fileName, out reportPaths);
+
+        /// <summary>
+        /// Tries to emit the available coverage reports to the specified directory with the given file name,
+        /// and returns the paths of all emitted coverage reports.
+        /// </summary>
+        private static bool TryEmitCoverageReports(Configuration configuration, ActorCoverageInfo coverageInfo,
+            ExecutionGraph graph, string directory, string fileName, out IEnumerable<string> reportPaths)
         {
             var paths = new List<string>();
-            var coverageReporter = new ActorCoverageReporter(this.TestReport.CoverageInfo);
+            var coverageReporter = new ActorCoverageReporter(coverageInfo);
 
             // Emit the coverage visualization, if it exists.
-            if (this.Configuration.IsActivityCoverageReported)
+            if (configuration.IsActivityCoverageReported)
             {
                 string graphFilePath = Path.Combine(directory, fileName + ".coverage.dgml");
                 if (coverageReporter.TryEmitVisualizationGraph(graphFilePath))
@@ -595,24 +615,24 @@ namespace Microsoft.Coyote.SystematicTesting
                     paths.Add(coverageFilePath);
                 }
             }
-            else if (this.Configuration.IsTraceAnalysisEnabled && this.Scheduler.Graph.Length > 0)
+            else if (configuration.IsTraceAnalysisEnabled && graph != null && graph.Length > 0)
             {
                 string coveragePath = Path.Combine(directory, fileName + ".coverage.dgml");
-                File.WriteAllText(coveragePath, TraceVisualizer.Visualize(this.Scheduler.Graph, TraceVisualizer.Layout.Coverage));
+                File.WriteAllText(coveragePath, TraceVisualizer.Visualize(graph, TraceVisualizer.Layout.Coverage));
                 paths.Add(coveragePath);
             }
 
-            if (this.Configuration.IsScheduleCoverageReported)
+            if (configuration.IsScheduleCoverageReported)
             {
                 string scheduleCoverageFilePath = Path.Combine(directory, fileName + ".coverage.schedule.txt");
                 coverageReporter.TryEmitScheduleCoverageReport(scheduleCoverageFilePath);
                 paths.Add(scheduleCoverageFilePath);
             }
 
-            if (this.Configuration.IsCoverageInfoSerialized)
+            if (configuration.IsCoverageInfoSerialized)
             {
                 string serFilePath = Path.Combine(directory, fileName + ".coverage.ser");
-                this.TestReport.CoverageInfo.Save(serFilePath);
+                coverageInfo.Save(serFilePath);
                 paths.Add(serFilePath);
             }
 

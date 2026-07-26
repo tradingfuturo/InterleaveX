@@ -175,7 +175,19 @@ namespace Microsoft.Coyote.SystematicTesting
         /// <summary>
         /// Lock for the test report.
         /// </summary>
-        private readonly object Lock;
+        /// <remarks>
+        /// Not read-only because the data contract serializer creates instances without
+        /// running a constructor, so this has to be restored after deserialization. Both
+        /// <see cref="Clone"/> and <see cref="Load"/> depend on that.
+        /// </remarks>
+        private object Lock;
+
+        /// <summary>
+        /// Restores state that the data contract serializer does not populate, because it
+        /// bypasses constructors and only assigns data members.
+        /// </summary>
+        [OnDeserialized]
+        private void OnDeserialized(StreamingContext context) => this.Lock = new object();
 
         /// <summary>
         /// Unhandled exception caught by RunNextIteration.
@@ -553,9 +565,7 @@ namespace Microsoft.Coyote.SystematicTesting
         /// </summary>
         public TestReport Clone()
         {
-            var serializerSettings = new DataContractSerializerSettings();
-            serializerSettings.PreserveObjectReferences = true;
-            var serializer = new DataContractSerializer(typeof(TestReport), serializerSettings);
+            var serializer = new DataContractSerializer(typeof(TestReport), GetSerializerSettings());
             using (var ms = new System.IO.MemoryStream())
             {
                 lock (this.Lock)
@@ -566,5 +576,44 @@ namespace Microsoft.Coyote.SystematicTesting
                 }
             }
         }
+
+        /// <summary>
+        /// Saves the test report to the specified file.
+        /// </summary>
+        /// <remarks>
+        /// Used to hand a report back from a worker process when testing iterations are
+        /// sharded. The coverage information is a data member of the report, so it travels
+        /// with it and does not need to be transferred separately.
+        /// </remarks>
+        public void Save(string filePath)
+        {
+            var serializer = new DataContractSerializer(typeof(TestReport), GetSerializerSettings());
+            using (var fs = System.IO.File.Create(filePath))
+            {
+                lock (this.Lock)
+                {
+                    serializer.WriteObject(fs, this);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Loads a test report from the specified file.
+        /// </summary>
+        public static TestReport Load(string filePath)
+        {
+            var serializer = new DataContractSerializer(typeof(TestReport), GetSerializerSettings());
+            using (var fs = System.IO.File.OpenRead(filePath))
+            using (var reader = System.Xml.XmlDictionaryReader.CreateTextReader(fs, System.Xml.XmlDictionaryReaderQuotas.Max))
+            {
+                return (TestReport)serializer.ReadObject(reader, true);
+            }
+        }
+
+        /// <summary>
+        /// Returns the serializer settings used to round-trip a test report.
+        /// </summary>
+        private static DataContractSerializerSettings GetSerializerSettings() =>
+            new DataContractSerializerSettings { PreserveObjectReferences = true };
     }
 }

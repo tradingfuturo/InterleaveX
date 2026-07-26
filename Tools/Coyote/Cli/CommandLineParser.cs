@@ -7,6 +7,7 @@ using System.CommandLine;
 using System.CommandLine.Builder;
 using System.CommandLine.Invocation;
 using System.CommandLine.Parsing;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using Microsoft.Coyote.Logging;
@@ -555,6 +556,20 @@ namespace Microsoft.Coyote.Cli
                 Arity = ArgumentArity.Zero
             };
 
+            var parallelOption = new Option<string>(
+                aliases: new[] { "-p", "--parallel" },
+                getDefaultValue: () => "1",
+                description: "Run testing iterations in parallel across N worker processes, each exploring a " +
+                    "disjoint range of random seeds. Use 'auto' for one worker per logical processor. The " +
+                    "'--iterations' bound is the total across all workers, rounded up so that each worker " +
+                    "covers whole rotations of the exploration strategy portfolio. Note that the q-learning " +
+                    "and prioritization strategies accumulate state across iterations, so each worker learns " +
+                    "independently from a fraction of the run. Peak memory scales with the worker count.")
+            {
+                ArgumentHelpName = "WORKERS",
+                Arity = ArgumentArity.ZeroOrOne
+            };
+
             var outputDirectoryOption = new Option<string>(
                 aliases: new[] { "-o", "--outdir" },
                 description: "Output directory for emitting reports. This can be an absolute path or relative to current directory.")
@@ -567,6 +582,8 @@ namespace Microsoft.Coyote.Cli
             pathArg.AddValidator(result => ValidateArgumentValueIsExpectedFile(result, ".dll", ".exe"));
             iterationsOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
             timeoutOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
+            parallelOption.AddValidator(result => ValidateParallelOptionValue(result));
+            parallelOption.AddValidator(result => ValidateExclusiveOptionValueIsAvailable(result, breakOption));
             strategyOption.AddValidator(result => ValidateOptionValueIsAllowed(result, allowedStrategies));
             strategyOption.AddValidator(result => ValidateExclusiveOptionValueIsAvailable(result, portfolioModeOption));
             strategyValueOption.AddValidator(result => ValidatePrerequisiteOptionValueIsAvailable(result, strategyOption));
@@ -635,6 +652,7 @@ namespace Microsoft.Coyote.Cli
             this.AddOption(command, outputDirectoryOption);
             this.AddOption(command, listTestsOption);
             this.AddOption(command, stopOnFirstFailureOption);
+            this.AddOption(command, parallelOption);
             command.TreatUnmatchedTokensAsErrors = true;
             return command;
         }
@@ -850,6 +868,18 @@ namespace Microsoft.Coyote.Cli
             if (result.Tokens.Select(token => token.Value).Where(v => !uint.TryParse(v, out _)).Any())
             {
                 result.ErrorMessage = $"Please give a positive integer to option '{result.Option.Name}'.";
+            }
+        }
+
+        /// <summary>
+        /// Validates that the specified option result is a worker count or 'auto'.
+        /// </summary>
+        private static void ValidateParallelOptionValue(OptionResult result)
+        {
+            if (result.Tokens.Select(token => token.Value)
+                .Where(v => v != "auto" && (!uint.TryParse(v, out uint workers) || workers is 0)).Any())
+            {
+                result.ErrorMessage = $"Please give a positive integer or 'auto' to option '{result.Option.Name}'.";
             }
         }
 
@@ -1154,6 +1184,11 @@ namespace Microsoft.Coyote.Cli
                         break;
                     case "stop-on-first-failure":
                         this.Configuration.StopOnFirstFailure = true;
+                        break;
+                    case "parallel":
+                        string workers = result.GetValueOrDefault<string>();
+                        this.Configuration.ParallelWorkerCount = string.IsNullOrEmpty(workers) || workers is "auto" ?
+                            (uint)Environment.ProcessorCount : uint.Parse(workers, CultureInfo.InvariantCulture);
                         break;
                     case "break":
                         this.Configuration.AttachDebugger = true;

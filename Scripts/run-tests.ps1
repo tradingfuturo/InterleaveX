@@ -97,12 +97,33 @@ if ($cli.IsPresent -and $IsWindows) {
     dotnet tool install --add-source $PSScriptRoot/../bin/nuget InterleaveX.CLI --no-cache --tool-path $temp_path
 
     $help = (& "$cli_tool_path/interleavex" -?) -join '\n'
-    Remove-Item $cli_tool_path -Recurse
     if (!$help.Contains("interleavex [command] [options]")) {
+        Remove-Item $cli_tool_path -Recurse
         Write-Error "### Unexpected output from interleavex command"
         Write-Error $help
         Exit 1
     }
+
+    Write-Comment -text "Running the sharded testing smoke test."
+    $bench = "$PSScriptRoot/../Tools/SchedulerBench/bin/net10.0/SchedulerBench.dll"
+    if (Test-Path $bench) {
+        $parallel = (& "$cli_tool_path/interleavex" test $bench -m NoBug -i 20 --seed 1 --parallel 4) -join '\n'
+        if ($LASTEXITCODE -ne 0) {
+            Remove-Item $cli_tool_path -Recurse
+            Write-Error "### The sharded testing smoke test failed"
+            Write-Error $parallel
+            Exit 1
+        }
+
+        if (!$parallel.Contains("Explored 20 execution paths")) {
+            Remove-Item $cli_tool_path -Recurse
+            Write-Error "### Sharded testing did not explore every requested iteration"
+            Write-Error $parallel
+            Exit 1
+        }
+    }
+
+    Remove-Item $cli_tool_path -Recurse
 }
 
 Write-Comment -text "Done." -color "green"

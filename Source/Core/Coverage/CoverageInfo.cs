@@ -68,7 +68,18 @@ namespace Microsoft.Coyote.Coverage
         /// <summary>
         /// Synchronizes access to the coverage data.
         /// </summary>
-        protected readonly object Lock;
+        /// <remarks>
+        /// Not read-only because the data contract serializer creates instances without
+        /// running a constructor, so this has to be restored after deserialization.
+        /// </remarks>
+        protected object Lock;
+
+        /// <summary>
+        /// Restores state that the data contract serializer does not populate, because it
+        /// bypasses constructors and only assigns data members.
+        /// </summary>
+        [OnDeserialized]
+        private void OnDeserialized(StreamingContext context) => this.Lock = new object();
 
         /// <summary>
         /// Initializes a new instance of the <see cref="CoverageInfo"/> class.

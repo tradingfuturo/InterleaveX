@@ -3,6 +3,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
 using System.Linq;
 using Microsoft.Coyote.Cli;
 using Microsoft.Coyote.Logging;
@@ -16,8 +19,16 @@ namespace Microsoft.Coyote
     /// </summary>
     internal class Program
     {
+        /// <summary>
+        /// The command line this process was invoked with. Worker processes are launched by
+        /// filtering these arguments, rather than reconstructing them from the configuration,
+        /// so that options the coordinator does not know about are still passed through.
+        /// </summary>
+        private static string[] RawArgs;
+
         private static int Main(string[] args)
         {
+            RawArgs = args;
             var parser = new CommandLineParser(args);
             if (!parser.IsSuccessful)
             {
@@ -110,46 +121,58 @@ namespace Microsoft.Coyote
                                 configuration.AssemblyToBeAnalyzed);
                         }
 
-                        using TestingEngine engine = new TestingEngine(configuration, logWriter);
-                        AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
-                        engine.Run();
-
-                        string directory = OutputFileManager.CreateOutputDirectory(configuration);
-                        string fileName = OutputFileManager.GetResolvedFileName(
-                            configuration.AssemblyToBeAnalyzed, directory);
-
-                        // Emit the test reports.
-                        logWriter.LogImportant("... Emitting execution trace reports:");
-                        if (engine.TryEmitReports(directory, fileName,
-                            out IEnumerable<string> reportPaths))
+                        if (configuration.ParallelWorkerCount > 1)
                         {
-                            foreach (var path in reportPaths)
-                            {
-                                logWriter.LogImportant("..... Writing {0}", path);
-                            }
+                            testExitCode = RunTestInParallel(configuration, logWriter);
                         }
                         else
                         {
-                            logWriter.LogImportant("..... No test reports available.");
-                        }
+                            using TestingEngine engine = new TestingEngine(configuration, logWriter);
+                            AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
 
-                        // Emit the coverage reports.
-                        logWriter.LogImportant("... Emitting coverage reports:");
-                        if (engine.TryEmitCoverageReports(directory, fileName, out reportPaths))
-                        {
-                            foreach (var path in reportPaths)
+                            // When this process is a worker of a parallel run, stop at the next
+                            // iteration boundary if the coordinator asks, or if it has gone away.
+                            RegisterWorkerStopCallback(engine);
+                            engine.Run();
+                            SaveWorkerReport(engine);
+
+                            string directory = OutputFileManager.CreateOutputDirectory(configuration);
+                            string fileName = OutputFileManager.GetResolvedFileName(
+                                configuration.AssemblyToBeAnalyzed, directory);
+
+                            // Emit the test reports.
+                            logWriter.LogImportant("... Emitting execution trace reports:");
+                            if (engine.TryEmitReports(directory, fileName,
+                                out IEnumerable<string> reportPaths))
                             {
-                                logWriter.LogImportant("..... Writing {0}", path);
+                                foreach (var path in reportPaths)
+                                {
+                                    logWriter.LogImportant("..... Writing {0}", path);
+                                }
                             }
-                        }
-                        else
-                        {
-                            logWriter.LogImportant("..... No coverage reports available.");
-                        }
+                            else
+                            {
+                                logWriter.LogImportant("..... No test reports available.");
+                            }
 
-                        logWriter.LogImportant(engine.TestReport.GetText(configuration, "..."));
-                        logWriter.LogImportant("... Elapsed {0} sec.", engine.Profiler.Results());
-                        testExitCode = GetExitCodeFromTestReport(engine.TestReport);
+                            // Emit the coverage reports.
+                            logWriter.LogImportant("... Emitting coverage reports:");
+                            if (engine.TryEmitCoverageReports(directory, fileName, out reportPaths))
+                            {
+                                foreach (var path in reportPaths)
+                                {
+                                    logWriter.LogImportant("..... Writing {0}", path);
+                                }
+                            }
+                            else
+                            {
+                                logWriter.LogImportant("..... No coverage reports available.");
+                            }
+
+                            logWriter.LogImportant(engine.TestReport.GetText(configuration, "..."));
+                            logWriter.LogImportant("... Elapsed {0} sec.", engine.Profiler.Results());
+                            testExitCode = GetExitCodeFromTestReport(engine.TestReport);
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -298,6 +321,150 @@ namespace Microsoft.Coyote
             {
                 logWriter.LogError(ex.Message);
                 logWriter.LogDebug(ex.StackTrace);
+            }
+        }
+
+        /// <summary>
+        /// Runs the configured test method by sharding its iterations across worker
+        /// processes, then reports the merged result.
+        /// </summary>
+        private static ExitCode RunTestInParallel(Configuration configuration, LogWriter logWriter)
+        {
+            string directory = OutputFileManager.CreateOutputDirectory(configuration);
+            string fileName = OutputFileManager.GetResolvedFileName(configuration.AssemblyToBeAnalyzed, directory);
+            string runDirectory = Path.Combine(directory, "workers");
+            Directory.CreateDirectory(runDirectory);
+
+            var coordinator = new ParallelTestCoordinator(configuration, RawArgs, logWriter);
+            var stopwatch = Stopwatch.StartNew();
+            TestReport report = coordinator.Run(configuration.TestMethodName, runDirectory);
+            stopwatch.Stop();
+
+            // Promote the artifacts of the worker that found a bug, so that the reproducible
+            // trace is where a sequential run would have left it.
+            logWriter.LogImportant("... Emitting execution trace reports:");
+            string buggyWorker = coordinator.BuggyWorkerDirectory;
+            if (buggyWorker != null)
+            {
+                foreach (string path in PromoteWorkerArtifacts(configuration, buggyWorker, directory, fileName))
+                {
+                    logWriter.LogImportant("..... Writing {0}", path);
+                }
+            }
+            else
+            {
+                logWriter.LogImportant("..... No test reports available.");
+            }
+
+            // Emit the coverage reports from the merged coverage information.
+            logWriter.LogImportant("... Emitting coverage reports:");
+            if (TestingEngine.TryEmitCoverageReports(configuration, report.CoverageInfo, directory, fileName,
+                out IEnumerable<string> coveragePaths))
+            {
+                foreach (string path in coveragePaths)
+                {
+                    logWriter.LogImportant("..... Writing {0}", path);
+                }
+            }
+            else
+            {
+                logWriter.LogImportant("..... No coverage reports available.");
+            }
+
+            logWriter.LogImportant(report.GetText(configuration, "..."));
+            logWriter.LogImportant("... Elapsed {0} sec (wall clock across {1} workers).",
+                stopwatch.Elapsed.TotalSeconds, configuration.ParallelWorkerCount);
+            return GetExitCodeFromTestReport(report);
+        }
+
+        /// <summary>
+        /// Copies the report artifacts of the specified worker to the top level output
+        /// directory, and returns the paths written.
+        /// </summary>
+        private static IEnumerable<string> PromoteWorkerArtifacts(Configuration configuration,
+            string workerDirectory, string directory, string fileName)
+        {
+            var paths = new List<string>();
+            string source = Path.Combine(workerDirectory, "CoyoteOutput");
+            if (!Directory.Exists(source))
+            {
+                return paths;
+            }
+
+            // A worker writes into an empty directory of its own, so its files always carry
+            // the '_0' suffix that the output file manager assigns first.
+            string workerStem = Path.GetFileNameWithoutExtension(configuration.AssemblyToBeAnalyzed) + "_0";
+            foreach (string path in Directory.GetFiles(source))
+            {
+                string name = Path.GetFileName(path);
+                if (!name.StartsWith(workerStem, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                string target = Path.Combine(directory, fileName + name.Substring(workerStem.Length));
+                File.Copy(path, target, true);
+                paths.Add(target);
+            }
+
+            return paths;
+        }
+
+        /// <summary>
+        /// Registers a callback that stops the specified engine when the coordinator of a
+        /// parallel run asks for it, or when that coordinator is no longer running.
+        /// </summary>
+        /// <remarks>
+        /// Does nothing unless this process was launched as a worker. Stopping this way lets
+        /// the engine finish its current iteration and emit its report, so the work already
+        /// done still counts towards the merged result.
+        /// </remarks>
+        private static void RegisterWorkerStopCallback(TestingEngine engine)
+        {
+            string stopFile = Environment.GetEnvironmentVariable(ParallelTestCoordinator.StopFileVariable);
+            if (string.IsNullOrEmpty(stopFile))
+            {
+                return;
+            }
+
+            string parentId = Environment.GetEnvironmentVariable(ParallelTestCoordinator.ParentProcessVariable);
+            _ = int.TryParse(parentId, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parentProcessId);
+
+            engine.RegisterStartIterationCallBack(_ =>
+            {
+                if (File.Exists(stopFile) || (parentProcessId != 0 && !IsProcessRunning(parentProcessId)))
+                {
+                    engine.Stop();
+                }
+            });
+        }
+
+        /// <summary>
+        /// Saves the report of the specified engine if this process is a worker of a
+        /// parallel run.
+        /// </summary>
+        private static void SaveWorkerReport(TestingEngine engine)
+        {
+            string reportFile = Environment.GetEnvironmentVariable(ParallelTestCoordinator.ReportFileVariable);
+            if (!string.IsNullOrEmpty(reportFile))
+            {
+                engine.TestReport.Save(reportFile);
+            }
+        }
+
+        /// <summary>
+        /// Returns true if a process with the specified id is running.
+        /// </summary>
+        private static bool IsProcessRunning(int processId)
+        {
+            try
+            {
+                using Process process = Process.GetProcessById(processId);
+                return !process.HasExited;
+            }
+            catch (ArgumentException)
+            {
+                return false;
             }
         }
 

@@ -16,6 +16,33 @@ concurrency defects across our codebase.
 PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
 
 ### (InterleaveX)
+- Added a `--parallel` option to the `test` command, which shards testing
+  iterations across worker processes, each exploring a disjoint range of random
+  seeds, and merges their reports and coverage into a single result. Two
+  approximations are involved: the per-worker iteration count is rounded up so
+  that each worker covers whole rotations of the exploration strategy
+  portfolio, and the q-learning and prioritization strategies, which accumulate
+  state across iterations, become N independent learners rather than one.
+- Reduced per-scheduling-step overhead in the systematic testing runtime. The
+  call-site registration injected into every rewritten method no longer takes
+  the global runtime lock, no longer grows an unbounded list unless trace
+  analysis is enabled, and hashes lazily. Explored paths are now recorded by
+  digest rather than by rendering the whole execution trace to a string, and
+  visited program states are only recorded when something contributes to the
+  state hash. Measured 14-24% faster before these compose with the change
+  below, and up to 48% less allocation.
+- **Breaking:** execution trace analysis is now disabled by default, because
+  building the execution graph allocates on every scheduling step and is only
+  consumed when emitting a DGML diagram. Pass `--trace-analysis` (or
+  `Configuration.WithTraceAnalysisEnabled()`) to restore the previous behavior.
+  A consequence is that the "Visited N unique states" report line no longer
+  appears when nothing contributes to the program state hash.
+- Added `Tools/SchedulerBench`, a benchmark harness that drives `TestingEngine`
+  directly and reports wall-clock time and bytes allocated. The existing
+  benchmarks all exercise the production actor runtime, so none of them observe
+  changes to the scheduler or the exploration strategies.
+- Fixed `TestReport` and `CoverageInfo` losing their synchronization object when
+  deserialized, which made a cloned or loaded report throw on merge.
 - Rebranded product name, NuGet package IDs (`InterleaveX`, `InterleaveX.Core`,
   `InterleaveX.Actors`, `InterleaveX.Test`, `InterleaveX.Tool`,
   `InterleaveX.CLI`), CLI command (`interleavex`), and documentation to

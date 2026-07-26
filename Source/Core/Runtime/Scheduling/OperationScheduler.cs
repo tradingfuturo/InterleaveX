@@ -92,6 +92,20 @@ namespace Microsoft.Coyote.Runtime
         internal bool IsReplaying { get; private set; }
 
         /// <summary>
+        /// Returns the number of exploration strategies that the specified configuration
+        /// rotates through, which is 1 when the portfolio is disabled.
+        /// </summary>
+        /// <remarks>
+        /// The portfolio is rotated round-robin in <see cref="InitializeNextIteration"/>, so
+        /// an iteration is identified by its seed together with its index modulo this value.
+        /// Anything partitioning iterations across processes must keep that alignment. Kept
+        /// beside the portfolio construction below so the two cannot drift apart.
+        /// </remarks>
+        internal static int GetPortfolioSize(Configuration configuration) =>
+            !configuration.PortfolioMode.IsEnabled() ? 1 :
+            configuration.IsSystematicFuzzingEnabled ? 2 : 5;
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="OperationScheduler"/> class.
         /// </summary>
         private OperationScheduler(Configuration configuration, SchedulingPolicy policy, IRandomValueGenerator generator, ExecutionTrace prefixTrace)

@@ -57,6 +57,24 @@ abort after the first non-success result. Coyote also emits diagnostic warnings 
 `[Test]`-decorated methods have invalid signatures (e.g. non-public or unsupported parameters)
 instead of silently ignoring them.
 
+### Running iterations in parallel
+
+Testing iterations are independent, so they can be sharded across worker processes with the
+`--parallel` option. Use `--parallel N` for a specific number of workers, or `--parallel auto` for
+one per logical processor. The `--iterations` bound is the total across all workers, and the
+reports and coverage of every worker are merged into a single result, so the output looks the same
+as a sequential run.
+
+Two caveats are worth knowing. First, the iteration count each worker receives is rounded up so
+that each covers whole rotations of the exploration strategy portfolio, which keeps the strategy
+each iteration runs under aligned with a sequential run. Second, the q-learning and prioritization
+strategies accumulate state across iterations, so with N workers you get N independent learners
+each seeing a fraction of the run rather than one learner seeing all of it. Peak memory also scales
+with the worker count, since each worker is a full process.
+
+Iterations cannot be parallelized within a single process: the program under test has static state
+of its own, and Coyote's model is that one iteration owns the process.
+
 ### Controlled and reproducible testing
 
 In its essence, the Coyote tester:
