@@ -252,6 +252,45 @@ namespace Microsoft.Coyote.Runtime
         }
 
         /// <summary>
+        /// Returns a digest that identifies this execution trace by its content.
+        /// </summary>
+        /// <remarks>
+        /// Distinguishes traces the same way that <see cref="ToString"/> does, but without
+        /// materializing the trace as a string. This is used to count distinct explored
+        /// paths for coverage, where only the count is ever read, and where retaining a
+        /// string per iteration for the lifetime of the run is prohibitively expensive: a
+        /// trace of a hundred thousand steps is several megabytes.
+        /// </remarks>
+        internal string GetDigest()
+        {
+            // FNV-1a 64-bit offset basis.
+            ulong hash = 14695981039346656037UL;
+            for (int idx = 0; idx < this.Steps.Count; ++idx)
+            {
+                hash = Mix(hash, this.Steps[idx].GetSequenceHash());
+            }
+
+            return hash.ToString("x16", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
+        /// Combines the specified hash with the specified value.
+        /// </summary>
+        private static ulong Mix(ulong hash, ulong value)
+        {
+            unchecked
+            {
+                // FNV-1a 64-bit, consuming the value one byte at a time.
+                for (int idx = 0; idx < 8; ++idx)
+                {
+                    hash = (hash ^ ((value >> (idx * 8)) & 0xFF)) * 1099511628211UL;
+                }
+
+                return hash;
+            }
+        }
+
+        /// <summary>
         /// Contains metadata related to a single execution step.
         /// </summary>
         internal abstract class Step : IEquatable<Step>, IComparable<Step>
@@ -322,6 +361,12 @@ namespace Microsoft.Coyote.Runtime
             /// identified by their creation sequence ids.
             /// </summary>
             public abstract string ToSequenceString();
+
+            /// <summary>
+            /// Returns a hash identifying this step by the same content that
+            /// <see cref="ToSequenceString"/> renders, without allocating.
+            /// </summary>
+            internal abstract ulong GetSequenceHash();
         }
 
         /// <summary>
@@ -371,6 +416,10 @@ namespace Microsoft.Coyote.Runtime
 
             /// <inheritdoc/>
             public override string ToSequenceString() => $"op({this.CurrentSequenceId}),sp({this.SchedulingPoint}),next({this.SequenceId})";
+
+            /// <inheritdoc/>
+            internal override ulong GetSequenceHash() =>
+                Mix(Mix(Mix(1UL, this.CurrentSequenceId), (ulong)this.SchedulingPoint), this.SequenceId);
         }
 
         /// <summary>
@@ -406,6 +455,10 @@ namespace Microsoft.Coyote.Runtime
 
             /// <inheritdoc/>
             public override string ToSequenceString() => $"op({this.CurrentSequenceId}),bool({this.Value})";
+
+            /// <inheritdoc/>
+            internal override ulong GetSequenceHash() =>
+                Mix(Mix(2UL, this.CurrentSequenceId), this.Value ? 1UL : 0UL);
         }
 
         /// <summary>
@@ -441,6 +494,10 @@ namespace Microsoft.Coyote.Runtime
 
             /// <inheritdoc/>
             public override string ToSequenceString() => $"op({this.CurrentSequenceId}),int({this.Value})";
+
+            /// <inheritdoc/>
+            internal override ulong GetSequenceHash() =>
+                Mix(Mix(3UL, this.CurrentSequenceId), unchecked((ulong)(long)this.Value));
         }
     }
 }

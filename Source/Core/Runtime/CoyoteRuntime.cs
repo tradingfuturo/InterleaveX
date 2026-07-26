@@ -2789,7 +2789,7 @@ namespace Microsoft.Coyote.Runtime
                 }
 
                 // Register the explored execution path for coverage.
-                this.CoverageInfo.DeclareExploredExecutionPath(this.Scheduler.Trace.ToString());
+                this.CoverageInfo.DeclareExploredExecutionPath(this.Scheduler.Trace.GetDigest());
 
                 this.ExecutionStatus = status;
                 this.CancellationSource.Cancel();
