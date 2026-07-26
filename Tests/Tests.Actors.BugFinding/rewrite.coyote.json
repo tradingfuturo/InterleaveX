@@ -1,5 +1,5 @@
 {
-  "AssembliesPath": "./bin/$(TargetFramework)",
+  "AssembliesPath": "./bin/$(Configuration)/$(TargetFramework)",
   "Assemblies": [
     "Microsoft.Coyote.Tests.Actors.dll",
     "Microsoft.Coyote.Tests.Actors.BugFinding.dll"

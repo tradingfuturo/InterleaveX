@@ -44,7 +44,7 @@ steps:
   displayName: 'ESRP CodeSigning .NET 8.0'
   inputs:
     ConnectedServiceName: CoyoteNugetSign
-    FolderPath: bin\net8.0
+    FolderPath: bin\Release\net8.0
     signConfigType: inlineSignParams
     inlineOperation: |
      [
@@ -74,7 +74,7 @@ steps:
   displayName: 'ESRP CodeSigning .NET 6.0'
   inputs:
     ConnectedServiceName: CoyoteNugetSign
-    FolderPath: bin\net6.0
+    FolderPath: bin\Release\net6.0
     signConfigType: inlineSignParams
     inlineOperation: |
      [
@@ -104,7 +104,7 @@ steps:
   displayName: 'ESRP CodeSigning .NET Standard 2.0'
   inputs:
     ConnectedServiceName: CoyoteNugetSign
-    FolderPath: bin\netstandard2.0
+    FolderPath: bin\Release\netstandard2.0
     signConfigType: inlineSignParams
     inlineOperation: |
      [
@@ -134,7 +134,7 @@ steps:
   displayName: 'ESRP CodeSigning .NET 4.6.2'
   inputs:
     ConnectedServiceName: CoyoteNugetSign
-    FolderPath: bin\net462
+    FolderPath: bin\Release\net462
     signConfigType: inlineSignParams
     inlineOperation: |
      [
@@ -164,7 +164,7 @@ steps:
   displayName: 'ESRP CodeSigning NuGet package'
   inputs:
     ConnectedServiceName: CoyoteNugetSign
-    FolderPath: bin\nuget
+    FolderPath: bin\Release\nuget
     Pattern: '*.nupkg'
     signConfigType: inlineSignParams
     inlineOperation: |

@@ -1,6 +1,6 @@
 {
-  "AssembliesPath": "../../../bin/$(TargetFramework)/Configurations",
-  "OutputPath": "../../../bin/$(TargetFramework)/Configurations",
+  "AssembliesPath": "../../../../bin/$(Configuration)/$(TargetFramework)/Configurations",
+  "OutputPath": "../../../../bin/$(Configuration)/$(TargetFramework)/Configurations",
   "IsRewritingMemoryLocations": false,
   "IsRewritingConcurrentCollections": false,
   "Assemblies": [

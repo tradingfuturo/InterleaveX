@@ -3,7 +3,7 @@
     <Description>InterleaveX systematic testing engine (a fork of Microsoft Coyote).</Description>
     <AssemblyName>Microsoft.Coyote.Test</AssemblyName>
     <RootNamespace>Microsoft.Coyote.Test</RootNamespace>
-    <OutputPath>..\..\bin\</OutputPath>
+    <OutputPath>..\..\bin\$(Configuration)\</OutputPath>
     <Framework462Supported>false</Framework462Supported>
   </PropertyGroup>
   <PropertyGroup>

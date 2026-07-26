@@ -12,7 +12,7 @@ $path = Join-Path -Path $PSScriptRoot -ChildPath ".." -AdditionalChildPath "Tool
 $project = Join-Path -Path $path -ChildPath "GenDoc.csproj"
 $command = "build -c Release $project /p:Platform=""Any CPU"""
 Invoke-ToolCommand -tool "dotnet" -cmd $command -error_msg "Failed to build the GenDoc tool."
-$gendoc = Join-Path -Path $path -ChildPath "bin" -AdditionalChildPath $framework, "GenDoc.exe"
+$gendoc = Join-Path -Path $path -ChildPath "bin" -AdditionalChildPath "Release", $framework, "GenDoc.exe"
 
 function InstallToolVersion {
     Param ([string] $name, [string] $version)
@@ -39,7 +39,7 @@ function InstallToolVersion {
 # Install InheritDocTool.
 InstallToolVersion -name "InheritDocTool" -version "2.5.2"
 
-$framework_target = "$root_dir\bin\$framework"
+$framework_target = "$root_dir\bin\Release\$framework"
 Write-Host "Processing inherit docs under $framework_target ..." -ForegroundColor Yellow
 & "$packages_path\InheritDoc.exe" --base "$framework_target" -o
 
@@ -50,16 +50,16 @@ if (Test-Path -Path $target) {
 }
 
 Write-Host "Generating new markdown under $target"
-& $gendoc gen "$root_dir\bin\$framework\Microsoft.Coyote.dll" -o $target --namespace Microsoft.Coyote
+& $gendoc gen "$root_dir\bin\Release\$framework\Microsoft.Coyote.dll" -o $target --namespace Microsoft.Coyote
 $coyotetoc = Get-Content -Path "$target\toc.yml"
 
-& $gendoc gen "$root_dir\bin\$framework\Microsoft.Coyote.Actors.dll" -o $target --namespace Microsoft.Coyote.Actors
+& $gendoc gen "$root_dir\bin\Release\$framework\Microsoft.Coyote.Actors.dll" -o $target --namespace Microsoft.Coyote.Actors
 $actorstoc = Get-Content -Path "$target\toc.yml"
 $actorstoc = [System.Collections.ArrayList]$actorstoc
 $actorstoc.RemoveRange(0, 1); # remove -toc and assembly header
 $actorstoc.InsertRange(0, $coyotetoc)
 
-& $gendoc gen "$root_dir\bin\$framework\Microsoft.Coyote.Test.dll" -o $target --namespace Microsoft.Coyote.Test
+& $gendoc gen "$root_dir\bin\Release\$framework\Microsoft.Coyote.Test.dll" -o $target --namespace Microsoft.Coyote.Test
 $mergedtoc = Get-Content -Path "$target\toc.yml"
 $mergedtoc = [System.Collections.ArrayList]$mergedtoc
 $mergedtoc.RemoveRange(0, 1); # remove -toc and assembly header

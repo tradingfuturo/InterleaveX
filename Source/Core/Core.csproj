@@ -3,7 +3,7 @@
     <Description>InterleaveX core libraries and runtime (a fork of Microsoft Coyote).</Description>
     <AssemblyName>Microsoft.Coyote</AssemblyName>
     <RootNamespace>Microsoft.Coyote</RootNamespace>
-    <OutputPath>..\..\bin\</OutputPath>
+    <OutputPath>..\..\bin\$(Configuration)\</OutputPath>
     <Framework462Supported>false</Framework462Supported>
   </PropertyGroup>
   <PropertyGroup>

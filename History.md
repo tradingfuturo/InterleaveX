@@ -16,6 +16,22 @@ concurrency defects across our codebase.
 PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
 
 ### (InterleaveX)
+- **Breaking (build layout):** build output is now written under a
+  configuration-specific directory, so `bin/net8.0` becomes
+  `bin/Release/net8.0` and `Tests/X/bin/net8.0` becomes
+  `Tests/X/bin/Release/net8.0`. Previously every project overrode `OutputPath`
+  to drop the configuration, so debug and release builds wrote to the same
+  place and silently overwrote each other; whichever was built last determined
+  what `dotnet test --no-build`, the IL-diff validation, and the benchmark
+  scripts actually saw. The IL-diff golden hashes have been rebaselined to
+  release, which is what `build.ps1` and CI produce, and were previously
+  recorded from a debug build so that check could not pass on CI.
+  `run-tests.ps1` gained a `-configuration` parameter and now passes it to
+  `dotnet test`, which had been defaulting to debug.
+- Rewriting configuration files now expand a `$(Configuration)` token in
+  `AssembliesPath` and `OutputPath`, alongside the existing
+  `$(TargetFramework)`, so that a configuration-specific output directory can
+  be named. It is resolved the same way the target framework is.
 - Added a `--parallel` option to the `test` command, which shards testing
   iterations across worker processes, each exploring a disjoint range of random
   seeds, and merges their reports and coverage into a single result. Two

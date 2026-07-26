@@ -4,7 +4,7 @@
     <AssemblyName>GenDoc</AssemblyName>
     <RootNamespace>Microsoft.Coyote.GenDoc</RootNamespace>
     <OutputType>Exe</OutputType>
-    <OutputPath>.\bin\</OutputPath>
+    <OutputPath>.\bin\$(Configuration)\</OutputPath>
     <NetStandard2Supported>false</NetStandard2Supported>
     <Framework462Supported>false</Framework462Supported>
     <Net6Supported>false</Net6Supported>

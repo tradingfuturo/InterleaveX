@@ -52,6 +52,18 @@ that case the original assemblies will be replaced.
 - `Assemblies` is the list of specific assemblies in `AssembliesPath` to be rewritten. You must
   explicitly list all the assemblies to rewrite (pattern matching, `*` and `.` are not supported).
 
+Paths may contain the `$(TargetFramework)` and `$(Configuration)` tokens, which are resolved from
+the assembly that invokes the rewriter. Prefer them over a hard-coded path such as `bin/net8.0`
+when a project emits more than one target framework or configuration, since that path is otherwise
+ambiguous as to which build it refers to:
+
+```json
+{
+  "AssembliesPath": "bin/$(Configuration)/$(TargetFramework)",
+  "Assemblies": [ "BoundedBuffer.dll" ]
+}
+```
+
 Then pass this JSON file on the command line: `interleavex rewrite config.json`.
 
 ### Which DLLs to rewrite?

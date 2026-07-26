@@ -10,6 +10,8 @@ param(
     [string]$logger = "",
     [ValidateSet("quiet", "minimal", "normal", "detailed", "diagnostic")]
     [string]$v = "normal",
+    [ValidateSet("Debug", "Release")]
+    [string]$configuration = "Release",
     [switch]$cli,
     [switch]$ci
 )
@@ -51,7 +53,7 @@ foreach ($kvp in $targets.GetEnumerator()) {
         continue
     }
 
-    $frameworks = Get-ChildItem -Path "$PSScriptRoot/../Tests/$($kvp.Value)/bin" | `
+    $frameworks = Get-ChildItem -Path "$PSScriptRoot/../Tests/$($kvp.Value)/bin/$configuration" | `
         Where-Object Name -CIn $all_frameworks | Select-Object -expand Name
     foreach ($f in $frameworks) {
         if ((-not $ci.IsPresent) -and ($f -ne $framework)) {
@@ -61,10 +63,10 @@ foreach ($kvp in $targets.GetEnumerator()) {
         $target = "$PSScriptRoot/../Tests/$($kvp.Value)/$($kvp.Value).csproj"
         if ($f -eq "net10.0" -or $f -eq "net9.0" -or $f -eq "net8.0") {
             $AssemblyName = GetAssemblyName($target)
-            $command = [IO.Path]::Combine($PSScriptRoot, "..", "Tests", $($kvp.Value), "bin", $f, "$AssemblyName.dll")
+            $command = [IO.Path]::Combine($PSScriptRoot, "..", "Tests", $($kvp.Value), "bin", $configuration, $f, "$AssemblyName.dll")
             $command = $command + ' -r "' + [IO.Path]::Combine( `
-                $PSScriptRoot, "..", "Tests", $($kvp.Value), "bin", $f, "*.dll") + '"'
-            $command = $command + ' -r "' + [IO.Path]::Combine($PSScriptRoot, "..", "bin", $f, "*.dll") + '"'
+                $PSScriptRoot, "..", "Tests", $($kvp.Value), "bin", $configuration, $f, "*.dll") + '"'
+            $command = $command + ' -r "' + [IO.Path]::Combine($PSScriptRoot, "..", "bin", $configuration, $f, "*.dll") + '"'
             $command = $command + ' -r "' + [IO.Path]::Combine($dotnet_runtime_path, $runtime_version, "*.dll") + '"'
             $command = $command + ' -r "' + [IO.Path]::Combine($aspnet_runtime_path, $runtime_version, "*.dll") + '"'
             # Exclude the compiler-generated <PrivateImplementationDetails>.InlineArrayAsReadOnlySpan
@@ -77,7 +79,7 @@ foreach ($kvp in $targets.GetEnumerator()) {
         }
 
         Invoke-DotnetTest -dotnet $dotnet -project $($kvp.Name) -target $target `
-            -filter $filter -logger $logger -framework $f -verbosity $v
+            -filter $filter -logger $logger -framework $f -verbosity $v -configuration $configuration
     }
 }
 
@@ -94,7 +96,7 @@ if ($cli.IsPresent -and $IsWindows) {
     }
 
     Write-Comment -text "Installing the InterleaveX.CLI package."
-    dotnet tool install --add-source $PSScriptRoot/../bin/nuget InterleaveX.CLI --no-cache --tool-path $temp_path
+    dotnet tool install --add-source $PSScriptRoot/../bin/$configuration/nuget InterleaveX.CLI --no-cache --tool-path $temp_path
 
     $help = (& "$cli_tool_path/interleavex" -?) -join '\n'
     if (!$help.Contains("interleavex [command] [options]")) {
@@ -105,7 +107,7 @@ if ($cli.IsPresent -and $IsWindows) {
     }
 
     Write-Comment -text "Running the sharded testing smoke test."
-    $bench = "$PSScriptRoot/../Tools/SchedulerBench/bin/net10.0/SchedulerBench.dll"
+    $bench = "$PSScriptRoot/../Tools/SchedulerBench/bin/Release/net10.0/SchedulerBench.dll"
     if (Test-Path $bench) {
         $parallel = (& "$cli_tool_path/interleavex" test $bench -m NoBug -i 20 --seed 1 --parallel 4) -join '\n'
         if ($LASTEXITCODE -ne 0) {

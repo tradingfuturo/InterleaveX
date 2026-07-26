@@ -14,7 +14,7 @@
     <PackageReadmeFile>docs\readme.md</PackageReadmeFile>
     <PackageReleaseNotes>https://github.com/tradingfuturo/interleavex/blob/main/History.md</PackageReleaseNotes>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
-    <PackageOutputPath>$(MSBuildThisFileDirectory)/../bin/nuget</PackageOutputPath>
+    <PackageOutputPath>$(MSBuildThisFileDirectory)/../bin/$(Configuration)/nuget</PackageOutputPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0'">
     <LangVersion>14.0</LangVersion>

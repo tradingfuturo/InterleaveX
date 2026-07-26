@@ -6,7 +6,7 @@
     <BuildOutputTargetFolder>tools</BuildOutputTargetFolder>
     <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
     <OutputType>Exe</OutputType>
-    <OutputPath>..\..\bin\</OutputPath>
+    <OutputPath>..\..\bin\$(Configuration)\</OutputPath>
     <NetStandard2Supported>false</NetStandard2Supported>
     <NoWarn>$(NoWarn),1591</NoWarn>
   </PropertyGroup>

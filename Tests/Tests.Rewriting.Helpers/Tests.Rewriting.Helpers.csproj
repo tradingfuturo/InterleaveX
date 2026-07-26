@@ -3,7 +3,7 @@
     <Description>Helpers for rewriting tests.</Description>
     <AssemblyName>Microsoft.Coyote.Tests.Rewriting.Helpers</AssemblyName>
     <RootNamespace>Microsoft.Coyote.Rewriting.Tests.Helpers</RootNamespace>
-    <OutputPath>.\bin\</OutputPath>
+    <OutputPath>.\bin\$(Configuration)\</OutputPath>
     <NetStandard2Supported>false</NetStandard2Supported>
     <IsPackable>false</IsPackable>
     <NoWarn>$(NoWarn),1591</NoWarn>

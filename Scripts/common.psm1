@@ -11,15 +11,15 @@ function CheckPSVersion() {
 }
 
 # Invokes the specified coyote tool command on the specified target.
-function Invoke-CoyoteTool([String]$cmd, [String]$dotnet, [String]$framework, [String]$target, [String]$key) {
+function Invoke-CoyoteTool([String]$cmd, [String]$dotnet, [String]$framework, [String]$target, [String]$key, [String]$configuration = "Release") {
     Write-Comment -prefix "..." -text "Rewriting '$target' ($framework)"
 
-    $tool = Join-Path -Path "." -ChildPath "bin" -AdditionalChildPath @($framework, "interleavex.exe")
+    $tool = Join-Path -Path "." -ChildPath "bin" -AdditionalChildPath @($configuration, $framework, "interleavex.exe")
     $command = "$cmd $target"
 
     if (-not (Test-Path $tool)) {
         $tool = $dotnet
-        $coyote = Join-Path -Path "." -ChildPath "bin" -AdditionalChildPath @($framework, "interleavex.dll")
+        $coyote = Join-Path -Path "." -ChildPath "bin" -AdditionalChildPath @($configuration, $framework, "interleavex.dll")
         $command = "$coyote $cmd $target"
     }
 
@@ -55,14 +55,14 @@ function Invoke-DotnetBuild([String]$dotnet, [String]$solution, [String]$config,
 }
 
 # Runs the specified .NET test using the specified framework.
-function Invoke-DotnetTest([String]$dotnet, [String]$project, [String]$target, [string]$filter, [string]$framework, [string]$logger, [string]$verbosity) {
+function Invoke-DotnetTest([String]$dotnet, [String]$project, [String]$target, [string]$filter, [string]$framework, [string]$logger, [string]$verbosity, [string]$configuration) {
     Write-Comment -prefix "..." -text "Testing '$project' ($framework)"
     if (-not (Test-Path $target)) {
         Write-Error "tests for '$project' ($framework) not found."
         exit
     }
 
-    $command = "test $target -f $framework --no-build -v $verbosity --logger 'trx' --blame --blame-crash"
+    $command = "test $target -c $configuration -f $framework --no-build -v $verbosity --logger 'trx' --blame --blame-crash"
     if (!($filter -eq "")) {
         $command = "$command --filter $filter"
     }

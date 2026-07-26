@@ -3,7 +3,7 @@
     <Description>InterleaveX actor runtime and library (a fork of Microsoft Coyote).</Description>
     <AssemblyName>Microsoft.Coyote.Actors</AssemblyName>
     <RootNamespace>Microsoft.Coyote.Actors</RootNamespace>
-    <OutputPath>..\..\bin\</OutputPath>
+    <OutputPath>..\..\bin\$(Configuration)\</OutputPath>
     <Framework462Supported>false</Framework462Supported>
   </PropertyGroup>
   <PropertyGroup>

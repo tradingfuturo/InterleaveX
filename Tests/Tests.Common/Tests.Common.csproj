@@ -3,7 +3,7 @@
     <Description>Common test helpers.</Description>
     <AssemblyName>Microsoft.Coyote.Tests.Common</AssemblyName>
     <RootNamespace>Microsoft.Coyote.Tests.Common</RootNamespace>
-    <OutputPath>.\bin\</OutputPath>
+    <OutputPath>.\bin\$(Configuration)\</OutputPath>
     <NetStandard2Supported>false</NetStandard2Supported>
     <IsPackable>false</IsPackable>
     <NoWarn>$(NoWarn),1591</NoWarn>

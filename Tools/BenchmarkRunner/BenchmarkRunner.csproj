@@ -4,7 +4,7 @@
     <AssemblyName>BenchmarkRunner</AssemblyName>
     <RootNamespace>Microsoft.Coyote.Benchmarking</RootNamespace>
     <OutputType>Exe</OutputType>
-    <OutputPath>.\bin\</OutputPath>
+    <OutputPath>.\bin\$(Configuration)\</OutputPath>
     <NetStandard2Supported>false</NetStandard2Supported>
     <Framework462Supported>false</Framework462Supported>
     <Net6Supported>false</Net6Supported>
@@ -26,9 +26,9 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
   </ItemGroup>
   <Target Name="CoyoteRewriteWin" AfterTargets="AfterBuild" Condition="'$(OS)'=='Windows_NT'">
-    <Exec Command="..\..\bin\$(TargetFramework)\interleavex.exe rewrite $(OutputPath)Tests.Performance.dll" />
+    <Exec Command="..\..\bin\$(Configuration)\$(TargetFramework)\interleavex.exe rewrite $(OutputPath)Tests.Performance.dll" />
   </Target>
   <Target Name="CoyoteRewriteUnix" AfterTargets="AfterBuild" Condition="'$(OS)'!='Windows_NT'">
-    <Exec Command="dotnet ../../bin/$(TargetFramework)/interleavex.dll rewrite $(OutputPath)Tests.Performance.dll" />
+    <Exec Command="dotnet ../../bin/$(Configuration)/$(TargetFramework)/interleavex.dll rewrite $(OutputPath)Tests.Performance.dll" />
   </Target>
 </Project>

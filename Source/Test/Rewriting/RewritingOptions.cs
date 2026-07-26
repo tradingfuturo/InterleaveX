@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -257,11 +258,18 @@ namespace Microsoft.Coyote.Rewriting
                 throw new InvalidOperationException("Unable to resolve '$(TargetFramework)', please set it explicitly.");
             }
 
-            this.AssembliesDirectory = ResolvePath(this.AssembliesDirectory, targetFramework);
-            this.OutputDirectory = ResolvePath(this.OutputDirectory, targetFramework);
+            // The configuration is resolved from the same assembly as the target framework,
+            // so that a path can name the build it belongs to. Without it a path such as
+            // 'bin/net8.0' is ambiguous when a project emits both configurations.
+            string configuration = ResolveConfiguration(callingAssembly) ??
+                ResolveConfiguration(Assembly.GetEntryAssembly()) ??
+                ResolveConfiguration(Assembly.GetExecutingAssembly());
+
+            this.AssembliesDirectory = ResolvePath(this.AssembliesDirectory, targetFramework, configuration);
+            this.OutputDirectory = ResolvePath(this.OutputDirectory, targetFramework, configuration);
             foreach (string path in this.AssemblyPaths.ToArray())
             {
-                var newPath = ResolvePath(path, targetFramework);
+                var newPath = ResolvePath(path, targetFramework, configuration);
                 if (newPath != path)
                 {
                     this.AssemblyPaths.Remove(path);
@@ -287,8 +295,35 @@ namespace Microsoft.Coyote.Rewriting
         /// <summary>
         /// Resolves the specified path.
         /// </summary>
-        private static string ResolvePath(string path, string targetFramework) =>
-            path.Replace("$(TargetFramework)", targetFramework);
+        private static string ResolvePath(string path, string targetFramework, string configuration)
+        {
+            path = path.Replace("$(TargetFramework)", targetFramework);
+            if (configuration != null)
+            {
+                path = path.Replace("$(Configuration)", configuration);
+            }
+
+            return path;
+        }
+
+        /// <summary>
+        /// Returns the build configuration of the specified assembly, or null if it cannot
+        /// be determined.
+        /// </summary>
+        /// <remarks>
+        /// Inferred from whether the JIT optimizer was disabled for the assembly, which is
+        /// how the compiler distinguishes a debug build from a release one.
+        /// </remarks>
+        private static string ResolveConfiguration(Assembly assembly)
+        {
+            if (assembly?.GetCustomAttributes(typeof(DebuggableAttribute), false)
+                .SingleOrDefault() is DebuggableAttribute attribute)
+            {
+                return attribute.IsJITOptimizerDisabled ? "Debug" : "Release";
+            }
+
+            return null;
+        }
 
         /// <summary>
         /// Returns the resolved target framework of the specified or executing assembly.
