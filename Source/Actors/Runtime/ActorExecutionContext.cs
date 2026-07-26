@@ -141,7 +141,10 @@ namespace Microsoft.Coyote.Actors
             this.EnabledActors = new HashSet<ActorId>();
             this.CoverageInfo = new ActorCoverageInfo();
             this.LogManager = logManager;
-            this.QuiescenceCompletionSource = new TaskCompletionSource<bool>();
+            // Continuations must not run inline, so that completing this source never resumes an awaiting
+            // operation on the actor thread that reached quiescence, matching the halt sources below.
+            this.QuiescenceCompletionSource = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
             this.IsActorQuiescenceAwaited = false;
             this.QuiescenceSyncObject = new object();
             this.HaltCompletionMap = new ConcurrentDictionary<ActorId, TaskCompletionSource<bool>>();
@@ -487,13 +490,21 @@ namespace Microsoft.Coyote.Actors
             if (this.Runtime.SchedulingPolicy != SchedulingPolicy.None ||
                 this.Configuration.IsActorQuiescenceCheckingEnabledOutsideTesting)
             {
+                bool hasReachedQuiescence;
                 lock (this.QuiescenceSyncObject)
                 {
                     this.EnabledActors.Remove(actorId);
-                    if (this.IsActorQuiescenceAwaited && this.EnabledActors.Count is 0)
-                    {
-                        this.QuiescenceCompletionSource.TrySetResult(true);
-                    }
+                    hasReachedQuiescence = this.IsActorQuiescenceAwaited && this.EnabledActors.Count is 0;
+                }
+
+                if (hasReachedQuiescence)
+                {
+                    // Complete the source outside the lock. Completing it resumes the awaiting operation
+                    // through the scheduler, which can pause this thread until it is scheduled again. Doing
+                    // that while holding the lock stalls every other actor's event-handler bookkeeping, which
+                    // needs the same lock, so the scheduler cannot run the very operations this thread is
+                    // waiting behind, and the run is reported as a potential deadlock or hang.
+                    this.QuiescenceCompletionSource.TrySetResult(true);
                 }
             }
         }
@@ -836,13 +847,29 @@ namespace Microsoft.Coyote.Actors
                 if (this.EnabledActors.Count > 0)
                 {
                     this.IsActorQuiescenceAwaited = true;
-                    return this.QuiescenceCompletionSource.Task;
+                    return this.AsControlledTask(this.QuiescenceCompletionSource.Task);
                 }
                 else
                 {
                     return Task.CompletedTask;
                 }
             }
+        }
+
+        /// <summary>
+        /// Registers the specified task, which is handed to user code to await, as a known controlled task.
+        /// </summary>
+        /// <remarks>
+        /// A task that the runtime does not know about is treated as uncontrolled, so awaiting it pauses the
+        /// awaiting operation on a dependency the scheduler cannot resolve. The runtime then has to fall back
+        /// to the periodic deadlock detection monitor, which reports the wait as a potential deadlock or hang
+        /// even though a controlled operation is going to complete the task. Registering it here, rather than
+        /// at each call site, keeps that guarantee with the task that needs it.
+        /// </remarks>
+        private Task AsControlledTask(Task task)
+        {
+            this.Runtime.RegisterKnownControlledTask(task);
+            return task;
         }
 
         /// <inheritdoc/>
@@ -870,12 +897,12 @@ namespace Microsoft.Coyote.Actors
                     removed.TrySetResult(true);
                 }
 
-                return tcs.Task;
+                return this.AsControlledTask(tcs.Task);
             }
 
             // Send the halt event; the finally block will signal the TCS when halt completes.
             this.SendEvent(id, HaltEvent.Instance);
-            return tcs.Task;
+            return this.AsControlledTask(tcs.Task);
         }
 
         /// <inheritdoc/>
@@ -893,7 +920,8 @@ namespace Microsoft.Coyote.Actors
                 tasks[i] = this.HaltActorAsync(actorIds[i]);
             }
 
-            return Task.WhenAll(tasks);
+            // The task that WhenAll builds is a new one, so it needs registering as well.
+            return this.AsControlledTask(Task.WhenAll(tasks));
         }
 
         /// <summary>
