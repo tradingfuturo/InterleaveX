@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using Microsoft.Coyote.Specifications;
 using Xunit;
 using Xunit.Abstractions;
+using CoyoteChannels = Microsoft.Coyote.Rewriting.Types.Threading.Channels;
 
 namespace Microsoft.Coyote.BugFinding.Tests
 {
@@ -43,9 +44,9 @@ namespace Microsoft.Coyote.BugFinding.Tests
 
                 foreach (var channel in channels)
                 {
-                    string name = channel.GetType().FullName;
-                    Specification.Assert(name.Contains("Microsoft.Coyote.Rewriting.Types.Threading.Channels"),
-                        "Channel factory was not redirected to the controlled mock: '{0}'.", name);
+                    Specification.Assert(channel is CoyoteChannels.ControlledChannel<int>,
+                        "Channel factory was not redirected to the controlled mock: '{0}'.",
+                        channel.GetType().FullName);
                 }
             });
         }

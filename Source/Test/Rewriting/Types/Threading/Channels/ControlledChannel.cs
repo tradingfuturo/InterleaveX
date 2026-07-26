@@ -59,7 +59,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         /// <summary>
         /// Readers parked in <c>WaitToReadAsync</c>; each is merely signaled that data may be available.
         /// </summary>
-        private readonly Queue<WaitToReadWaiter> WaitingReaders;
+        private readonly Queue<SystemTasks.TaskCompletionSource<bool>> WaitingReaders;
 
         /// <summary>
         /// Writers parked in <c>WriteAsync</c> on a full <c>Wait</c>-mode channel; each carries its item.
@@ -97,7 +97,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
             this.FullMode = fullMode;
             this.ItemDropped = itemDropped;
             this.BlockedReaders = new Queue<IItemWaiter>();
-            this.WaitingReaders = new Queue<WaitToReadWaiter>();
+            this.WaitingReaders = new Queue<SystemTasks.TaskCompletionSource<bool>>();
             this.PendingWrites = new Queue<PendingWrite>();
             this.WaitingWriters = new Queue<SystemTasks.TaskCompletionSource<bool>>();
             this.CompletionSource = CreateSource<bool>();
@@ -206,7 +206,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
                 }
 
                 var tcs = CreateSource<bool>();
-                this.WaitingReaders.Enqueue(new WaitToReadWaiter(tcs));
+                this.WaitingReaders.Enqueue(tcs);
                 return new SystemTasks.ValueTask<bool>(Park(runtime, tcs, cancellationToken));
             }
         }
@@ -402,12 +402,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
                 {
                     while (this.WaitingReaders.Count > 0)
                     {
-                        this.WaitingReaders.Dequeue().Complete(error);
+                        CompleteWait(this.WaitingReaders.Dequeue(), error);
                     }
 
                     while (this.BlockedReaders.Count > 0)
                     {
-                        this.BlockedReaders.Dequeue().FailNoData(CreateClosedException(error));
+                        this.BlockedReaders.Dequeue().FailNoData(error);
                     }
 
                     this.ResolveCompletion();
@@ -415,29 +415,23 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
                 else
                 {
                     // Data remains: let waiters drain it; completion resolves when the last item is read.
-                    while (this.WaitingReaders.Count > 0)
-                    {
-                        this.WaitingReaders.Dequeue().SignalAvailable();
-                    }
+                    this.WakeWaitingReaders();
                 }
 
-                // No further writes can succeed.
-                while (this.PendingWrites.Count > 0)
+                // No further writes can succeed. The closed exception does not depend on the waiter,
+                // so build it once and share it, as the BCL does.
+                if (this.PendingWrites.Count > 0)
                 {
-                    this.PendingWrites.Dequeue().Fail(CreateClosedException(error));
+                    Exception closedError = CreateClosedException(error);
+                    while (this.PendingWrites.Count > 0)
+                    {
+                        this.PendingWrites.Dequeue().Fail(closedError);
+                    }
                 }
 
                 while (this.WaitingWriters.Count > 0)
                 {
-                    var writer = this.WaitingWriters.Dequeue();
-                    if (error is null)
-                    {
-                        writer.TrySetResult(false);
-                    }
-                    else
-                    {
-                        writer.TrySetException(error);
-                    }
+                    CompleteWait(this.WaitingWriters.Dequeue(), error);
                 }
 
                 return true;
@@ -498,16 +492,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
                     return true;
 
                 case SystemChannels.BoundedChannelFullMode.DropOldest:
-                    dropped = this.Items.First.Value;
-                    this.Items.RemoveFirst();
-                    hasDropped = true;
-                    this.Items.AddLast(item);
-                    this.WakeWaitingReaders();
-                    return true;
-
                 case SystemChannels.BoundedChannelFullMode.DropNewest:
-                    dropped = this.Items.Last.Value;
-                    this.Items.RemoveLast();
+                    // Evict a buffered item to make room for the new one.
+                    LinkedListNode<T> evicted = this.FullMode is SystemChannels.BoundedChannelFullMode.DropOldest ?
+                        this.Items.First : this.Items.Last;
+                    dropped = evicted.Value;
+                    this.Items.Remove(evicted);
                     hasDropped = true;
                     this.Items.AddLast(item);
                     this.WakeWaitingReaders();
@@ -545,15 +535,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         {
             while (this.WaitingReaders.Count > 0)
             {
-                this.WaitingReaders.Dequeue().SignalAvailable();
+                this.WaitingReaders.Dequeue().TrySetResult(true);
             }
         }
 
         /// <summary>
         /// A read freed a buffer slot: promote a parked writer (transferring its item) and wake any
-        /// <c>WaitToWriteAsync</c> waiters. Returns whether a promoted write buffered a new item.
+        /// <c>WaitToWriteAsync</c> waiters.
         /// </summary>
-        private bool OnSlotFreed()
+        private void OnSlotFreed()
         {
             bool buffered = false;
             while (this.HasSpace && this.PendingWrites.Count > 0)
@@ -577,8 +567,6 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
             {
                 this.WaitingWriters.Dequeue().TrySetResult(true);
             }
-
-            return buffered;
         }
 
         private void ResolveCompletionIfDrained()
@@ -602,6 +590,22 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
             else
             {
                 this.CompletionSource.TrySetException(this.CompletionError);
+            }
+        }
+
+        /// <summary>
+        /// Completes a parked <c>WaitToReadAsync</c> or <c>WaitToWriteAsync</c> waiter because the channel
+        /// completed: a clean completion reports that nothing more will arrive, an error faults the wait.
+        /// </summary>
+        private static void CompleteWait(SystemTasks.TaskCompletionSource<bool> tcs, Exception error)
+        {
+            if (error is null)
+            {
+                tcs.TrySetResult(false);
+            }
+            else
+            {
+                tcs.TrySetException(error);
             }
         }
 
@@ -641,7 +645,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
             /// <summary>Hands an item to the waiter; returns whether it accepted (false if already canceled).</summary>
             bool TryDeliver(T item);
 
-            /// <summary>Fails the waiter because the channel completed with no data available.</summary>
+            /// <summary>
+            /// Fails the waiter because the channel completed with no data available. The channel
+            /// completion error is passed as-is (null if it completed cleanly), as each waiter reports
+            /// a clean completion differently.
+            /// </summary>
             void FailNoData(Exception error);
         }
 
@@ -653,7 +661,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
 
             public bool TryDeliver(T item) => this.Tcs.TrySetResult(item);
 
-            public void FailNoData(Exception error) => this.Tcs.TrySetException(error);
+            // There is no item to return, so even a clean completion faults the read.
+            public void FailNoData(Exception error) => this.Tcs.TrySetException(CreateClosedException(error));
         }
 
         private sealed class MoveNextWaiter : IItemWaiter
@@ -683,34 +692,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
             public void FailNoData(Exception error)
             {
                 // A clean completion ends enumeration (MoveNextAsync returns false); an error faults it.
-                if (error is SystemChannels.ChannelClosedException && error.InnerException is null)
-                {
-                    this.Tcs.TrySetResult(false);
-                }
-                else
-                {
-                    this.Tcs.TrySetException(error);
-                }
-            }
-        }
-
-        private sealed class WaitToReadWaiter
-        {
-            private readonly SystemTasks.TaskCompletionSource<bool> Tcs;
-
-            internal WaitToReadWaiter(SystemTasks.TaskCompletionSource<bool> tcs) => this.Tcs = tcs;
-
-            internal void SignalAvailable() => this.Tcs.TrySetResult(true);
-
-            internal void Complete(Exception error)
-            {
                 if (error is null)
                 {
                     this.Tcs.TrySetResult(false);
                 }
                 else
                 {
-                    this.Tcs.TrySetException(error);
+                    this.Tcs.TrySetException(CreateClosedException(error));
                 }
             }
         }

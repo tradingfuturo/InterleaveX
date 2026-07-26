@@ -32,55 +32,45 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
     public static class Channel
     {
         /// <summary>
-        /// Returns whether channel operations should be controlled, yielding the current runtime when so.
+        /// Returns whether channel operations should be controlled, and if so yields a controlled channel
+        /// with the specified bounds. The defaults describe an unbounded channel.
         /// </summary>
-        private static bool TryGetControlledRuntime(out CoyoteRuntime runtime)
+        private static bool TryCreateControlled<T>(out SystemChannels.Channel<T> channel,
+            int capacity = int.MaxValue,
+            SystemChannels.BoundedChannelFullMode fullMode = SystemChannels.BoundedChannelFullMode.Wait,
+            Action<T> itemDropped = null)
         {
-            runtime = CoyoteRuntime.Current;
-            return runtime.SchedulingPolicy is SchedulingPolicy.Interleaving;
+            CoyoteRuntime runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
+            {
+                channel = new ControlledChannel<T>(runtime, capacity, fullMode, itemDropped);
+                return true;
+            }
+
+            channel = null;
+            return false;
         }
 
         /// <summary>
         /// Creates an unbounded channel usable by any number of readers and writers concurrently.
         /// </summary>
-        public static SystemChannels.Channel<T> CreateUnbounded<T>()
-        {
-            if (TryGetControlledRuntime(out var runtime))
-            {
-                return new ControlledChannel<T>(runtime, capacity: int.MaxValue,
-                    fullMode: SystemChannels.BoundedChannelFullMode.Wait, itemDropped: null);
-            }
-
-            return SystemChannels.Channel.CreateUnbounded<T>();
-        }
+        public static SystemChannels.Channel<T> CreateUnbounded<T>() =>
+            TryCreateControlled(out SystemChannels.Channel<T> channel) ? channel :
+            SystemChannels.Channel.CreateUnbounded<T>();
 
         /// <summary>
         /// Creates an unbounded channel subject to the provided options.
         /// </summary>
-        public static SystemChannels.Channel<T> CreateUnbounded<T>(SystemChannels.UnboundedChannelOptions options)
-        {
-            if (TryGetControlledRuntime(out var runtime))
-            {
-                return new ControlledChannel<T>(runtime, capacity: int.MaxValue,
-                    fullMode: SystemChannels.BoundedChannelFullMode.Wait, itemDropped: null);
-            }
-
-            return SystemChannels.Channel.CreateUnbounded<T>(options);
-        }
+        public static SystemChannels.Channel<T> CreateUnbounded<T>(SystemChannels.UnboundedChannelOptions options) =>
+            TryCreateControlled(out SystemChannels.Channel<T> channel) ? channel :
+            SystemChannels.Channel.CreateUnbounded<T>(options);
 
         /// <summary>
         /// Creates a channel with the specified maximum capacity.
         /// </summary>
-        public static SystemChannels.Channel<T> CreateBounded<T>(int capacity)
-        {
-            if (TryGetControlledRuntime(out var runtime))
-            {
-                return new ControlledChannel<T>(runtime, capacity,
-                    fullMode: SystemChannels.BoundedChannelFullMode.Wait, itemDropped: null);
-            }
-
-            return SystemChannels.Channel.CreateBounded<T>(capacity);
-        }
+        public static SystemChannels.Channel<T> CreateBounded<T>(int capacity) =>
+            TryCreateControlled(out SystemChannels.Channel<T> channel, capacity) ? channel :
+            SystemChannels.Channel.CreateBounded<T>(capacity);
 
         /// <summary>
         /// Creates a channel subject to the provided options.
@@ -93,15 +83,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         /// item dropped from the channel's buffer under a non-<c>Wait</c> full mode.
         /// </summary>
         public static SystemChannels.Channel<T> CreateBounded<T>(SystemChannels.BoundedChannelOptions options,
-            Action<T> itemDropped)
-        {
-            if (TryGetControlledRuntime(out var runtime))
-            {
-                return new ControlledChannel<T>(runtime, options.Capacity, options.FullMode, itemDropped);
-            }
-
-            return SystemChannels.Channel.CreateBounded<T>(options, itemDropped);
-        }
+            Action<T> itemDropped) =>
+            TryCreateControlled(out SystemChannels.Channel<T> channel, options.Capacity, options.FullMode, itemDropped) ?
+            channel : SystemChannels.Channel.CreateBounded<T>(options, itemDropped);
     }
 }
 #endif
