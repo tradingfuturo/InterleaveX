@@ -153,6 +153,36 @@ if ($cli.IsPresent -and $IsWindows) {
         if ($LASTEXITCODE -ne 0) {
             Assert-Failed "An iteration count above int.MaxValue should have been accepted" $unsigned
         }
+
+        # Exploration must not depend on anything that varies from process to process. String hash
+        # codes are randomized per process and feed the program state that q-learning keys on, so
+        # this is the one check no single-process test can make. The scheduling coverage file is
+        # the signal because it summarizes every decision of all 20 iterations rather than just
+        # the pass/fail of the run; it differs whenever the seed does, so it is not vacuous.
+        $determinism_dir = Join-Path ([System.IO.Path]::GetTempPath()) ("interleavex-determinism-" + [System.Guid]::NewGuid().ToString("N"))
+        $runs = @(1, 2) | ForEach-Object {
+            $run_dir = Join-Path $determinism_dir "run$_"
+            $out = (& "$cli_tool_path/interleavex" test $bench -m NoBug -i 20 --seed 1 `
+                -s q-learning --schedule-coverage -o $run_dir) -join '\n'
+            if ($LASTEXITCODE -ne 0) {
+                Remove-Item -LiteralPath $determinism_dir -Recurse -Force -ErrorAction SilentlyContinue
+                Assert-Failed "The cross-process determinism run failed" $out
+            }
+
+            $coverage = Get-ChildItem -Path $run_dir -Recurse -Filter "*.coverage.schedule.txt" |
+                Select-Object -First 1
+            if ($null -eq $coverage) {
+                Remove-Item -LiteralPath $determinism_dir -Recurse -Force -ErrorAction SilentlyContinue
+                Assert-Failed "The cross-process determinism run emitted no scheduling coverage" $out
+            }
+
+            (Get-FileHash -LiteralPath $coverage.FullName -Algorithm SHA256).Hash
+        }
+
+        Remove-Item -LiteralPath $determinism_dir -Recurse -Force -ErrorAction SilentlyContinue
+        if ($runs[0] -ne $runs[1]) {
+            Assert-Failed "Exploration differed across processes" "$($runs[0])`n$($runs[1])"
+        }
     }
 
     Remove-Item $cli_tool_path -Recurse

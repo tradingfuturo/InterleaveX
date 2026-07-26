@@ -44,6 +44,17 @@ namespace Microsoft.Coyote.Runtime
         internal OperationStatus Status;
 
         /// <summary>
+        /// The position of this operation in the order in which the runtime registered operations,
+        /// or -1 if it has not been registered.
+        /// </summary>
+        /// <remarks>
+        /// This orders the runtime's collection of schedulable operations. It is distinct from
+        /// <see cref="Id"/>, which is allocated separately from registration and is therefore not
+        /// monotonic in registration order.
+        /// </remarks>
+        internal int RegistrationIndex = -1;
+
+        /// <summary>
         /// The group where this operation has membership. This can be used
         /// by the scheduler to optimize exploration.
         /// </summary>

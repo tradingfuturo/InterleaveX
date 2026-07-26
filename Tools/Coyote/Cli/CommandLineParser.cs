@@ -350,6 +350,17 @@ namespace Microsoft.Coyote.Cli
                 Arity = ArgumentArity.Zero
             };
 
+            var hashLiveOperationsOption = new Option<bool>(
+                name: "--hash-live-operations",
+                description: "Compute the program state at each scheduling step from only the operations that " +
+                    "have not completed. This speeds up exploration of tests that create many short-lived " +
+                    "operations, but coarsens the state, which changes how the 'q-learning' strategy explores " +
+                    "and how many distinct states are reported. Not recommended when testing actors, as it " +
+                    "hides the state of an actor while its operation sits completed between event handlers.")
+            {
+                Arity = ArgumentArity.Zero
+            };
+
             var seedOption = new Option<uint>(
                 name: "--seed",
                 parseArgument: CreateUnsignedValueParser(),
@@ -639,6 +650,7 @@ namespace Microsoft.Coyote.Cli
             this.AddOption(command, xmlLogOption);
             this.AddOption(command, reduceExecutionTraceCyclesOption);
             this.AddOption(command, samplePartialOrdersOption);
+            this.AddOption(command, hashLiveOperationsOption);
             this.AddOption(command, seedOption);
             this.AddOption(command, livenessTemperatureThresholdOption);
             this.AddOption(command, timeoutDelayOption);
@@ -1150,6 +1162,9 @@ namespace Microsoft.Coyote.Cli
                         break;
                     case "partial-order-sampling":
                         this.Configuration.IsPartialOrderSamplingEnabled = true;
+                        break;
+                    case "hash-live-operations":
+                        this.Configuration.IsLiveOperationStateHashingEnabled = true;
                         break;
                     case "seed":
                         this.Configuration.RandomGeneratorSeed = result.GetValueOrDefault<uint>();

@@ -288,6 +288,13 @@ namespace Microsoft.Coyote
         internal bool IsImplicitProgramStateHashingEnabled;
 
         /// <summary>
+        /// If enabled, only operations that have not completed contribute to the computed program
+        /// state at each scheduling step during testing.
+        /// </summary>
+        [DataMember]
+        internal bool IsLiveOperationStateHashingEnabled;
+
+        /// <summary>
         /// If enabled, safety monitors can run outside the scope of the testing engine.
         /// </summary>
         [DataMember]
@@ -409,6 +416,7 @@ namespace Microsoft.Coyote
             this.LivenessTemperatureThreshold = 50000;
             this.UserExplicitlySetLivenessTemperatureThreshold = false;
             this.IsImplicitProgramStateHashingEnabled = false;
+            this.IsLiveOperationStateHashingEnabled = false;
             this.IsMonitoringEnabledOutsideTesting = false;
             this.IsActorQuiescenceCheckingEnabledOutsideTesting = false;
             this.AttachDebugger = false;
@@ -757,6 +765,35 @@ namespace Microsoft.Coyote
         public Configuration WithPartialOrderSamplingEnabled(bool isEnabled = true)
         {
             this.IsPartialOrderSamplingEnabled = isEnabled;
+            return this;
+        }
+
+        /// <summary>
+        /// Updates the configuration with live-operation state hashing enabled or disabled. If
+        /// enabled, then only operations that have not completed contribute to the program state
+        /// computed at each scheduling step, which makes the cost of a scheduling step independent
+        /// of how many operations the test has already run to completion.
+        /// </summary>
+        /// <remarks>
+        /// This changes the computed program state, so it is disabled by default. Enabling it
+        /// coarsens the state: two points in an execution that differ only in how many operations
+        /// have completed become indistinguishable. That affects how the Q-learning exploration
+        /// strategy partitions states, and therefore which schedules it explores, and it changes
+        /// the number of distinct visited states reported for coverage. It does not affect the
+        /// reproducibility of a trace, because a trace records operation ids rather than hashes.
+        /// <para>
+        /// The coarsening is much more pronounced for actors than for tasks. A task operation folds
+        /// only state that is frozen once it completes, so skipping the completed ones drops a
+        /// constant. An actor operation also folds the state of its actor, including whether it is
+        /// halted, its state stack and its inbox, all of which keep changing while the operation
+        /// sits completed between event handlers. Enabling this therefore hides actor state from
+        /// the computed program state, so prefer leaving it disabled when testing actors.
+        /// </para>
+        /// </remarks>
+        /// <param name="isEnabled">If true, then live-operation state hashing is enabled.</param>
+        public Configuration WithLiveOperationStateHashingEnabled(bool isEnabled = true)
+        {
+            this.IsLiveOperationStateHashingEnabled = isEnabled;
             return this;
         }
 

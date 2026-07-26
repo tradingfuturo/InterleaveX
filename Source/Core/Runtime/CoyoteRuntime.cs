@@ -122,7 +122,63 @@ namespace Microsoft.Coyote.Runtime
         /// <summary>
         /// Map from unique operation ids to asynchronous operations.
         /// </summary>
+        /// <remarks>
+        /// This map retains every operation registered during the iteration, including the ones
+        /// that already completed. Operations are looked up by id long after they complete, and a
+        /// completed operation can be reset and reused, so entries are never removed from it. Use
+        /// <see cref="SchedulableOperations"/> for the per-step scheduling work instead.
+        /// </remarks>
         private readonly Dictionary<ulong, ControlledOperation> OperationMap;
+
+        /// <summary>
+        /// The operations that have not completed yet, in registration order.
+        /// </summary>
+        /// <remarks>
+        /// This is the collection traversed on every scheduling step, so that the cost of a step
+        /// scales with the number of live operations rather than with the number of operations the
+        /// iteration has created so far.
+        /// <para>
+        /// Operations are added when they are registered and re-added if they are reset, both under
+        /// the runtime lock. They are removed lazily by <see cref="TryEnableOperationsWithResolvedDependencies"/>,
+        /// which already walks this collection on every scheduling step. Removal is lazy because a
+        /// completed operation cannot be detected at the point it completes without synchronizing
+        /// <see cref="ProcessUnhandledExceptionInOperation"/>, which runs on a thread that may be
+        /// in the middle of being interrupted. This collection may therefore hold an operation that
+        /// completed during the current step, which is harmless: every consumer selects operations
+        /// by status, and a completed operation is neither enabled nor paused.
+        /// </para>
+        /// <para>
+        /// The list is kept ordered by <see cref="ControlledOperation.RegistrationIndex"/> so that
+        /// it presents operations in exactly the order <see cref="OperationMap"/> does, minus the
+        /// completed ones. Preserving that order matters because it determines which operation a
+        /// strategy's random draw selects.
+        /// </para>
+        /// </remarks>
+        private readonly List<ControlledOperation> SchedulableOperations;
+
+        /// <summary>
+        /// Counter assigning each registered operation its position in the registration order.
+        /// </summary>
+        /// <remarks>
+        /// Operation ids cannot be used for this: they are handed out by <see cref="GetNextOperationId"/>
+        /// separately from registration, so an operation whose id was reserved up front through
+        /// 'IActorRuntime.CreateActorId' or <see cref="Operation.GetNextId"/> can be registered long
+        /// after an operation with a larger id.
+        /// </remarks>
+        private int OperationRegistrationCounter;
+
+        /// <summary>
+        /// Orders operations by <see cref="ControlledOperation.RegistrationIndex"/>, which is the
+        /// order that <see cref="SchedulableOperations"/> is kept sorted by.
+        /// </summary>
+        private static readonly IComparer<ControlledOperation> RegistrationOrderComparer =
+            Comparer<ControlledOperation>.Create((x, y) => x.RegistrationIndex.CompareTo(y.RegistrationIndex));
+
+        /// <summary>
+        /// How many scheduling steps apart the debug-only sweep of <see cref="OperationMap"/> in
+        /// <see cref="AssertSchedulableOperationsInvariant"/> runs.
+        /// </summary>
+        private const int SchedulableOperationsAuditStride = 256;
 
         /// <summary>
         /// Map from newly created operations that have not started executing yet
@@ -320,6 +376,8 @@ namespace Microsoft.Coyote.Runtime
 
             this.ThreadPool = new ConcurrentDictionary<ulong, Thread>();
             this.OperationMap = new Dictionary<ulong, ControlledOperation>();
+            this.SchedulableOperations = new List<ControlledOperation>();
+            this.OperationRegistrationCounter = 0;
             this.PendingStartOperationMap = new Dictionary<ControlledOperation, ManualResetEventSlim>();
             this.ControlledThreads = new ConcurrentDictionary<string, ControlledOperation>();
             this.ControlledTasks = new ConcurrentDictionary<Task, ControlledOperation>();
@@ -820,13 +878,21 @@ namespace Microsoft.Coyote.Runtime
                     op.Group.RegisterMember(op);
 
 #if NETSTANDARD2_0 || NETFRAMEWORK
-                    if (!this.OperationMap.ContainsKey(op.Id))
+                    bool isNewOperation = !this.OperationMap.ContainsKey(op.Id);
+                    if (isNewOperation)
                     {
                         this.OperationMap.Add(op.Id, op);
                     }
 #else
-                    this.OperationMap.TryAdd(op.Id, op);
+                    bool isNewOperation = this.OperationMap.TryAdd(op.Id, op);
 #endif
+                    if (isNewOperation)
+                    {
+                        // Record the registration order and append the operation, which keeps the
+                        // collection ordered because this index is the largest assigned so far.
+                        op.RegistrationIndex = this.OperationRegistrationCounter++;
+                        this.SchedulableOperations.Add(op);
+                    }
                 }
             }
         }
@@ -951,8 +1017,10 @@ namespace Microsoft.Coyote.Runtime
                 current.LastHashedProgramState = this.ComputeProgramState();
 
                 // Try to enable any operations with resolved dependencies before asking the
-                // scheduler to choose the next one to schedule.
-                IEnumerable<ControlledOperation> ops = this.OperationMap.Values;
+                // scheduler to choose the next one to schedule. This also drops any operations
+                // that completed since the previous scheduling step.
+                IReadOnlyList<ControlledOperation> ops = this.SchedulableOperations;
+                this.AssertSchedulableOperationsInvariant();
                 if (!this.TryEnableOperationsWithResolvedDependencies(current))
                 {
                     if (this.IsUncontrolledConcurrencyDetected &&
@@ -1222,11 +1290,33 @@ namespace Microsoft.Coyote.Runtime
                     this.LogWriter.LogDebug("[coyote::debug] Resetting operation {0} from thread '{1}'.",
                         op.DebugInfo, Thread.CurrentThread.ManagedThreadId);
                     op.Status = OperationStatus.None;
+
+                    // The operation is schedulable again, so restore it at its original position if
+                    // a previous scheduling step already removed it.
+                    this.AddSchedulableOperation(op);
                     return true;
                 }
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Adds the specified operation to <see cref="SchedulableOperations"/> at the position
+        /// given by its registration order, unless it is already present.
+        /// </summary>
+        /// <remarks>
+        /// It is assumed that this method runs in the scope of a <see cref="SynchronizedSection"/>.
+        /// </remarks>
+        private void AddSchedulableOperation(ControlledOperation op)
+        {
+            // Binary search over the registration order that the list is kept sorted by. Registration
+            // indexes are unique, so a match means the operation is already present.
+            int index = this.SchedulableOperations.BinarySearch(op, RegistrationOrderComparer);
+            if (index < 0)
+            {
+                this.SchedulableOperations.Insert(~index, op);
+            }
         }
 
         /// <summary>
@@ -1403,12 +1493,37 @@ namespace Microsoft.Coyote.Runtime
                 uint statusChanges = 0;
                 bool isRootDependencyUnresolved = false;
                 bool isAnyDependencyUnresolved = false;
-                foreach (var op in this.OperationMap.Values)
+
+                // Drop the operations that have completed since the last scheduling step. This
+                // runs as its own pass, before the walk below rather than fused into it, because
+                // the walk invokes the dependency predicate of every paused operation, and such a
+                // predicate is arbitrary user code (see Operation.PauseUntil): registering or
+                // resetting an operation from inside it inserts into the very collection that an
+                // in-place compaction is rewriting.
+                this.CompactSchedulableOperations();
+
+                // Whether some operation is enabled is only consulted for delayed operations, and
+                // it can only go from false to true while this walk runs, because the only status
+                // transitions it performs are into 'Enabled'. So it is enough to establish it once
+                // up front and then keep it up to date as operations become enabled, instead of
+                // rescanning every operation for each delayed one.
+                bool isAnyOperationEnabled = IsAnyOperationEnabled(this.SchedulableOperations);
+
+                // The count is re-read on each step because a dependency predicate may append to
+                // the collection; an operation registered mid-walk is not yet paused, so visiting
+                // it (or not) makes no difference to this pass.
+                for (int idx = 0; idx < this.SchedulableOperations.Count; ++idx)
                 {
+                    var op = this.SchedulableOperations[idx];
+                    if (op.Status is OperationStatus.Completed)
+                    {
+                        continue;
+                    }
+
                     var previousStatus = op.Status;
                     if (op.IsPaused)
                     {
-                        this.TryEnableOperation(op);
+                        TryEnableOperation(op, isAnyOperationEnabled);
                         if (previousStatus == op.Status)
                         {
                             this.LogWriter.LogDebug("[coyote::debug] Operation {0} has status '{1}'.", op.DebugInfo, op.Status);
@@ -1435,6 +1550,7 @@ namespace Microsoft.Coyote.Runtime
                     if (op.Status is OperationStatus.Enabled)
                     {
                         enabledOpsCount++;
+                        isAnyOperationEnabled = true;
                     }
                 }
 
@@ -1486,12 +1602,108 @@ namespace Microsoft.Coyote.Runtime
         }
 
         /// <summary>
+        /// Removes from <see cref="SchedulableOperations"/> the operations that have completed.
+        /// </summary>
+        /// <remarks>
+        /// It is assumed that this method runs in the scope of a <see cref="SynchronizedSection"/>.
+        /// Removal is lazy: an operation that completes after this returns is only dropped by the
+        /// next sweep. Writing the survivors forward in place preserves the registration order
+        /// that the collection is kept sorted by. This must invoke nothing that can register or
+        /// reset an operation, because either would insert into the collection being rewritten.
+        /// </remarks>
+        private void CompactSchedulableOperations()
+        {
+            int writeIndex = 0;
+            for (int readIndex = 0; readIndex < this.SchedulableOperations.Count; ++readIndex)
+            {
+                var op = this.SchedulableOperations[readIndex];
+                if (op.Status != OperationStatus.Completed)
+                {
+                    this.SchedulableOperations[writeIndex++] = op;
+                }
+            }
+
+            this.SchedulableOperations.RemoveRange(writeIndex, this.SchedulableOperations.Count - writeIndex);
+        }
+
+        /// <summary>
+        /// Checks the invariants of <see cref="SchedulableOperations"/> against <see cref="OperationMap"/>.
+        /// </summary>
+        /// <remarks>
+        /// Only compiled into debug builds. This is not an equality check: removal is lazy, so the
+        /// collection may still hold an operation that completed since the last sweep. What must
+        /// hold is that it contains every operation that is still schedulable, that it never
+        /// contains anything unregistered, and that it presents them in registration order.
+        /// <para>
+        /// The two directions are checked at different rates. Everything here costs O(schedulable
+        /// operations), which a scheduling step already pays, except the sweep over the operation
+        /// map, which costs O(operations ever created) — the very cost that keeping this collection
+        /// exists to keep off the per-step path. Paying it on every step would make a debug run
+        /// quadratic in the operation count, so it is amortized over a stride instead: a missing
+        /// operation persists until it is scheduled again, so a periodic check still catches it.
+        /// </para>
+        /// </remarks>
+        [Conditional("DEBUG")]
+        private void AssertSchedulableOperationsInvariant()
+        {
+            // Note that the assertion messages are only formatted once an invariant is violated,
+            // because this runs on every scheduling step of a debug build.
+            for (int idx = 0; idx < this.SchedulableOperations.Count; ++idx)
+            {
+                var op = this.SchedulableOperations[idx];
+                if (!this.OperationMap.ContainsKey(op.Id))
+                {
+                    Debug.Fail($"Operation {op.DebugInfo} is schedulable but was never registered.");
+                }
+
+                // Registration indexes are unique, so a strictly increasing order also rules out
+                // the same operation being present twice.
+                Debug.Assert(idx is 0 ||
+                    this.SchedulableOperations[idx - 1].RegistrationIndex < op.RegistrationIndex,
+                    "The schedulable operations are not ordered by registration index.");
+            }
+
+            if (this.Scheduler.StepCount % SchedulableOperationsAuditStride is 0)
+            {
+                var schedulable = new HashSet<ControlledOperation>(this.SchedulableOperations);
+                foreach (var op in this.OperationMap.Values)
+                {
+                    if (op.Status != OperationStatus.Completed && !schedulable.Contains(op))
+                    {
+                        Debug.Fail($"Operation {op.DebugInfo} has status '{op.Status}' but is not schedulable.");
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Returns true if any of the specified operations is currently enabled, else false.
+        /// </summary>
+        /// <remarks>
+        /// It is assumed that this method runs in the scope of a <see cref="SynchronizedSection"/>.
+        /// </remarks>
+        private static bool IsAnyOperationEnabled(IReadOnlyList<ControlledOperation> ops)
+        {
+            for (int idx = 0; idx < ops.Count; ++idx)
+            {
+                if (ops[idx].Status is OperationStatus.Enabled)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// Tries to enable the specified operation, if its dependencies have been resolved.
         /// </summary>
         /// <remarks>
         /// It is assumed that this method runs in the scope of a <see cref="SynchronizedSection"/>.
         /// </remarks>
-        private bool TryEnableOperation(ControlledOperation op)
+        /// <param name="op">The operation to try enable.</param>
+        /// <param name="isAnyOperationEnabled">True if some operation is currently enabled, else false.</param>
+        private static bool TryEnableOperation(ControlledOperation op, bool isAnyOperationEnabled)
         {
             if (op.Status is OperationStatus.PausedOnDelay)
             {
@@ -1502,8 +1714,7 @@ namespace Microsoft.Coyote.Runtime
 
                 // The operation is delayed, so it is enabled either if the delay completes
                 // or if no other operation is enabled.
-                if (op.DelayedStepsCount is 0 ||
-                    !this.OperationMap.Any(kvp => kvp.Value.Status is OperationStatus.Enabled))
+                if (op.DelayedStepsCount is 0 || !isAnyOperationEnabled)
                 {
                     op.DelayedStepsCount = 0;
                     op.Status = OperationStatus.Enabled;
@@ -1692,21 +1903,6 @@ namespace Microsoft.Coyote.Runtime
         }
 
         /// <summary>
-        /// Returns all registered operations.
-        /// </summary>
-        /// <remarks>
-        /// This operation is thread safe because the systematic testing
-        /// runtime serializes the execution.
-        /// </remarks>
-        private IEnumerable<ControlledOperation> GetRegisteredOperations()
-        {
-            using (SynchronizedSection.Enter(this.RuntimeLock))
-            {
-                return this.OperationMap.Values;
-            }
-        }
-
-        /// <summary>
         /// Returns the next available unique operation id.
         /// </summary>
         internal ulong GetNextOperationId() =>
@@ -1740,9 +1936,34 @@ namespace Microsoft.Coyote.Runtime
                 if (this.Configuration.IsImplicitProgramStateHashingEnabled)
                 {
                     isStateHashed = true;
-                    foreach (var operation in this.GetRegisteredOperations())
+
+                    // By default every registered operation contributes, including the completed
+                    // ones, so that the state distinguishes how far the execution has progressed.
+                    // Restricting this to the operations that are still schedulable makes the cost
+                    // of a scheduling step independent of how many operations have already
+                    // completed, at the price of a coarser state.
+                    if (this.Configuration.IsLiveOperationStateHashingEnabled)
                     {
-                        hash *= 31 + operation.GetHashedState(this.SchedulingPolicy);
+                        // Completed operations are skipped explicitly rather than relied upon to be
+                        // absent. This runs before the sweep that drops them, so the collection still
+                        // holds everything that completed since the previous scheduling step, and
+                        // letting those contribute would make the hash depend on when the sweep ran
+                        // rather than on the state of the program.
+                        for (int idx = 0; idx < this.SchedulableOperations.Count; ++idx)
+                        {
+                            var operation = this.SchedulableOperations[idx];
+                            if (operation.Status != OperationStatus.Completed)
+                            {
+                                hash *= 31 + operation.GetHashedState(this.SchedulingPolicy);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        foreach (var operation in this.OperationMap.Values)
+                        {
+                            hash *= 31 + operation.GetHashedState(this.SchedulingPolicy);
+                        }
                     }
 
                     foreach (var monitor in this.SpecificationMonitors)
@@ -2041,10 +2262,9 @@ namespace Microsoft.Coyote.Runtime
         /// Checks if the execution has deadlocked. This happens when there are no more enabled operations,
         /// but there is one or more paused operations that are waiting some resource to complete.
         /// </summary>
-        private void CheckIfExecutionHasDeadlocked(IEnumerable<ControlledOperation> ops)
+        private void CheckIfExecutionHasDeadlocked(IReadOnlyList<ControlledOperation> ops)
         {
-            if (this.ExecutionStatus != ExecutionStatus.Running ||
-                ops.Any(op => op.Status is OperationStatus.Enabled))
+            if (this.ExecutionStatus != ExecutionStatus.Running || IsAnyOperationEnabled(ops))
             {
                 // Either the runtime has stopped executing, or there are still enabled operations, so do not check for a deadlock.
                 return;
@@ -2860,6 +3080,11 @@ namespace Microsoft.Coyote.Runtime
                     }
                 }
 
+                // Nothing is schedulable once the execution has detached. This must iterate the
+                // operation map above rather than the schedulable operations, because an operation
+                // that completed without being swept yet still needs its thread interrupted.
+                this.SchedulableOperations.Clear();
+
                 if (current != null && current.Status != OperationStatus.Completed)
                 {
                     // Force the current operation to complete and interrupt the current thread.
@@ -2900,6 +3125,7 @@ namespace Microsoft.Coyote.Runtime
 
                     this.ThreadPool.Clear();
                     this.OperationMap.Clear();
+                    this.SchedulableOperations.Clear();
                     this.PendingStartOperationMap.Clear();
                     this.ControlledThreads.Clear();
                     this.ControlledTasks.Clear();
