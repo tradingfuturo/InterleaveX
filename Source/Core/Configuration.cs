@@ -125,6 +125,12 @@ namespace Microsoft.Coyote
         /// <summary>
         /// If enabled, execution trace analysis is enabled during systematic testing.
         /// </summary>
+        /// <remarks>
+        /// Disabled by default. Building the execution graph allocates nodes and edges on
+        /// every scheduling step and retains them for the whole iteration, but the graph is
+        /// only consumed when emitting a DGML diagram, so the cost is not worth paying
+        /// unless the diagram is actually wanted.
+        /// </remarks>
         [DataMember]
         internal bool IsTraceAnalysisEnabled;
 
@@ -367,7 +373,7 @@ namespace Microsoft.Coyote
             this.IsSystematicFuzzingEnabled = false;
             this.IsSystematicFuzzingFallbackEnabled = false;
             this.MaxFuzzingDelay = 1000;
-            this.IsTraceAnalysisEnabled = true;
+            this.IsTraceAnalysisEnabled = false;
             this.IsLivenessCheckingEnabled = true;
             this.IsCollectionAccessRaceCheckingEnabled = true;
             this.IsLockAccessRaceCheckingEnabled = true;

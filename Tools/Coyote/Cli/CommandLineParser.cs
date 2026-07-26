@@ -412,9 +412,19 @@ namespace Microsoft.Coyote.Cli
                 Arity = ArgumentArity.ExactlyOne
             };
 
+            var traceAnalysisOption = new Option<bool>(
+                name: "--trace-analysis",
+                description: "Enable execution graph analysis during testing. This emits a DGML diagram of the " +
+                    "execution path when a bug is found, at the cost of building the graph on every scheduling " +
+                    "step. Disabled by default.")
+            {
+                Arity = ArgumentArity.Zero
+            };
+
             var skipTraceAnalysisOption = new Option<bool>(
                 name: "--skip-trace-analysis",
-                description: "Disable execution graph analysis during testing.")
+                description: "Disable execution graph analysis during testing. Retained for compatibility; " +
+                    "analysis is now disabled unless '--trace-analysis' is specified.")
             {
                 Arity = ArgumentArity.Zero
             };
@@ -606,6 +616,7 @@ namespace Microsoft.Coyote.Cli
             this.AddOption(command, maxFuzzDelayOption);
             this.AddOption(command, uncontrolledConcurrencyResolutionAttemptsOption);
             this.AddOption(command, uncontrolledConcurrencyResolutionDelayOption);
+            this.AddOption(command, traceAnalysisOption);
             this.AddOption(command, skipTraceAnalysisOption);
             this.AddOption(command, skipPotentialDeadlocksOption);
             this.AddOption(command, skipCollectionRacesOption);
@@ -1078,6 +1089,9 @@ namespace Microsoft.Coyote.Cli
                         break;
                     case "resolve-uncontrolled-concurrency-delay":
                         this.Configuration.UncontrolledConcurrencyResolutionDelay = (uint)result.GetValueOrDefault<int>();
+                        break;
+                    case "trace-analysis":
+                        this.Configuration.IsTraceAnalysisEnabled = true;
                         break;
                     case "skip-trace-analysis":
                         this.Configuration.IsTraceAnalysisEnabled = false;
