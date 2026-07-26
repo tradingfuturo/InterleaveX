@@ -604,9 +604,12 @@ namespace Microsoft.Coyote.SystematicTesting
         {
             var serializer = new DataContractSerializer(typeof(TestReport), GetSerializerSettings());
             using (var fs = System.IO.File.OpenRead(filePath))
-            using (var reader = System.Xml.XmlDictionaryReader.CreateTextReader(fs, System.Xml.XmlDictionaryReaderQuotas.Max))
             {
-                return (TestReport)serializer.ReadObject(reader, true);
+                using (var reader = System.Xml.XmlDictionaryReader.CreateTextReader(
+                    fs, System.Xml.XmlDictionaryReaderQuotas.Max))
+                {
+                    return (TestReport)serializer.ReadObject(reader, true);
+                }
             }
         }
 
