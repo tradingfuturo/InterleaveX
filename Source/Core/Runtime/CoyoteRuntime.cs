@@ -529,6 +529,22 @@ namespace Microsoft.Coyote.Runtime
         }
 
         /// <summary>
+        /// Returns true if the specified failure, raised while handing a prepared continuation to the
+        /// underlying awaiter, means the continuation is orphaned and must be dropped.
+        /// </summary>
+        /// <remarks>
+        /// Handing the continuation over can itself post it through <see cref="ControlledSynchronizationContext"/>,
+        /// which schedules against this runtime and therefore fails in the same teardown window that
+        /// <see cref="TryPrepareContinuation"/> guards against. Only that window is swallowed: this runtime
+        /// has already stopped running, or the failure is the <see cref="ThreadInterruptedException"/> that
+        /// teardown raises on the threads it interrupts. Any other failure is a genuine registration error
+        /// and must surface, because dropping it leaves the awaiting operation paused forever and the run
+        /// reports a deadlock that has nothing to do with the program under test.
+        /// </remarks>
+        internal bool IsContinuationOrphaned(Exception exception) =>
+            exception is ThreadInterruptedException || this.ExecutionStatus != ExecutionStatus.Running;
+
+        /// <summary>
         /// A dictionary that maps continuation actions to their awaiting operation's group.
         /// Used by <see cref="ControlledSynchronizationContext.Post"/> to preserve the group
         /// when a continuation is posted through the synchronization context.

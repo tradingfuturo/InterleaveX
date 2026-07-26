@@ -112,7 +112,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
                     {
                         this.Awaiter.OnCompleted(continuation);
                     }
-                    catch (Exception)
+                    catch (Exception ex) when (this.Runtime.IsContinuationOrphaned(ex))
                     {
                         // Dropped for the reason documented on CoyoteRuntime.TryPrepareContinuation.
                     }
@@ -145,7 +145,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
                     {
                         this.Awaiter.UnsafeOnCompleted(continuation);
                     }
-                    catch (Exception)
+                    catch (Exception ex) when (this.Runtime.IsContinuationOrphaned(ex))
                     {
                         // Dropped for the reason documented on CoyoteRuntime.TryPrepareContinuation.
                     }
@@ -262,7 +262,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
                     {
                         this.Awaiter.OnCompleted(continuation);
                     }
-                    catch (Exception)
+                    catch (Exception ex) when (this.Runtime.IsContinuationOrphaned(ex))
                     {
                         // Dropped for the reason documented on CoyoteRuntime.TryPrepareContinuation.
                     }
@@ -295,7 +295,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
                     {
                         this.Awaiter.UnsafeOnCompleted(continuation);
                     }
-                    catch (Exception)
+                    catch (Exception ex) when (this.Runtime.IsContinuationOrphaned(ex))
                     {
                         // Dropped for the reason documented on CoyoteRuntime.TryPrepareContinuation.
                     }
