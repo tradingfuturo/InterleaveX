@@ -31,6 +31,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
             this.Awaiter = new ConfiguredTaskAwaiter(awaitedTask, continueOnCapturedContext);
         }
 
+#if NET8_0_OR_GREATER
+        /// <summary>
+        /// Initializes a new instance of the <see cref="ConfiguredTaskAwaitable"/> struct.
+        /// </summary>
+        internal ConfiguredTaskAwaitable(SystemTask awaitedTask, SystemTasks.ConfigureAwaitOptions options)
+        {
+            this.Awaiter = new ConfiguredTaskAwaiter(awaitedTask, options);
+        }
+#endif
+
         /// <summary>
         /// Returns an awaiter for this awaitable object.
         /// </summary>
@@ -59,13 +69,31 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
             private readonly CoyoteRuntime Runtime;
 
             /// <summary>
+            /// True if the await must suspend even when the task has already completed, else false.
+            /// </summary>
+            private readonly bool IsYieldForced;
+
+            /// <summary>
             /// True if the awaiter has completed, else false.
             /// </summary>
-            public bool IsCompleted => this.AwaitedTask?.IsCompleted ?? this.Awaiter.IsCompleted;
+            /// <remarks>
+            /// A forced yield must never report completion: the caller asked for a suspension point,
+            /// and answering from the awaited task would resume inline and drop the interleaving the
+            /// suspension exists to expose.
+            /// </remarks>
+            public bool IsCompleted =>
+                !this.IsYieldForced && (this.AwaitedTask?.IsCompleted ?? this.Awaiter.IsCompleted);
 
             /// <inheritdoc/>
             bool IControllableAwaiter.IsControlled =>
                 !this.Runtime?.IsTaskUncontrolled(this.AwaitedTask) ?? false;
+
+            /// <summary>
+            /// True if the continuation must be handed to the runtime rather than to the awaiter.
+            /// </summary>
+            private bool IsContinuationControlled =>
+                this.Runtime != null && this.AwaitedTask != null &&
+                (!this.AwaitedTask.IsCompleted || this.IsYieldForced);
 
             /// <summary>
             /// Initializes a new instance of the <see cref="ConfiguredTaskAwaiter"/> struct.
@@ -81,7 +109,32 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
                 this.AwaitedTask = awaitedTask;
                 this.Awaiter = awaitedTask.ConfigureAwait(continueOnCapturedContext).GetAwaiter();
                 this.Runtime = runtime;
+                this.IsYieldForced = false;
             }
+
+#if NET8_0_OR_GREATER
+            /// <summary>
+            /// Initializes a new instance of the <see cref="ConfiguredTaskAwaiter"/> struct.
+            /// </summary>
+            /// <remarks>
+            /// The options are handed to the real awaiter unchanged apart from the captured context,
+            /// so <c>SuppressThrowing</c> keeps deciding what <see cref="GetResult"/> propagates, and
+            /// <c>ForceYielding</c> is honored through <see cref="IsCompleted"/>.
+            /// </remarks>
+            internal ConfiguredTaskAwaiter(SystemTask awaitedTask, SystemTasks.ConfigureAwaitOptions options)
+            {
+                if (RuntimeProvider.TryGetFromSynchronizationContext(out CoyoteRuntime runtime))
+                {
+                    // Force the continuation to run on the current context so that it can be controlled.
+                    options |= SystemTasks.ConfigureAwaitOptions.ContinueOnCapturedContext;
+                }
+
+                this.AwaitedTask = awaitedTask;
+                this.Awaiter = awaitedTask.ConfigureAwait(options).GetAwaiter();
+                this.Runtime = runtime;
+                this.IsYieldForced = options.HasFlag(SystemTasks.ConfigureAwaitOptions.ForceYielding);
+            }
+#endif
 
             /// <summary>
             /// Ends asynchronously waiting for the completion of the awaiter.
@@ -98,7 +151,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
             /// <param name="continuation">The action to invoke when the await operation completes.</param>
             public void OnCompleted(Action continuation)
             {
-                if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
+                if (this.IsContinuationControlled)
                 {
                     if (!this.Runtime.TryPrepareContinuation(continuation, out SynchronizationContext savedSyncCtx))
                     {
@@ -131,7 +184,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
             /// <param name="continuation">The action to invoke when the await operation completes.</param>
             public void UnsafeOnCompleted(Action continuation)
             {
-                if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
+                if (this.IsContinuationControlled)
                 {
                     if (!this.Runtime.TryPrepareContinuation(continuation, out SynchronizationContext savedSyncCtx))
                     {
@@ -180,6 +233,17 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
             this.Awaiter = new ConfiguredTaskAwaiter(awaitedTask, continueOnCapturedContext);
         }
 
+#if NET8_0_OR_GREATER
+        /// <summary>
+        /// Initializes a new instance of the <see cref="ConfiguredTaskAwaitable{TResult}"/> struct.
+        /// </summary>
+        internal ConfiguredTaskAwaitable(SystemTasks.Task<TResult> awaitedTask,
+            SystemTasks.ConfigureAwaitOptions options)
+        {
+            this.Awaiter = new ConfiguredTaskAwaiter(awaitedTask, options);
+        }
+#endif
+
         /// <summary>
         /// Returns an awaiter for this awaitable object.
         /// </summary>
@@ -208,13 +272,31 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
             private readonly CoyoteRuntime Runtime;
 
             /// <summary>
+            /// True if the await must suspend even when the task has already completed, else false.
+            /// </summary>
+            private readonly bool IsYieldForced;
+
+            /// <summary>
             /// True if the awaiter has completed, else false.
             /// </summary>
-            public bool IsCompleted => this.AwaitedTask?.IsCompleted ?? this.Awaiter.IsCompleted;
+            /// <remarks>
+            /// A forced yield must never report completion: the caller asked for a suspension point,
+            /// and answering from the awaited task would resume inline and drop the interleaving the
+            /// suspension exists to expose.
+            /// </remarks>
+            public bool IsCompleted =>
+                !this.IsYieldForced && (this.AwaitedTask?.IsCompleted ?? this.Awaiter.IsCompleted);
 
             /// <inheritdoc/>
             bool IControllableAwaiter.IsControlled =>
                 !this.Runtime?.IsTaskUncontrolled(this.AwaitedTask) ?? false;
+
+            /// <summary>
+            /// True if the continuation must be handed to the runtime rather than to the awaiter.
+            /// </summary>
+            private bool IsContinuationControlled =>
+                this.Runtime != null && this.AwaitedTask != null &&
+                (!this.AwaitedTask.IsCompleted || this.IsYieldForced);
 
             /// <summary>
             /// Initializes a new instance of the <see cref="ConfiguredTaskAwaiter"/> struct.
@@ -230,7 +312,32 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
                 this.AwaitedTask = awaitedTask;
                 this.Awaiter = awaitedTask.ConfigureAwait(continueOnCapturedContext).GetAwaiter();
                 this.Runtime = runtime;
+                this.IsYieldForced = false;
             }
+
+#if NET8_0_OR_GREATER
+            /// <summary>
+            /// Initializes a new instance of the <see cref="ConfiguredTaskAwaiter"/> struct.
+            /// </summary>
+            /// <remarks>
+            /// The options are handed to the real awaiter, which is also what rejects the
+            /// <c>SuppressThrowing</c> that a task with a result cannot honor.
+            /// </remarks>
+            internal ConfiguredTaskAwaiter(SystemTasks.Task<TResult> awaitedTask,
+                SystemTasks.ConfigureAwaitOptions options)
+            {
+                if (RuntimeProvider.TryGetFromSynchronizationContext(out CoyoteRuntime runtime))
+                {
+                    // Force the continuation to run on the current context so that it can be controlled.
+                    options |= SystemTasks.ConfigureAwaitOptions.ContinueOnCapturedContext;
+                }
+
+                this.AwaitedTask = awaitedTask;
+                this.Awaiter = awaitedTask.ConfigureAwait(options).GetAwaiter();
+                this.Runtime = runtime;
+                this.IsYieldForced = options.HasFlag(SystemTasks.ConfigureAwaitOptions.ForceYielding);
+            }
+#endif
 
             /// <summary>
             /// Ends asynchronously waiting for the completion of the awaiter.
@@ -247,7 +354,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
             /// <param name="continuation">The action to invoke when the await operation completes.</param>
             public void OnCompleted(Action continuation)
             {
-                if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
+                if (this.IsContinuationControlled)
                 {
                     if (!this.Runtime.TryPrepareContinuation(continuation, out SynchronizationContext savedSyncCtx))
                     {
@@ -280,7 +387,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
             /// <param name="continuation">The action to invoke when the await operation completes.</param>
             public void UnsafeOnCompleted(Action continuation)
             {
-                if (this.Runtime != null && this.AwaitedTask != null && !this.AwaitedTask.IsCompleted)
+                if (this.IsContinuationControlled)
                 {
                     if (!this.Runtime.TryPrepareContinuation(continuation, out SynchronizationContext savedSyncCtx))
                     {

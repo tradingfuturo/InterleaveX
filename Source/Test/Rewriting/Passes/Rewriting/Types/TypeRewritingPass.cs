@@ -60,6 +60,21 @@ namespace Microsoft.Coyote.Rewriting
                 typeof(Types.Runtime.CompilerServices.YieldAwaitable);
             this.KnownTypes[NameCache.YieldAwaiter] =
                 typeof(Types.Runtime.CompilerServices.YieldAwaitable.YieldAwaiter);
+#if NET
+            // The awaitables an 'await foreach' or 'await using' consumes over a configured source,
+            // together with the extension methods that produce them. Registering the consumers alone
+            // is what stops the crash, but the producer must be registered with them: the rewriter
+            // retypes every mention of a known compiler type, and that is only sound while whatever
+            // produced the value was rewritten too.
+            this.KnownTypes[NameCache.ConfiguredAsyncDisposable] =
+                typeof(Types.Runtime.CompilerServices.ConfiguredAsyncDisposable);
+            this.KnownTypes[NameCache.GenericConfiguredCancelableAsyncEnumerable] =
+                typeof(Types.Runtime.CompilerServices.ConfiguredCancelableAsyncEnumerable<>);
+            this.KnownTypes[NameCache.GenericConfiguredCancelableAsyncEnumerator] =
+                typeof(Types.Runtime.CompilerServices.ConfiguredCancelableAsyncEnumerable<>.Enumerator);
+            this.KnownTypes[NameCache.TaskAsyncEnumerableExtensions] =
+                typeof(Types.Threading.Tasks.TaskAsyncEnumerableExtensions);
+#endif
 
             // Populate the map with the default task-based types.
             this.KnownTypes[NameCache.Task] = typeof(Types.Threading.Tasks.Task);

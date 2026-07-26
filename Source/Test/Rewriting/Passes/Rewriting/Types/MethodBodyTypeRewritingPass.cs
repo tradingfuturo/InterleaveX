@@ -12,6 +12,29 @@ namespace Microsoft.Coyote.Rewriting
     internal sealed class MethodBodyTypeRewritingPass : TypeRewritingPass
     {
         /// <summary>
+        /// Instructions whose operand is a type token describing the layout of the value being
+        /// operated on, rather than merely naming a type.
+        /// </summary>
+        /// <remarks>
+        /// These must be rewritten alongside the locals and fields they operate on. A rewritten type
+        /// is a different struct of a different size, so leaving the token behind makes the runtime
+        /// copy or interpret the wrong number of bytes: boxing the result of a redirected
+        /// 'ConfigureAwait' under the original token, for instance, produces an object that reports
+        /// the BCL type over the controlled type's storage.
+        /// </remarks>
+        private static readonly HashSet<OpCode> TypeTokenOpCodes = new HashSet<OpCode>
+        {
+            OpCodes.Box,
+            OpCodes.Unbox,
+            OpCodes.Unbox_Any,
+            OpCodes.Initobj,
+            OpCodes.Ldobj,
+            OpCodes.Stobj,
+            OpCodes.Sizeof,
+            OpCodes.Constrained
+        };
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="MethodBodyTypeRewritingPass"/> class.
         /// </summary>
         internal MethodBodyTypeRewritingPass(RewritingOptions options, IEnumerable<AssemblyInfo> visitedAssemblies, LogWriter logWriter)
@@ -83,9 +106,9 @@ namespace Microsoft.Coyote.Rewriting
                     this.LogWriter.LogDebug("............. [+] {0}", instruction);
                 }
             }
-            else if (instruction.OpCode == OpCodes.Initobj)
+            else if (TypeTokenOpCodes.Contains(instruction.OpCode))
             {
-                instruction = this.VisitInitobjInstruction(instruction);
+                instruction = this.VisitTypeTokenInstruction(instruction);
             }
             else if (instruction.OpCode == OpCodes.Newobj)
             {
@@ -101,10 +124,10 @@ namespace Microsoft.Coyote.Rewriting
         }
 
         /// <summary>
-        /// Rewrites the specified <see cref="OpCodes.Initobj"/> instruction.
+        /// Rewrites the type token operand of the specified instruction.
         /// </summary>
         /// <returns>The unmodified instruction, or the newly replaced instruction.</returns>
-        private Instruction VisitInitobjInstruction(Instruction instruction)
+        private Instruction VisitTypeTokenInstruction(Instruction instruction)
         {
             TypeReference type = instruction.Operand as TypeReference;
             if (this.TryRewriteType(type, out TypeReference newType) &&

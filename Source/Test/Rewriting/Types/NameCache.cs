@@ -63,6 +63,15 @@ namespace Microsoft.Coyote.Rewriting.Types
         internal static string YieldAwaitable { get; } = typeof(SystemCompiler.YieldAwaitable).FullName;
         internal static string YieldAwaiter { get; } =
             typeof(SystemCompiler.YieldAwaitable).FullName + "/YieldAwaiter";
+#if NET
+        internal static string ConfiguredAsyncDisposable { get; } = typeof(SystemCompiler.ConfiguredAsyncDisposable).FullName;
+        internal static string GenericConfiguredCancelableAsyncEnumerable { get; } =
+            typeof(SystemCompiler.ConfiguredCancelableAsyncEnumerable<>).FullName;
+        internal static string GenericConfiguredCancelableAsyncEnumerator { get; } =
+            typeof(SystemCompiler.ConfiguredCancelableAsyncEnumerable<>).FullName + "/Enumerator";
+        internal static string TaskAsyncEnumerableExtensions { get; } =
+            typeof(SystemTasks.TaskAsyncEnumerableExtensions).FullName;
+#endif
 
         internal static string TaskExtensions { get; } = typeof(SystemTasks.TaskExtensions).FullName;
         internal static string TaskFactory { get; } = typeof(SystemTasks.TaskFactory).FullName;

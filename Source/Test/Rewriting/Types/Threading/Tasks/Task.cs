@@ -838,6 +838,20 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             bool continueOnCapturedContext) =>
             new ConfiguredTaskAwaitable(task, continueOnCapturedContext);
 
+#if NET8_0_OR_GREATER
+        /// <summary>
+        /// Configures an awaiter used to await this task.
+        /// </summary>
+        /// <remarks>
+        /// Redirected for the same reason as the boolean overload: leaving it alone would let the real
+        /// task hand a real <see cref="ConfiguredTaskAwaitable"/> to a call site the rewriter has
+        /// already retyped to the controlled one.
+        /// </remarks>
+        public static ConfiguredTaskAwaitable ConfigureAwait(SystemTask task,
+            SystemTasks.ConfigureAwaitOptions options) =>
+            new ConfiguredTaskAwaitable(task, options);
+#endif
+
         /// <summary>
         /// Creates an awaitable that asynchronously yields back to the current context when awaited.
         /// </summary>
@@ -965,6 +979,21 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
         public static ConfiguredTaskAwaitable<TResult> ConfigureAwait(
             SystemTasks.Task<TResult> task, bool continueOnCapturedContext) =>
             new ConfiguredTaskAwaitable<TResult>(task, continueOnCapturedContext);
+
+#if NET8_0_OR_GREATER
+        /// <summary>
+        /// Configures an awaiter used to await this task.
+        /// </summary>
+        /// <remarks>
+        /// A task with a result has this overload too, so it needs the same redirection as the
+        /// non-generic one: leaving it alone would hand a real <see cref="ConfiguredTaskAwaitable{TResult}"/>
+        /// to a call site the rewriter has already retyped to the controlled one.
+        /// </remarks>
+        public static ConfiguredTaskAwaitable<TResult> ConfigureAwait(
+            SystemTasks.Task<TResult> task, SystemTasks.ConfigureAwaitOptions options) =>
+            new ConfiguredTaskAwaitable<TResult>(task, options);
+#endif
+
 #pragma warning restore CA1000 // Do not declare static members on generic types
     }
 }
