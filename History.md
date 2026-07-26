@@ -16,6 +16,16 @@ concurrency defects across our codebase.
 PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
 
 ### (InterleaveX)
+- **Breaking (command line):** `--parallel` no longer takes a value. It is now a
+  flag that uses one worker per logical processor, and the count moved to a new
+  `--workers N` option that requires it, so `--parallel 8` becomes
+  `--parallel --workers 8` and `--parallel auto` becomes plain `--parallel`. An
+  option whose value is optional is still greedy in `System.CommandLine`: it
+  bound whatever token followed it, so `coyote test --parallel App.dll` took the
+  assembly path as a worker count and then failed for a missing assembly, even
+  though the help text advertised the value-less form. Taking no value at all
+  removes the ambiguity rather than guessing at it, and `--parallel` may now be
+  written anywhere on the command line, including before the assembly path.
 - Bounded channels of zero capacity — the rendezvous channel added in .NET 10 —
   are now controlled during testing. Each item passes from a writer to a reader
   directly, and whichever side arrives first is paused by the scheduler; these

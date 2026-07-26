@@ -60,10 +60,13 @@ instead of silently ignoring them.
 ### Running iterations in parallel
 
 Testing iterations are independent, so they can be sharded across worker processes with the
-`--parallel` option. Use `--parallel N` for a specific number of workers, or `--parallel auto` for
-one per logical processor. The `--iterations` bound is the total across all workers, and the
-reports and coverage of every worker are merged into a single result, so the output looks the same
-as a sequential run.
+`--parallel` flag, which uses one worker per logical processor. Add `--workers N` for a specific
+number instead. The `--iterations` bound is the total across all workers, and the reports and
+coverage of every worker are merged into a single result, so the output looks the same as a
+sequential run.
+
+`--parallel` takes no value of its own, so it can be written anywhere on the command line —
+including before the assembly path.
 
 Two caveats are worth knowing. First, the iteration count each worker receives is rounded up so
 that each covers whole rotations of the exploration strategy portfolio, which keeps the strategy

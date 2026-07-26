@@ -106,22 +106,45 @@ if ($cli.IsPresent -and $IsWindows) {
         Exit 1
     }
 
-    Write-Comment -text "Running the sharded testing smoke test."
+    Write-Comment -text "Running the command-line acceptance tests."
     $bench = "$PSScriptRoot/../Tools/SchedulerBench/bin/Release/net10.0/SchedulerBench.dll"
     if (Test-Path $bench) {
-        $parallel = (& "$cli_tool_path/interleavex" test $bench -m NoBug -i 20 --seed 1 --parallel 4) -join '\n'
-        if ($LASTEXITCODE -ne 0) {
+        # Fails the run, after cleaning up the temporary tool install.
+        function Assert-Failed($reason, $output) {
             Remove-Item $cli_tool_path -Recurse
-            Write-Error "### The sharded testing smoke test failed"
-            Write-Error $parallel
+            Write-Error "### $reason"
+            Write-Error $output
             Exit 1
         }
 
-        if (!$parallel.Contains("Explored 20 execution paths")) {
-            Remove-Item $cli_tool_path -Recurse
-            Write-Error "### Sharded testing did not explore every requested iteration"
-            Write-Error $parallel
-            Exit 1
+        # '--parallel' carries no value, so it must shard from any position on the command line.
+        # It used to bind whatever token followed it, which made the third ordering below consume
+        # the assembly path and fail.
+        $orderings = @(
+            @("test", $bench, "-m", "NoBug", "-i", "20", "--seed", "1", "--parallel"),
+            @("test", $bench, "--parallel", "-m", "NoBug", "-i", "20", "--seed", "1"),
+            @("test", "--parallel", $bench, "-m", "NoBug", "-i", "20", "--seed", "1"),
+            @("test", "--parallel", "--workers", "4", $bench, "-m", "NoBug", "-i", "20", "--seed", "1")
+        )
+
+        foreach ($ordering in $orderings) {
+            $written = $ordering -join ' '
+            $parallel = (& "$cli_tool_path/interleavex" @ordering) -join '\n'
+            if ($LASTEXITCODE -ne 0) {
+                Assert-Failed "Sharded testing failed for 'interleavex $written'" $parallel
+            }
+
+            if (!$parallel.Contains("Explored 20 execution paths")) {
+                Assert-Failed "Sharded testing did not explore every iteration for 'interleavex $written'" $parallel
+            }
+        }
+
+        # The worker count is meaningless without the flag that turns sharding on. Both streams are
+        # captured here, unlike above, because a parse error is reported on standard error while the
+        # usage text that follows it goes to standard output.
+        $orphan = (& "$cli_tool_path/interleavex" test $bench -m NoBug -i 20 --workers 4 2>&1 | Out-String)
+        if ($LASTEXITCODE -eq 0 -or !$orphan.Contains("requires option 'parallel'")) {
+            Assert-Failed "'--workers' without '--parallel' should have been rejected" $orphan
         }
     }
 

@@ -25,15 +25,20 @@ namespace Microsoft.Coyote.SystematicTesting
         /// </summary>
         private static readonly string[] StrippedValueOptions =
         {
-            "-p", "--parallel", "-m", "--method", "-i", "--iterations", "--seed", "-o", "--outdir"
+            "-m", "--method", "-i", "--iterations", "--seed", "-o", "--outdir", "--workers"
         };
 
         /// <summary>
         /// Options that are removed from the inherited command line and take no value.
         /// </summary>
+        /// <remarks>
+        /// The parallel option belongs here rather than above because it carries no value of its own.
+        /// The token after it is the next argument, and consuming it would launch every worker without
+        /// whatever that token was — the assembly path, for 'coyote test --parallel App.dll'.
+        /// </remarks>
         private static readonly string[] StrippedFlagOptions =
         {
-            "-b", "--break", "--list-tests"
+            "-b", "--break", "--list-tests", "-p", "--parallel"
         };
 
         /// <summary>

@@ -556,18 +556,31 @@ namespace Microsoft.Coyote.Cli
                 Arity = ArgumentArity.Zero
             };
 
-            var parallelOption = new Option<string>(
+            // Takes no value of its own, so that it can be written anywhere on the command line. An
+            // option whose value is optional is still greedy: it binds whatever token follows it, so
+            // 'test --parallel App.dll' would take the assembly as its value and then fail for a
+            // missing assembly. The worker count lives in its own option below instead.
+            var parallelOption = new Option<bool>(
                 aliases: new[] { "-p", "--parallel" },
-                getDefaultValue: () => "1",
-                description: "Run testing iterations in parallel across N worker processes, each exploring a " +
-                    "disjoint range of random seeds. Use 'auto' for one worker per logical processor. The " +
+                description: "Run testing iterations in parallel across worker processes, each exploring a " +
+                    "disjoint range of random seeds. Uses one worker per logical processor unless " +
+                    "'--workers' says otherwise. The " +
                     "'--iterations' bound is the total across all workers, rounded up so that each worker " +
                     "covers whole rotations of the exploration strategy portfolio. Note that the q-learning " +
                     "and prioritization strategies accumulate state across iterations, so each worker learns " +
                     "independently from a fraction of the run. Peak memory scales with the worker count.")
             {
+                Arity = ArgumentArity.Zero
+            };
+
+            var workersOption = new Option<uint>(
+                name: "--workers",
+                parseArgument: CreateUnsignedValueParser(minimum: 1),
+                description: "Number of worker processes to shard the testing iterations across. " +
+                    "Requires '--parallel'.")
+            {
                 ArgumentHelpName = "WORKERS",
-                Arity = ArgumentArity.ZeroOrOne
+                Arity = ArgumentArity.ExactlyOne
             };
 
             var outputDirectoryOption = new Option<string>(
@@ -582,8 +595,8 @@ namespace Microsoft.Coyote.Cli
             pathArg.AddValidator(result => ValidateArgumentValueIsExpectedFile(result, ".dll", ".exe"));
             iterationsOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
             timeoutOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
-            parallelOption.AddValidator(result => ValidateParallelOptionValue(result));
             parallelOption.AddValidator(result => ValidateExclusiveOptionValueIsAvailable(result, breakOption));
+            workersOption.AddValidator(result => ValidatePrerequisiteOptionValueIsAvailable(result, parallelOption));
             strategyOption.AddValidator(result => ValidateOptionValueIsAllowed(result, allowedStrategies));
             strategyOption.AddValidator(result => ValidateExclusiveOptionValueIsAvailable(result, portfolioModeOption));
             strategyValueOption.AddValidator(result => ValidatePrerequisiteOptionValueIsAvailable(result, strategyOption));
@@ -653,6 +666,7 @@ namespace Microsoft.Coyote.Cli
             this.AddOption(command, listTestsOption);
             this.AddOption(command, stopOnFirstFailureOption);
             this.AddOption(command, parallelOption);
+            this.AddOption(command, workersOption);
             command.TreatUnmatchedTokensAsErrors = true;
             return command;
         }
@@ -868,18 +882,6 @@ namespace Microsoft.Coyote.Cli
             if (result.Tokens.Select(token => token.Value).Where(v => !uint.TryParse(v, out _)).Any())
             {
                 result.ErrorMessage = $"Please give a positive integer to option '{result.Option.Name}'.";
-            }
-        }
-
-        /// <summary>
-        /// Validates that the specified option result is a worker count or 'auto'.
-        /// </summary>
-        private static void ValidateParallelOptionValue(OptionResult result)
-        {
-            if (result.Tokens.Select(token => token.Value)
-                .Where(v => v != "auto" && (!uint.TryParse(v, out uint workers) || workers is 0)).Any())
-            {
-                result.ErrorMessage = $"Please give a positive integer or 'auto' to option '{result.Option.Name}'.";
             }
         }
 
@@ -1186,9 +1188,17 @@ namespace Microsoft.Coyote.Cli
                         this.Configuration.StopOnFirstFailure = true;
                         break;
                     case "parallel":
-                        string workers = result.GetValueOrDefault<string>();
-                        this.Configuration.ParallelWorkerCount = string.IsNullOrEmpty(workers) || workers is "auto" ?
-                            (uint)Environment.ProcessorCount : uint.Parse(workers, CultureInfo.InvariantCulture);
+                        // Read the worker count from here rather than from its own case, because the
+                        // order of 'commandResult.Children' does not guarantee that '--workers' is
+                        // visited first, and one worker per logical processor is only the default when
+                        // it was not given. A '--workers' without '--parallel' never reaches this point;
+                        // its prerequisite validator rejects it while parsing.
+                        var workerCount = result.FindResultFor(this.Options["workers"]);
+                        this.Configuration.ParallelWorkerCount = workerCount is null || workerCount.IsImplicit ?
+                            (uint)Environment.ProcessorCount : workerCount.GetValueOrDefault<uint>();
+                        break;
+                    case "workers":
+                        // Handled by the 'parallel' case above, which this option requires.
                         break;
                     case "break":
                         this.Configuration.AttachDebugger = true;

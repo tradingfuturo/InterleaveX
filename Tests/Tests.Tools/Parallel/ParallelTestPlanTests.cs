@@ -151,7 +151,7 @@ namespace Microsoft.Coyote.Tools.Tests
         [Fact(Timeout = 5000)]
         public void TestChildArgsOverrideAndStripParallel()
         {
-            string[] original = { "test", "App.dll", "-i", "1000", "--parallel", "8" };
+            string[] original = { "test", "App.dll", "-i", "1000", "--parallel", "--workers", "8" };
             var shard = new ParallelTestPlan.Shard(0, 4711, 125);
             string[] args = ParallelTestPlan.BuildChildArgs(original, "MyTest", shard, "out");
 
@@ -167,7 +167,7 @@ namespace Microsoft.Coyote.Tools.Tests
         [Fact(Timeout = 5000)]
         public void TestChildArgsStripAttachedOptionValues()
         {
-            string[] original = { "test", "App.dll", "--seed=99", "--parallel:4", "-i=500" };
+            string[] original = { "test", "App.dll", "--seed=99", "--parallel", "--workers:4", "-i=500" };
             var shard = new ParallelTestPlan.Shard(1, 5000, 250);
             string[] args = ParallelTestPlan.BuildChildArgs(original, "MyTest", shard, "out");
 
@@ -184,7 +184,7 @@ namespace Microsoft.Coyote.Tools.Tests
             string[] original =
             {
                 "test", "App.dll", "-s", "probabilistic", "-sv", "5", "--skip-lock-races",
-                "-v", "debug", "--parallel", "4"
+                "-v", "debug", "--parallel", "--workers", "4"
             };
 
             var shard = new ParallelTestPlan.Shard(0, 1, 10);
@@ -198,9 +198,62 @@ namespace Microsoft.Coyote.Tools.Tests
         }
 
         [Fact(Timeout = 5000)]
+        public void TestChildArgsKeepAssemblyAfterBareParallel()
+        {
+            // The parallel option takes no value, so the token after it is the next positional
+            // argument. Consuming it would launch every worker without the assembly to test.
+            string[] original = { "test", "--parallel", "App.dll", "-i", "1000" };
+            var shard = new ParallelTestPlan.Shard(0, 4711, 125);
+            string[] args = ParallelTestPlan.BuildChildArgs(original, "MyTest", shard, "out");
+
+            Assert.Contains("App.dll", args);
+            AssertOptionValue(args, "-i", "125");
+            AssertNoParallelOption(args);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestChildArgsStripWorkerCount()
+        {
+            // The worker count belongs to the coordinator, and a worker that inherited it would
+            // shard again. Both the option and its value have to go.
+            string[] original = { "test", "App.dll", "--parallel", "--workers", "8", "-i", "1000" };
+            var shard = new ParallelTestPlan.Shard(0, 4711, 125);
+            string[] args = ParallelTestPlan.BuildChildArgs(original, "MyTest", shard, "out");
+
+            Assert.Contains("App.dll", args);
+            Assert.DoesNotContain("8", args);
+            AssertNoParallelOption(args);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestChildArgsKeepAssemblyAfterBareShortParallel()
+        {
+            string[] original = { "test", "-p", "App.exe" };
+            var shard = new ParallelTestPlan.Shard(0, 1, 10);
+            string[] args = ParallelTestPlan.BuildChildArgs(original, "MyTest", shard, "out");
+
+            Assert.Contains("App.exe", args);
+            AssertNoParallelOption(args);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestChildArgsKeepAssemblyAfterWorkerCount()
+        {
+            // '--workers' does take a value, so the token after it is consumed — but only one. The
+            // assembly written immediately after that value must still reach the worker.
+            string[] original = { "test", "--parallel", "--workers", "4", "App.dll", "-i", "1000" };
+            var shard = new ParallelTestPlan.Shard(0, 4711, 125);
+            string[] args = ParallelTestPlan.BuildChildArgs(original, "MyTest", shard, "out");
+
+            Assert.Contains("App.dll", args);
+            Assert.DoesNotContain("4", args);
+            AssertNoParallelOption(args);
+        }
+
+        [Fact(Timeout = 5000)]
         public void TestChildArgsStripDebuggerAndUserOverrides()
         {
-            string[] original = { "test", "App.dll", "-b", "-m", "Other", "-o", "C:\\out", "--parallel", "2" };
+            string[] original = { "test", "App.dll", "-b", "-m", "Other", "-o", "C:\\out", "--parallel", "--workers", "2" };
             var shard = new ParallelTestPlan.Shard(0, 1, 10);
             string[] args = ParallelTestPlan.BuildChildArgs(original, "MyTest", shard, "worker");
 
@@ -222,6 +275,7 @@ namespace Microsoft.Coyote.Tools.Tests
 
         private static void AssertNoParallelOption(string[] args) =>
             Assert.DoesNotContain(args, a =>
-                a is "-p" || a is "--parallel" || a.StartsWith("--parallel=") || a.StartsWith("--parallel:"));
+                a is "-p" || a is "--parallel" || a is "--workers" ||
+                a.StartsWith("--workers=") || a.StartsWith("--workers:"));
     }
 }
