@@ -18,11 +18,18 @@ namespace Microsoft.Coyote.Runtime
         void InitializeNextIteration(uint iteration);
 
         /// <summary>
-        /// Returns a subset of all available operations to be scheduled at the next scheduling step.
+        /// Appends to <paramref name="result"/> the subset of <paramref name="ops"/> that should be
+        /// scheduled at the next scheduling step, preserving the relative order of <paramref name="ops"/>.
         /// </summary>
         /// <param name="ops">All available operations to schedule.</param>
         /// <param name="current">The currently scheduled operation.</param>
-        /// <returns>The subset of operations to schedule.</returns>
-        IEnumerable<ControlledOperation> ReduceOperations(IEnumerable<ControlledOperation> ops, ControlledOperation current);
+        /// <param name="result">The buffer to populate with the subset of operations to schedule.</param>
+        /// <remarks>
+        /// The <paramref name="result"/> buffer is empty on entry and is never the same instance as
+        /// <paramref name="ops"/>. Leaving it empty means that no reduction applies, in which case
+        /// the caller keeps <paramref name="ops"/> unchanged.
+        /// </remarks>
+        void ReduceOperations(IReadOnlyList<ControlledOperation> ops, ControlledOperation current,
+            List<ControlledOperation> result);
     }
 }

@@ -136,7 +136,7 @@ namespace Microsoft.Coyote.Testing.Interleaving
         }
 
         /// <inheritdoc/>
-        internal override bool NextOperation(IEnumerable<ControlledOperation> ops, ControlledOperation current,
+        internal override bool NextOperation(IReadOnlyList<ControlledOperation> ops, ControlledOperation current,
             bool isYielding, out ControlledOperation next)
         {
             SChoice nextChoice = null;
@@ -148,10 +148,13 @@ namespace Microsoft.Coyote.Testing.Interleaving
             }
             else
             {
+                // The order in which the operations are recorded here is the order in which this
+                // depth will be explored for the remainder of the test, so it must match the order
+                // in which the operations are offered.
                 scs = new List<SChoice>();
-                foreach (var task in ops)
+                for (int idx = 0; idx < ops.Count; ++idx)
                 {
-                    scs.Add(new SChoice(task.Id));
+                    scs.Add(new SChoice(ops[idx].Id));
                 }
 
                 this.ScheduleStack.Add(scs);
@@ -170,7 +173,7 @@ namespace Microsoft.Coyote.Testing.Interleaving
                 previousChoice.IsDone = false;
             }
 
-            next = ops.FirstOrDefault(op => op.Id == nextChoice.Id);
+            next = FindOperationWithId(ops, nextChoice.Id);
             nextChoice.IsDone = true;
             this.SchIndex++;
 

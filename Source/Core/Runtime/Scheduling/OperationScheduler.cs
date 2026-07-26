@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 using System.Collections.Generic;
-using System.Linq;
 using Microsoft.Coyote.Coverage;
 using Microsoft.Coyote.Logging;
 using Microsoft.Coyote.Testing;
@@ -43,6 +42,23 @@ namespace Microsoft.Coyote.Runtime
         /// The pipeline of schedule reducers.
         /// </summary>
         private readonly List<IScheduleReducer> Reducers;
+
+        /// <summary>
+        /// Reusable buffer holding the operations that can be scheduled in the current scheduling
+        /// step, after filtering and reduction.
+        /// </summary>
+        /// <remarks>
+        /// This buffer and <see cref="ReducedOperations"/> are swapped as the reducer pipeline runs,
+        /// so neither field can be assumed to hold the final result; see <see cref="GetNextOperation"/>.
+        /// They are cleared rather than reallocated, and this scheduler outlives the test iterations,
+        /// so after the first few scheduling steps the scheduling loop stops allocating altogether.
+        /// </remarks>
+        private readonly List<ControlledOperation> EnabledOperations;
+
+        /// <summary>
+        /// Reusable scratch buffer that receives the output of each schedule reducer.
+        /// </summary>
+        private readonly List<ControlledOperation> ReducedOperations;
 
         /// <summary>
         /// Responsible for generating random values.
@@ -118,6 +134,8 @@ namespace Microsoft.Coyote.Runtime
             this.Trace = ExecutionTrace.Create();
 
             this.Portfolio = new LinkedList<Strategy>();
+            this.EnabledOperations = new List<ControlledOperation>();
+            this.ReducedOperations = new List<ControlledOperation>();
             this.Reducers = new List<IScheduleReducer>();
             if (configuration.IsExecutionTraceCycleReductionEnabled)
             {
@@ -256,6 +274,11 @@ namespace Microsoft.Coyote.Runtime
                 this.Trace.Clear();
             }
 
+            // Release the operations of the previous iteration, which would otherwise be kept alive
+            // by these buffers until the corresponding scheduling step of the next iteration.
+            this.EnabledOperations.Clear();
+            this.ReducedOperations.Clear();
+
             // Initialize any installed schedule reducers.
             foreach (var reducer in this.Reducers)
             {
@@ -274,20 +297,48 @@ namespace Microsoft.Coyote.Runtime
         /// <param name="isYielding">True if the current operation is yielding, else false.</param>
         /// <param name="next">The next operation to schedule.</param>
         /// <returns>True if there is a next choice, else false.</returns>
-        internal bool GetNextOperation(IEnumerable<ControlledOperation> ops, ControlledOperation current,
+        /// <remarks>
+        /// The set of schedulable operations is snapshotted into a reusable buffer once per
+        /// scheduling step, rather than being passed down as a lazily evaluated query that each
+        /// reducer and the strategy would re-enumerate several times over.
+        /// <para>
+        /// The snapshot is equivalent to the lazy query because no operation can change status
+        /// while this method runs: the reducers only read <see cref="ControlledOperation.LastSchedulingPoint"/>
+        /// and the last accessed shared state, the exploration strategies only read the operation
+        /// identity, group and status, and neither writes back. This method also runs inside the
+        /// runtime lock, so no other thread can intervene.
+        /// </para>
+        /// </remarks>
+        internal bool GetNextOperation(IReadOnlyList<ControlledOperation> ops, ControlledOperation current,
             bool isYielding, out ControlledOperation next)
         {
-            // Filter out any operations that cannot be scheduled.
-            var enabledOps = ops.Where(op => op.Status is OperationStatus.Enabled);
-            if (enabledOps.Any())
+            // Filter out any operations that cannot be scheduled, preserving their relative order.
+            var enabledOps = this.EnabledOperations;
+            var reducedOps = this.ReducedOperations;
+            enabledOps.Clear();
+            for (int idx = 0; idx < ops.Count; ++idx)
             {
-                // Invoke any installed schedule reducers.
-                foreach (var reducer in this.Reducers)
+                if (ops[idx].Status is OperationStatus.Enabled)
                 {
-                    var reducedOps = reducer.ReduceOperations(enabledOps, current);
-                    if (reducedOps.Any())
+                    enabledOps.Add(ops[idx]);
+                }
+            }
+
+            if (enabledOps.Count > 0)
+            {
+                // Invoke any installed schedule reducers, swapping the two buffers so that the
+                // output of each reducer becomes the input of the next one. A reducer that leaves
+                // its output empty is reporting that no reduction applies, in which case the
+                // operations from the previous stage are kept.
+                for (int idx = 0; idx < this.Reducers.Count; ++idx)
+                {
+                    reducedOps.Clear();
+                    this.Reducers[idx].ReduceOperations(enabledOps, current, reducedOps);
+                    if (reducedOps.Count > 0)
                     {
+                        var swap = enabledOps;
                         enabledOps = reducedOps;
+                        reducedOps = swap;
                     }
                 }
 
@@ -351,14 +402,12 @@ namespace Microsoft.Coyote.Runtime
         /// <summary>
         /// Returns the next delay.
         /// </summary>
-        /// <param name="ops">Operations executing during the current test iteration.</param>
         /// <param name="current">The operation requesting the delay.</param>
         /// <param name="maxValue">The max value.</param>
         /// <param name="next">The next delay.</param>
         /// <returns>True if there is a next delay, else false.</returns>
-        internal bool GetNextDelay(IEnumerable<ControlledOperation> ops, ControlledOperation current,
-            int maxValue, out int next) =>
-            (this.Strategy as FuzzingStrategy).GetNextDelay(ops, current, maxValue, out next);
+        internal bool GetNextDelay(ControlledOperation current, int maxValue, out int next) =>
+            (this.Strategy as FuzzingStrategy).GetNextDelay(current, maxValue, out next);
 
         /// <summary>
         /// Sets a checkpoint in the currently explored execution trace, that allows replaying all

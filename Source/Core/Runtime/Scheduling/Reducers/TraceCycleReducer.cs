@@ -1,8 +1,7 @@
-﻿// Copyright (c) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 using System.Collections.Generic;
-using System.Linq;
 
 namespace Microsoft.Coyote.Runtime
 {
@@ -19,30 +18,58 @@ namespace Microsoft.Coyote.Runtime
         private readonly HashSet<string> RepeatedReadAccesses;
 
         /// <summary>
+        /// Reusable buffer holding the operations that perform 'WRITE' accesses in the current
+        /// scheduling step.
+        /// </summary>
+        private readonly List<ControlledOperation> WriteAccessOps;
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="TraceCycleReducer"/> class.
         /// </summary>
         internal TraceCycleReducer()
         {
             this.RepeatedReadAccesses = new HashSet<string>();
+            this.WriteAccessOps = new List<ControlledOperation>();
         }
 
         /// <inheritdoc/>
         public void InitializeNextIteration(uint iteration)
         {
+            // Release the operations of the previous iteration, which this buffer would otherwise
+            // keep alive until the next scheduling step that reduces.
+            this.WriteAccessOps.Clear();
         }
 
         /// <inheritdoc/>
-        public IEnumerable<ControlledOperation> ReduceOperations(IEnumerable<ControlledOperation> ops, ControlledOperation current)
+        public void ReduceOperations(IReadOnlyList<ControlledOperation> ops, ControlledOperation current,
+            List<ControlledOperation> result)
         {
             // Find all operations that perform 'WRITE' accesses.
-            var writeAccessOps = ops.Where(op => op.LastSchedulingPoint is SchedulingPointType.Write).ToArray();
+            var writeAccessOps = this.WriteAccessOps;
+            writeAccessOps.Clear();
+            for (int idx = 0; idx < ops.Count; ++idx)
+            {
+                if (ops[idx].LastSchedulingPoint is SchedulingPointType.Write)
+                {
+                    writeAccessOps.Add(ops[idx]);
+                }
+            }
 
             // Filter out all 'READ' operations that are repeatedly 'READ' accessing shared state when there is a 'WRITE' access.
-            var filteredOps = ops.Where(op => op.LastSchedulingPoint is SchedulingPointType.Read &&
-                this.RepeatedReadAccesses.Any(state => op.LastAccessedSharedState == state) &&
-                writeAccessOps.Any(wop =>
-                    wop.LastAccessedSharedStateComparer?.Equals(wop.LastAccessedSharedState, op.LastAccessedSharedState) ??
-                    wop.LastAccessedSharedState == op.LastAccessedSharedState)).ToArray();
+            // This must be evaluated before the set of repeated read accesses is updated below, so that the decision is based
+            // on the accesses known at the start of this scheduling step.
+            for (int idx = 0; idx < ops.Count; ++idx)
+            {
+                var op = ops[idx];
+                if (op.LastSchedulingPoint is SchedulingPointType.Read &&
+                    this.RepeatedReadAccesses.Contains(op.LastAccessedSharedState) &&
+                    IsSharedStateWriteAccessed(writeAccessOps, op.LastAccessedSharedState))
+                {
+                    continue;
+                }
+
+                result.Add(op);
+            }
 
             if (current.LastSchedulingPoint is SchedulingPointType.Read)
             {
@@ -57,7 +84,30 @@ namespace Microsoft.Coyote.Runtime
                     current.LastAccessedSharedState == state);
             }
 
-            return ops.Except(filteredOps);
+            if (result.Count == ops.Count)
+            {
+                // Nothing was reduced, so report that no reduction applies rather than handing back
+                // a copy of the input, which lets the caller keep using its current buffer.
+                result.Clear();
+            }
+        }
+
+        /// <summary>
+        /// Returns true if any of the specified 'WRITE' accessing operations accessed the specified shared state.
+        /// </summary>
+        private static bool IsSharedStateWriteAccessed(List<ControlledOperation> writeAccessOps, string state)
+        {
+            for (int idx = 0; idx < writeAccessOps.Count; ++idx)
+            {
+                var wop = writeAccessOps[idx];
+                if (wop.LastAccessedSharedStateComparer?.Equals(wop.LastAccessedSharedState, state) ??
+                    wop.LastAccessedSharedState == state)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
     }
 }

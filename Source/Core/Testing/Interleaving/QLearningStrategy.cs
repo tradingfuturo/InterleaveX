@@ -41,6 +41,23 @@ namespace Microsoft.Coyote.Testing.Interleaving
         private ulong LastOperation;
 
         /// <summary>
+        /// Reusable map from the id of each operation that can be scheduled in the current
+        /// scheduling step to that operation.
+        /// </summary>
+        private readonly Dictionary<ulong, ControlledOperation> SchedulableOpsById;
+
+        /// <summary>
+        /// Reusable buffer holding the operations that have a quality value in the current program
+        /// state, in the order they are enumerated from the Q-table.
+        /// </summary>
+        private readonly List<ControlledOperation> CandidateOps;
+
+        /// <summary>
+        /// Reusable buffer holding the quality values that correspond to <see cref="CandidateOps"/>.
+        /// </summary>
+        private readonly List<double> CandidateQValues;
+
+        /// <summary>
         /// The value of the learning rate.
         /// </summary>
         private readonly double LearningRate;
@@ -90,6 +107,9 @@ namespace Microsoft.Coyote.Testing.Interleaving
             this.OperationQTable = new Dictionary<int, Dictionary<ulong, double>>();
             this.ExecutionPath = new LinkedList<(ulong, SchedulingPointType, int)>();
             this.TransitionFrequencies = new Dictionary<int, ulong>();
+            this.SchedulableOpsById = new Dictionary<ulong, ControlledOperation>();
+            this.CandidateOps = new List<ControlledOperation>();
+            this.CandidateQValues = new List<double>();
             this.LastOperation = 0;
             this.LearningRate = 0.3;
             this.Gamma = 0.7;
@@ -106,13 +126,19 @@ namespace Microsoft.Coyote.Testing.Interleaving
         {
             this.LearnQValues();
             this.ExecutionPath.Clear();
+
+            // Release the operations of the previous iteration, which these buffers would otherwise
+            // keep alive until the next scheduling step that consults the Q-table.
+            this.SchedulableOpsById.Clear();
+            this.CandidateOps.Clear();
+
             this.LastOperation = 0;
             this.Epochs++;
             return base.InitializeNextIteration(iteration);
         }
 
         /// <inheritdoc/>
-        internal override bool NextOperation(IEnumerable<ControlledOperation> ops, ControlledOperation current,
+        internal override bool NextOperation(IReadOnlyList<ControlledOperation> ops, ControlledOperation current,
             bool isYielding, out ControlledOperation next)
         {
             int state = this.CaptureExecutionStep(current);
@@ -147,21 +173,34 @@ namespace Microsoft.Coyote.Testing.Interleaving
         /// Returns the next operation to schedule by drawing from the probability
         /// distribution over the specified state and enabled operations.
         /// </summary>
-        private ControlledOperation GetNextOperationByPolicy(int state, IEnumerable<ControlledOperation> ops)
+        private ControlledOperation GetNextOperationByPolicy(int state, IReadOnlyList<ControlledOperation> ops)
         {
-            var opIds = new List<ulong>();
-            var qValues = new List<double>();
+            // Index the schedulable operations by id so that the membership test below is a lookup
+            // rather than a scan of every operation per Q-table entry. Ids are unique among the
+            // schedulable operations, because they key the map that these operations come from.
+            this.SchedulableOpsById.Clear();
+            for (int i = 0; i < ops.Count; ++i)
+            {
+                this.SchedulableOpsById[ops[i].Id] = ops[i];
+            }
+
+            // The Q-table is enumerated in its own order, and the index sampled from the resulting
+            // distribution is resolved back through that same order, so it must not be reordered.
+            var candidateOps = this.CandidateOps;
+            var qValues = this.CandidateQValues;
+            candidateOps.Clear();
+            qValues.Clear();
             foreach (var pair in this.OperationQTable[state])
             {
-                if (ops.Any(op => op.Id == pair.Key))
+                if (this.SchedulableOpsById.TryGetValue(pair.Key, out ControlledOperation op))
                 {
-                    opIds.Add(pair.Key);
+                    candidateOps.Add(op);
                     qValues.Add(pair.Value);
                 }
             }
 
             int idx = this.ChooseQValueIndexFromDistribution(qValues);
-            return ops.FirstOrDefault(op => op.Id == opIds[idx]);
+            return candidateOps[idx];
         }
 
         /// <summary>
@@ -278,7 +317,7 @@ namespace Microsoft.Coyote.Testing.Interleaving
         /// Initializes the Q values of all operations that can be chosen at the
         /// specified state that have not been previously encountered.
         /// </summary>
-        private void InitializeOperationQValues(int state, IEnumerable<ControlledOperation> ops)
+        private void InitializeOperationQValues(int state, IReadOnlyList<ControlledOperation> ops)
         {
             if (!this.OperationQTable.TryGetValue(state, out Dictionary<ulong, double> qValues))
             {
@@ -286,12 +325,12 @@ namespace Microsoft.Coyote.Testing.Interleaving
                 this.OperationQTable.Add(state, qValues);
             }
 
-            foreach (var op in ops)
+            for (int idx = 0; idx < ops.Count; ++idx)
             {
                 // Assign the same initial probability for all new operations.
-                if (!qValues.ContainsKey(op.Id))
+                if (!qValues.ContainsKey(ops[idx].Id))
                 {
-                    qValues.Add(op.Id, 0);
+                    qValues.Add(ops[idx].Id, 0);
                 }
             }
         }

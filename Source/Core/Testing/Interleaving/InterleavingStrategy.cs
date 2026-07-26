@@ -42,7 +42,7 @@ namespace Microsoft.Coyote.Testing.Interleaving
         /// <param name="isYielding">True if the current operation is yielding, else false.</param>
         /// <param name="next">The next operation to schedule.</param>
         /// <returns>True if there is a next choice, else false.</returns>
-        internal bool GetNextOperation(IEnumerable<ControlledOperation> ops, ControlledOperation current,
+        internal bool GetNextOperation(IReadOnlyList<ControlledOperation> ops, ControlledOperation current,
             bool isYielding, out ControlledOperation next)
         {
             try
@@ -53,7 +53,7 @@ namespace Microsoft.Coyote.Testing.Interleaving
                     ExecutionTrace.Step nextStep = this.TracePrefix[this.StepCount];
                     if (nextStep is ExecutionTrace.SchedulingStep step)
                     {
-                        next = ops.FirstOrDefault(op => op.Id == step.Value);
+                        next = FindOperationWithId(ops, step.Value);
                         if (next is null)
                         {
                             this.ErrorText = this.FormatReplayError(nextStep.Index, $"cannot detect id '{step.Value}'");
@@ -96,7 +96,7 @@ namespace Microsoft.Coyote.Testing.Interleaving
         /// <param name="isYielding">True if the current operation is yielding, else false.</param>
         /// <param name="next">The next operation to schedule.</param>
         /// <returns>True if there is a next choice, else false.</returns>
-        internal abstract bool NextOperation(IEnumerable<ControlledOperation> ops, ControlledOperation current,
+        internal abstract bool NextOperation(IReadOnlyList<ControlledOperation> ops, ControlledOperation current,
             bool isYielding, out ControlledOperation next);
 
         /// <summary>
@@ -196,6 +196,86 @@ namespace Microsoft.Coyote.Testing.Interleaving
         /// <param name="next">The next integer choice.</param>
         /// <returns>True if there is a next choice, else false.</returns>
         internal abstract bool NextInteger(ControlledOperation current, int maxValue, out int next);
+
+        /// <summary>
+        /// Returns the first operation in the specified list with the given id, or null if there
+        /// is no such operation.
+        /// </summary>
+        /// <remarks>
+        /// Returning null rather than throwing is load-bearing: a recorded id that is no longer
+        /// schedulable is how both trace replay and depth-first search detect that exploration
+        /// cannot continue.
+        /// </remarks>
+        protected static ControlledOperation FindOperationWithId(IReadOnlyList<ControlledOperation> ops, ulong id)
+        {
+            for (int idx = 0; idx < ops.Count; ++idx)
+            {
+                if (ops[idx].Id == id)
+                {
+                    return ops[idx];
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Replaces the contents of <paramref name="presentGroups"/> with the operation groups
+        /// represented among the specified operations.
+        /// </summary>
+        /// <remarks>
+        /// The resulting count is how many distinct groups can be scheduled in this step, which is
+        /// what the group-based strategies use to decide whether their group selection logic can
+        /// make any difference.
+        /// </remarks>
+        protected static void CachePresentGroups(IReadOnlyList<ControlledOperation> ops,
+            HashSet<OperationGroup> presentGroups)
+        {
+            presentGroups.Clear();
+            for (int idx = 0; idx < ops.Count; ++idx)
+            {
+                presentGroups.Add(ops[idx].Group);
+            }
+        }
+
+        /// <summary>
+        /// Returns the first group of <paramref name="orderedGroups"/> that is present among
+        /// <paramref name="presentGroups"/>, or null if there is no such group.
+        /// </summary>
+        /// <remarks>
+        /// The strategies keep their tracked groups in the order that expresses their policy, so
+        /// the first match is the group that policy selects.
+        /// </remarks>
+        protected static OperationGroup FindFirstPresentGroup(List<OperationGroup> orderedGroups,
+            HashSet<OperationGroup> presentGroups)
+        {
+            foreach (var group in orderedGroups)
+            {
+                if (presentGroups.Contains(group))
+                {
+                    return group;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Replaces the contents of <paramref name="result"/> with the operations of
+        /// <paramref name="ops"/> that are members of the specified group, preserving their order.
+        /// </summary>
+        protected static void SelectGroupMembers(IReadOnlyList<ControlledOperation> ops, OperationGroup group,
+            List<ControlledOperation> result)
+        {
+            result.Clear();
+            for (int idx = 0; idx < ops.Count; ++idx)
+            {
+                if (group.IsMember(ops[idx]))
+                {
+                    result.Add(ops[idx]);
+                }
+            }
+        }
 
         /// <summary>
         /// Resets the strategy.

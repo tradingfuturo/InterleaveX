@@ -29,6 +29,17 @@ namespace Microsoft.Coyote.Testing.Interleaving
         private readonly HashSet<int> PriorityChangePoints;
 
         /// <summary>
+        /// Reusable set of the operation groups represented among the operations that can be
+        /// scheduled in the current scheduling step.
+        /// </summary>
+        private readonly HashSet<OperationGroup> PresentGroups;
+
+        /// <summary>
+        /// Reusable buffer holding the operations that belong to the highest priority group.
+        /// </summary>
+        private readonly List<ControlledOperation> HighestPriorityGroupOps;
+
+        /// <summary>
         /// Max number of priority changes per iteration.
         /// </summary>
         private readonly int MaxPriorityChangesPerIteration;
@@ -51,6 +62,8 @@ namespace Microsoft.Coyote.Testing.Interleaving
         {
             this.PrioritizedOperationGroups = new List<OperationGroup>();
             this.PriorityChangePoints = new HashSet<int>();
+            this.PresentGroups = new HashSet<OperationGroup>();
+            this.HighestPriorityGroupOps = new List<ControlledOperation>();
             this.MaxPriorityChangesPerIteration = maxPriorityChanges;
             this.MaxPriorityChangePoints = 0;
             this.NumPriorityChangePoints = 0;
@@ -78,12 +91,17 @@ namespace Microsoft.Coyote.Testing.Interleaving
                 this.DebugPrintPriorityChangePoints();
             }
 
+            // Release the operations and groups of the previous iteration, which these buffers would
+            // otherwise keep alive until the next scheduling step.
+            this.PresentGroups.Clear();
+            this.HighestPriorityGroupOps.Clear();
+
             this.NumPriorityChangePoints = 0;
             return base.InitializeNextIteration(iteration);
         }
 
         /// <inheritdoc/>
-        internal override bool NextOperation(IEnumerable<ControlledOperation> ops, ControlledOperation current,
+        internal override bool NextOperation(IReadOnlyList<ControlledOperation> ops, ControlledOperation current,
             bool isYielding, out ControlledOperation next)
         {
             if (this.IsFair && this.StepCount >= this.Configuration.MaxUnfairSchedulingSteps)
@@ -94,28 +112,32 @@ namespace Microsoft.Coyote.Testing.Interleaving
             // Set the priority of any new operation groups.
             this.SetNewOperationGroupPriorities(ops, current);
 
+            // Cache the groups represented among the schedulable operations. Neither the priority
+            // change below nor anything else in this method modifies the operations or their group
+            // membership, so this stays valid for both lookups that follow.
+            CachePresentGroups(ops, this.PresentGroups);
+
             // Check if there are at least two operation groups that can be scheduled,
             // otherwise skip the priority checking and changing logic.
-            if (ops.Select(op => op.Group).Distinct().Skip(1).Any())
+            if (this.PresentGroups.Count > 1)
             {
                 // Change the priority of the highest priority operation group.
-                this.PrioritizeNextOperationGroup(ops);
+                this.PrioritizeNextOperationGroup();
                 this.NumPriorityChangePoints++;
 
                 // Get the operations that belong to the highest priority group.
-                OperationGroup nextGroup = this.GetOperationGroupWithHighestPriority(ops);
-                ops = ops.Where(op => nextGroup.IsMember(op));
+                OperationGroup nextGroup = this.GetOperationGroupWithHighestPriority();
+                SelectGroupMembers(ops, nextGroup, this.HighestPriorityGroupOps);
+                ops = this.HighestPriorityGroupOps;
             }
 
-            int idx = this.RandomValueGenerator.Next(ops.Count());
-            next = ops.ElementAt(idx);
-            return true;
+            return base.NextOperation(ops, current, isYielding, out next);
         }
 
         /// <summary>
         /// Sets a random priority to any new operation groups.
         /// </summary>
-        private void SetNewOperationGroupPriorities(IEnumerable<ControlledOperation> ops, ControlledOperation current)
+        private void SetNewOperationGroupPriorities(IReadOnlyList<ControlledOperation> ops, ControlledOperation current)
         {
             this.PrioritizedOperationGroups.RemoveAll(group => group.IsCompleted());
 
@@ -125,9 +147,17 @@ namespace Microsoft.Coyote.Testing.Interleaving
                 this.PrioritizedOperationGroups.Add(current.Group);
             }
 
-            // Randomize the priority of all new operation groups.
-            foreach (var group in ops.Select(op => op.Group).Where(g => !this.PrioritizedOperationGroups.Contains(g)))
+            // Randomize the priority of all new operation groups. The membership test is evaluated
+            // for each operation in turn, so a group shared by several operations is only inserted
+            // once, and the sequence of random values consumed here is unchanged.
+            for (int idx = 0; idx < ops.Count; ++idx)
             {
+                var group = ops[idx].Group;
+                if (this.PrioritizedOperationGroups.Contains(group))
+                {
+                    continue;
+                }
+
                 // Randomly choose a priority for this group.
                 int index = this.RandomValueGenerator.Next(this.PrioritizedOperationGroups.Count + 1);
                 this.PrioritizedOperationGroups.Insert(index, group);
@@ -144,12 +174,12 @@ namespace Microsoft.Coyote.Testing.Interleaving
         /// Reduces the priority of highest priority operation group, if there is a priority change point
         /// installed on the current execution step.
         /// </summary>
-        private void PrioritizeNextOperationGroup(IEnumerable<ControlledOperation> ops)
+        private void PrioritizeNextOperationGroup()
         {
             if (this.PriorityChangePoints.Contains(this.NumPriorityChangePoints))
             {
                 // This scheduling step was chosen as a priority change point.
-                OperationGroup group = this.GetOperationGroupWithHighestPriority(ops);
+                OperationGroup group = this.GetOperationGroupWithHighestPriority();
                 if (group != null)
                 {
                     // Reduce the priority of the group by putting it in the end of the list.
@@ -161,20 +191,11 @@ namespace Microsoft.Coyote.Testing.Interleaving
         }
 
         /// <summary>
-        /// Returns the operation group with the highest priority.
+        /// Returns the operation group with the highest priority that is represented among the
+        /// operations cached in <see cref="PresentGroups"/>.
         /// </summary>
-        private OperationGroup GetOperationGroupWithHighestPriority(IEnumerable<ControlledOperation> ops)
-        {
-            foreach (var group in this.PrioritizedOperationGroups)
-            {
-                if (ops.Any(op => op.Group == group))
-                {
-                    return group;
-                }
-            }
-
-            return null;
-        }
+        private OperationGroup GetOperationGroupWithHighestPriority() =>
+            FindFirstPresentGroup(this.PrioritizedOperationGroups, this.PresentGroups);
 
         /// <inheritdoc/>
         internal override string GetName() => (this.IsFair ? ExplorationStrategy.FairPrioritization : ExplorationStrategy.Prioritization).GetName();

@@ -1,8 +1,7 @@
-﻿// Copyright (c) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 using System.Collections.Generic;
-using System.Linq;
 
 namespace Microsoft.Coyote.Runtime
 {
@@ -25,19 +24,22 @@ namespace Microsoft.Coyote.Runtime
         }
 
         /// <inheritdoc/>
-        public IEnumerable<ControlledOperation> ReduceOperations(IEnumerable<ControlledOperation> ops, ControlledOperation current)
+        public void ReduceOperations(IReadOnlyList<ControlledOperation> ops, ControlledOperation current,
+            List<ControlledOperation> result)
         {
             // Find all operations that are not invoking a 'READ' or 'WRITE' scheduling decision,
             // and if there are any, then return them. This effectively helps racy scheduling
             // decisions to happen as close to each other as possible, which helps to find bugs
-            // that are caused by the interleaving of these operations.
-            var noReadOrWriteSchedulingOps = ops.Where(op => !SchedulingPoint.IsReadOrWrite(op.LastSchedulingPoint));
-            if (noReadOrWriteSchedulingOps.Any())
+            // that are caused by the interleaving of these operations. If there are none, then
+            // the result is left empty, which the caller treats as "no reduction applies".
+            for (int idx = 0; idx < ops.Count; ++idx)
             {
-                return noReadOrWriteSchedulingOps.ToArray();
+                var op = ops[idx];
+                if (!SchedulingPoint.IsReadOrWrite(op.LastSchedulingPoint))
+                {
+                    result.Add(op);
+                }
             }
-
-            return ops;
         }
     }
 }

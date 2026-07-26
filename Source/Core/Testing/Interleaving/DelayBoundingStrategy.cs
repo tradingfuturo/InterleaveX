@@ -29,6 +29,17 @@ namespace Microsoft.Coyote.Testing.Interleaving
         private readonly List<int> DelayPoints;
 
         /// <summary>
+        /// Reusable set of the operation groups represented among the operations that can be
+        /// scheduled in the current scheduling step.
+        /// </summary>
+        private readonly HashSet<OperationGroup> PresentGroups;
+
+        /// <summary>
+        /// Reusable buffer holding the operations that belong to the next enabled group.
+        /// </summary>
+        private readonly List<ControlledOperation> NextGroupOps;
+
+        /// <summary>
         /// Max number of delays per iteration.
         /// </summary>
         private readonly int MaxDelaysPerIteration;
@@ -51,6 +62,8 @@ namespace Microsoft.Coyote.Testing.Interleaving
         {
             this.OperationGroups = new List<OperationGroup>();
             this.DelayPoints = new List<int>();
+            this.PresentGroups = new HashSet<OperationGroup>();
+            this.NextGroupOps = new List<ControlledOperation>();
             this.MaxDelaysPerIteration = maxDelays;
             this.MaxDelayPoints = 0;
             this.NumDelayPoints = 0;
@@ -79,12 +92,17 @@ namespace Microsoft.Coyote.Testing.Interleaving
                 this.DebugPrintDelayPoints();
             }
 
+            // Release the operations and groups of the previous iteration, which these buffers would
+            // otherwise keep alive until the next scheduling step.
+            this.PresentGroups.Clear();
+            this.NextGroupOps.Clear();
+
             this.NumDelayPoints = 0;
             return base.InitializeNextIteration(iteration);
         }
 
         /// <inheritdoc/>
-        internal override bool NextOperation(IEnumerable<ControlledOperation> ops, ControlledOperation current,
+        internal override bool NextOperation(IReadOnlyList<ControlledOperation> ops, ControlledOperation current,
             bool isYielding, out ControlledOperation next)
         {
             if (this.IsFair && this.StepCount >= this.Configuration.MaxUnfairSchedulingSteps)
@@ -94,35 +112,45 @@ namespace Microsoft.Coyote.Testing.Interleaving
 
             this.RegisterNewOperationGroup(ops);
 
+            // Cache the groups represented among the schedulable operations. The delay logic below
+            // only reorders the tracked groups, so this stays valid across every lookup it makes.
+            CachePresentGroups(ops, this.PresentGroups);
+
             // Check if there are at least two operation groups that can be scheduled,
             // otherwise skip the delay checking and changing logic.
-            if (ops.Select(op => op.Group).Distinct().Skip(1).Any())
+            if (this.PresentGroups.Count > 1)
             {
                 // Delay the next enabled priority operation group.
-                this.DelayOperationGroup(ops);
+                this.DelayOperationGroup();
                 this.NumDelayPoints++;
 
                 // Get the operations that belong to the next enabled group.
-                OperationGroup nextGroup = this.GetNextEnabledOperationGroup(ops);
-                ops = ops.Where(op => nextGroup.IsMember(op));
+                OperationGroup nextGroup = this.GetNextEnabledOperationGroup();
+                SelectGroupMembers(ops, nextGroup, this.NextGroupOps);
+                ops = this.NextGroupOps;
             }
 
-            int idx = this.RandomValueGenerator.Next(ops.Count());
-            next = ops.ElementAt(idx);
-            return true;
+            return base.NextOperation(ops, current, isYielding, out next);
         }
 
         /// <summary>
         /// Registers any new operation groups.
         /// </summary>
-        private void RegisterNewOperationGroup(IEnumerable<ControlledOperation> ops)
+        private void RegisterNewOperationGroup(IReadOnlyList<ControlledOperation> ops)
         {
             this.OperationGroups.RemoveAll(group => group.IsCompleted());
 
             int count = this.OperationGroups.Count;
-            foreach (var group in ops.Select(op => op.Group).Where(g => !this.OperationGroups.Contains(g)))
+
+            // The membership test is evaluated for each operation in turn, so a group shared by
+            // several operations is only appended once.
+            for (int idx = 0; idx < ops.Count; ++idx)
             {
-                this.OperationGroups.Add(group);
+                var group = ops[idx].Group;
+                if (!this.OperationGroups.Contains(group))
+                {
+                    this.OperationGroups.Add(group);
+                }
             }
 
             if (this.OperationGroups.Count > count)
@@ -134,14 +162,14 @@ namespace Microsoft.Coyote.Testing.Interleaving
         /// <summary>
         /// Delays the next enabled operation group, if there is a delay point installed on the current execution step.
         /// </summary>
-        private void DelayOperationGroup(IEnumerable<ControlledOperation> ops)
+        private void DelayOperationGroup()
         {
-            while (this.DelayPoints.Count > 0 && this.NumDelayPoints == this.DelayPoints.First())
+            while (this.DelayPoints.Count > 0 && this.NumDelayPoints == this.DelayPoints[0])
             {
                 // This scheduling step was chosen as a delay point.
                 this.DelayPoints.RemoveAt(0);
 
-                OperationGroup group = this.GetNextEnabledOperationGroup(ops);
+                OperationGroup group = this.GetNextEnabledOperationGroup();
                 if (group != null)
                 {
                     this.LogWriter.LogDebug("[coyote::strategy] Delayed operation group '{0}' with '{1}' delays remaining.",
@@ -153,20 +181,11 @@ namespace Microsoft.Coyote.Testing.Interleaving
         }
 
         /// <summary>
-        /// Returns the next enabled operation group.
+        /// Returns the next operation group that is represented among the operations cached in
+        /// <see cref="PresentGroups"/>.
         /// </summary>
-        private OperationGroup GetNextEnabledOperationGroup(IEnumerable<ControlledOperation> ops)
-        {
-            foreach (var group in this.OperationGroups)
-            {
-                if (ops.Any(op => op.Group == group))
-                {
-                    return group;
-                }
-            }
-
-            return null;
-        }
+        private OperationGroup GetNextEnabledOperationGroup() =>
+            FindFirstPresentGroup(this.OperationGroups, this.PresentGroups);
 
         /// <inheritdoc/>
         internal override string GetName() => (this.IsFair ? ExplorationStrategy.FairDelayBounding : ExplorationStrategy.DelayBounding).GetName();

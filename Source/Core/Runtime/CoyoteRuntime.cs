@@ -1460,7 +1460,7 @@ namespace Microsoft.Coyote.Runtime
                 this.CheckIfSchedulingStepsBoundIsReached();
 
                 // Choose the next delay to inject.
-                if (!this.Scheduler.GetNextDelay(this.OperationMap.Values, op, maxDelay, out int next))
+                if (!this.Scheduler.GetNextDelay(op, maxDelay, out int next))
                 {
                     this.Detach(ExecutionStatus.BoundReached);
                 }

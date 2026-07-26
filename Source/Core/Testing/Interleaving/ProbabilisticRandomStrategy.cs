@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 using System.Collections.Generic;
-using System.Linq;
 using Microsoft.Coyote.Runtime;
 
 namespace Microsoft.Coyote.Testing.Interleaving
@@ -28,12 +27,14 @@ namespace Microsoft.Coyote.Testing.Interleaving
         }
 
         /// <inheritdoc/>
-        internal override bool NextOperation(IEnumerable<ControlledOperation> ops, ControlledOperation current,
+        internal override bool NextOperation(IReadOnlyList<ControlledOperation> ops, ControlledOperation current,
             bool isYielding, out ControlledOperation next)
         {
-            int count = ops.Count();
+            int count = ops.Count;
             if (count > 1)
             {
+                // Note that 'ShouldCurrentOperationChange' consumes random values, so it must keep
+                // running before the draw below even when it decides not to switch operation.
                 if (!this.ShouldCurrentOperationChange() && current.Status is OperationStatus.Enabled)
                 {
                     next = current;
@@ -42,7 +43,7 @@ namespace Microsoft.Coyote.Testing.Interleaving
             }
 
             int idx = this.RandomValueGenerator.Next(count);
-            next = ops.ElementAt(idx);
+            next = ops[idx];
             return true;
         }
 
