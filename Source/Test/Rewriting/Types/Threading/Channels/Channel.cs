@@ -1,4 +1,4 @@
-// Copyright (c) Microsoft Corporation.
+﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 #if NET
@@ -18,11 +18,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
     /// subsequent reader/writer call dispatches virtually into controlled code without needing a mock per
     /// reader/writer type.
     /// <para>
-    /// Two factory shapes are intentionally NOT redirected (they keep the real, uncontrolled BCL
-    /// implementation): channels created inside a static constructor (the rewriter does not rewrite
-    /// <c>.cctor</c> bodies — e.g. a channel in a static field initializer), and
-    /// <c>CreateUnboundedPrioritized</c> (unused by the systems under test). Both continue to work; they are
-    /// simply not observed by the scheduler.
+    /// Two shapes keep the real, uncontrolled BCL implementation. A channel created inside a static
+    /// constructor is one, because the rewriter does not rewrite <c>.cctor</c> bodies (e.g. a channel in
+    /// a static field initializer), so the call is never redirected here and nothing can report it. A
+    /// prioritized channel is the other: a priority queue decides the order items come out in, which
+    /// <see cref="ControlledChannel{T}"/> does not model. Both continue to work; they are simply not
+    /// observed by the scheduler, and the prioritized one says so through
+    /// <see cref="CoyoteRuntime.NotifyUncontrolledPrimitive"/> rather than losing the coverage silently.
     /// </para>
     /// </remarks>
     [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
@@ -61,14 +63,37 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         /// <summary>
         /// Creates an unbounded channel subject to the provided options.
         /// </summary>
+        /// <remarks>
+        /// A null <paramref name="options"/> is handed to the BCL rather than ignored here, so that the
+        /// caller still gets its <see cref="ArgumentNullException"/>.
+        /// </remarks>
         public static SystemChannels.Channel<T> CreateUnbounded<T>(SystemChannels.UnboundedChannelOptions options) =>
-            TryCreateControlled(out SystemChannels.Channel<T> channel) ? channel :
+            options != null && TryCreateControlled(out SystemChannels.Channel<T> channel) ? channel :
             SystemChannels.Channel.CreateUnbounded<T>(options);
+
+        /// <summary>
+        /// The smallest capacity a controlled channel is built for. A capacity of zero asks for the
+        /// rendezvous channel, which <see cref="ControlledChannel{T}"/> implements, but only .NET 10
+        /// has: every earlier framework rejects it, and controlling it there would turn the caller's
+        /// <see cref="ArgumentOutOfRangeException"/> into a working channel.
+        /// </summary>
+#if NET10_0_OR_GREATER
+        private const int MinControlledCapacity = 0;
+#else
+        private const int MinControlledCapacity = 1;
+#endif
 
         /// <summary>
         /// Creates a channel with the specified maximum capacity.
         /// </summary>
+        /// <remarks>
+        /// A capacity the framework does not accept is handed to the BCL rather than rejected here, so
+        /// that the caller still gets its <see cref="ArgumentOutOfRangeException"/>. Where a capacity of
+        /// zero is accepted it is controlled like any other: <see cref="ControlledChannel{T}"/> buffers
+        /// nothing and hands each item from a writer to a reader directly.
+        /// </remarks>
         public static SystemChannels.Channel<T> CreateBounded<T>(int capacity) =>
+            capacity >= MinControlledCapacity &&
             TryCreateControlled(out SystemChannels.Channel<T> channel, capacity) ? channel :
             SystemChannels.Channel.CreateBounded<T>(capacity);
 
@@ -85,12 +110,52 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         /// <remarks>
         /// A null <paramref name="options"/> is handed to the BCL rather than dereferenced here, so that the
         /// caller still gets its <see cref="ArgumentNullException"/> instead of a <see cref="NullReferenceException"/>.
+        /// The capacity carries the same condition as the integer overload. It cannot in fact fail it —
+        /// <c>BoundedChannelOptions</c> validates the capacity on the way in, and rejects a zero on every
+        /// framework whose channel does not support one — but the check is kept so that the two overloads
+        /// cannot drift apart if that ever changes.
         /// </remarks>
         public static SystemChannels.Channel<T> CreateBounded<T>(SystemChannels.BoundedChannelOptions options,
             Action<T> itemDropped) =>
-            options != null &&
+            options != null && options.Capacity >= MinControlledCapacity &&
             TryCreateControlled(out SystemChannels.Channel<T> channel, options.Capacity, options.FullMode, itemDropped) ?
             channel : SystemChannels.Channel.CreateBounded<T>(options, itemDropped);
+
+#if NET10_0_OR_GREATER
+        /// <summary>
+        /// Creates an unbounded channel that reads items in priority order.
+        /// </summary>
+        /// <remarks>
+        /// Redirected only so that the lost coverage can be reported; the channel returned is the real,
+        /// uncontrolled one. A priority queue decides the order items come out in, and
+        /// <see cref="ControlledChannel{T}"/> is a FIFO that does not model that.
+        /// </remarks>
+        public static SystemChannels.Channel<T> CreateUnboundedPrioritized<T>()
+        {
+            ReportUncontrolledChannel();
+            return SystemChannels.Channel.CreateUnboundedPrioritized<T>();
+        }
+
+        /// <summary>
+        /// Creates an unbounded channel that reads items in priority order, subject to the provided options.
+        /// </summary>
+        /// <remarks>
+        /// Redirected only so that the lost coverage can be reported; see the parameterless overload.
+        /// </remarks>
+        public static SystemChannels.Channel<T> CreateUnboundedPrioritized<T>(
+            SystemChannels.UnboundedPrioritizedChannelOptions<T> options)
+        {
+            ReportUncontrolledChannel();
+            return SystemChannels.Channel.CreateUnboundedPrioritized<T>(options);
+        }
+
+        /// <summary>
+        /// Reports that a channel this class cannot control was created, so that the interleavings it
+        /// hides are not quietly missing from an otherwise green run.
+        /// </summary>
+        private static void ReportUncontrolledChannel() =>
+            CoyoteRuntime.Current.NotifyUncontrolledPrimitive("A prioritized channel");
+#endif
     }
 }
 #endif

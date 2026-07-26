@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using Microsoft.Coyote.Specifications;
+using Microsoft.Coyote.SystematicTesting;
 using Xunit;
 using Xunit.Abstractions;
 using CoyoteChannels = Microsoft.Coyote.Rewriting.Types.Threading.Channels;
@@ -370,6 +371,370 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 await Task.WhenAll(producer, consumer);
             },
             this.GetConfiguration().WithTestingIterations(200));
+        }
+
+        [Fact(Timeout = 10000)]
+        public void TestReadAllAsyncHonorsBothCancellationTokens()
+        {
+            // 'ReadAllAsync(ct1)' hands one token to the enumerable and 'GetAsyncEnumerator(ct2)'
+            // (what 'await foreach ... .WithCancellation(ct2)' compiles to) hands it another. Both
+            // must be able to stop a parked move-next; honoring only one leaves the enumeration
+            // blocked forever on a channel that is never written to or completed.
+            foreach (bool cancelEnumerator in new[] { false, true })
+            {
+                this.Test(async () =>
+                {
+                    Channel<int> channel = Channel.CreateUnbounded<int>();
+                    using var enumerableCts = new CancellationTokenSource();
+                    using var enumeratorCts = new CancellationTokenSource();
+
+                    IAsyncEnumerator<int> enumerator = channel.Reader.ReadAllAsync(enumerableCts.Token)
+                        .GetAsyncEnumerator(enumeratorCts.Token);
+
+                    Task consumer = Task.Run(async () =>
+                    {
+                        bool canceled = false;
+                        try
+                        {
+                            await enumerator.MoveNextAsync();
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            canceled = true;
+                        }
+
+                        Specification.Assert(canceled, "The enumeration should observe cancellation.");
+                    });
+
+                    if (cancelEnumerator)
+                    {
+                        enumeratorCts.Cancel();
+                    }
+                    else
+                    {
+                        enumerableCts.Cancel();
+                    }
+
+                    await consumer;
+                    await enumerator.DisposeAsync();
+                },
+                this.GetConfiguration().WithTestingIterations(200));
+            }
+        }
+
+#if NET10_0_OR_GREATER
+        /// <summary>
+        /// A zero capacity channel buffers nothing: each item passes from a writer to a reader directly,
+        /// and whichever side arrives first waits for the other. Guarded to .NET 10, which is where the
+        /// shape was added; earlier frameworks reject a capacity of zero outright.
+        /// </summary>
+        /// <remarks>
+        /// The expectations below were taken from the real <c>RendezvousChannel&lt;T&gt;</c> rather than
+        /// derived, including the ones that look inconsistent: <c>Count</c> stays zero while a writer is
+        /// parked, yet <c>TryPeek</c> returns that writer's item.
+        /// </remarks>
+        [Fact(Timeout = 10000)]
+        public void TestRendezvousReaderArrivingFirstIsHandedTheItem()
+        {
+            // The case the capacity guard used to exist to avoid: a reader parks with nothing buffered
+            // to take, and must still be woken by a writer that arrives afterwards. Reading the pending
+            // write is the whole mechanism; without it both sides wait for each other forever and the
+            // run reports a deadlock that the program under test never had.
+            this.Test(async () =>
+            {
+                Channel<int> channel = Channel.CreateBounded<int>(0);
+                Task<int> reader = Task.Run(async () => await channel.Reader.ReadAsync());
+                Task writer = Task.Run(async () => await channel.Writer.WriteAsync(42));
+
+                await Task.WhenAll(reader, writer);
+                Specification.Assert(reader.Result is 42, "The reader should receive the written item.");
+            },
+            this.GetConfiguration().WithTestingIterations(200));
+        }
+
+        [Fact(Timeout = 10000)]
+        public void TestRendezvousWriterWaitsForAReader()
+        {
+            // The mirror image, and the half that already worked: a write with no reader waiting parks
+            // holding its item, and completes only once a read takes it.
+            this.Test(async () =>
+            {
+                Channel<int> channel = Channel.CreateBounded<int>(0);
+                Task writer = Task.Run(async () => await channel.Writer.WriteAsync(7));
+
+                Specification.Assert(channel.Reader.Count is 0,
+                    "A rendezvous channel buffers nothing, so its count stays zero.");
+
+                int read = await channel.Reader.ReadAsync();
+                await writer;
+                Specification.Assert(read is 7, "The read should take the parked writer's item.");
+            },
+            this.GetConfiguration().WithTestingIterations(200));
+        }
+
+        [Fact(Timeout = 10000)]
+        public void TestRendezvousHandsOverEveryItemInOrder()
+        {
+            // The shape a rendezvous channel is actually used in. Every item must arrive exactly once
+            // and in order, under every interleaving the scheduler explores — which is the coverage the
+            // capacity guard was giving up.
+            this.Test(async () =>
+            {
+                const int Count = 5;
+                Channel<int> channel = Channel.CreateBounded<int>(0);
+
+                Task producer = Task.Run(async () =>
+                {
+                    for (int idx = 0; idx < Count; idx++)
+                    {
+                        await channel.Writer.WriteAsync(idx);
+                    }
+
+                    channel.Writer.Complete();
+                });
+
+                Task consumer = Task.Run(async () =>
+                {
+                    int expected = 0;
+                    await foreach (int item in channel.Reader.ReadAllAsync())
+                    {
+                        Specification.Assert(item == expected, "Items should arrive in the order written.");
+                        expected++;
+                    }
+
+                    Specification.Assert(expected == Count, "Every item should arrive exactly once.");
+                });
+
+                await Task.WhenAll(producer, consumer);
+            },
+            this.GetConfiguration().WithTestingIterations(200));
+        }
+
+        [Fact(Timeout = 10000)]
+        public void TestRendezvousSynchronousAndWaitOperations()
+        {
+            // 'TryWrite' succeeds only against a reader that is already parked, 'TryRead' only against a
+            // writer that is, and the two 'WaitTo' operations report exactly that. Each side must also
+            // wake the other's waiter when it parks, or a 'WaitToWriteAsync'/'WaitToReadAsync' loop
+            // never makes progress.
+            this.Test(async () =>
+            {
+                Channel<int> idle = Channel.CreateBounded<int>(0);
+                Specification.Assert(!idle.Writer.TryWrite(1), "A write with no reader waiting should not be taken.");
+                Specification.Assert(!idle.Reader.TryRead(out _), "A read with no writer waiting should find nothing.");
+                Specification.Assert(!idle.Reader.TryPeek(out _), "A peek with no writer waiting should find nothing.");
+
+                Channel<int> parkedWriter = Channel.CreateBounded<int>(0);
+                Task writer = Task.Run(async () => await parkedWriter.Writer.WriteAsync(3));
+                Specification.Assert(await parkedWriter.Reader.WaitToReadAsync(),
+                    "A parked writer should make a read possible.");
+                Specification.Assert(parkedWriter.Reader.TryPeek(out int peeked) && peeked is 3,
+                    "A peek should see the parked writer's item.");
+                Specification.Assert(parkedWriter.Reader.TryPeek(out _),
+                    "A peek should not consume the parked writer's item.");
+                Specification.Assert(parkedWriter.Reader.TryRead(out int taken) && taken is 3,
+                    "A read should take the parked writer's item.");
+                await writer;
+
+                Channel<int> parkedReader = Channel.CreateBounded<int>(0);
+                Task<int> reader = Task.Run(async () => await parkedReader.Reader.ReadAsync());
+                Specification.Assert(await parkedReader.Writer.WaitToWriteAsync(),
+                    "A parked reader should make a write possible.");
+                Specification.Assert(parkedReader.Writer.TryWrite(9), "A write should reach the parked reader.");
+                Specification.Assert(await reader is 9, "The parked reader should receive the written item.");
+            },
+            this.GetConfiguration().WithTestingIterations(100));
+        }
+
+        [Fact(Timeout = 10000)]
+        public void TestRendezvousDropModeDropsWritesWithNoReader()
+        {
+            // With no buffer there is no older or newer item to evict, so every drop mode drops the
+            // incoming item instead — but only when nobody is waiting for it. A parked reader still
+            // wins, in every mode. Both facts are the real channel's, not this mock's invention.
+            this.Test(async () =>
+            {
+                foreach (BoundedChannelFullMode mode in new[]
+                {
+                    BoundedChannelFullMode.DropWrite,
+                    BoundedChannelFullMode.DropOldest,
+                    BoundedChannelFullMode.DropNewest
+                })
+                {
+                    var dropped = new List<int>();
+                    Channel<int> channel = Channel.CreateBounded<int>(
+                        new BoundedChannelOptions(0) { FullMode = mode }, dropped.Add);
+
+                    Specification.Assert(channel.Writer.TryWrite(1), "A drop mode always accepts the write.");
+                    Specification.Assert(dropped.Count is 1 && dropped[0] is 1,
+                        "With nobody waiting, the incoming item is the one dropped.");
+
+                    await channel.Writer.WriteAsync(2);
+                    Specification.Assert(dropped.Count is 2 && dropped[1] is 2,
+                        "An asynchronous write completes by dropping rather than parking.");
+                    Specification.Assert(await channel.Writer.WaitToWriteAsync(),
+                        "A drop mode never has to wait to write.");
+                    Specification.Assert(channel.Reader.Count is 0 && !channel.Reader.TryRead(out _),
+                        "Nothing is left behind for a reader to find.");
+                }
+
+                // Whether a parked reader takes the item ahead of the drop policy is deliberately not
+                // asserted here. Getting a reader parked first would need the scheduler to be pinned to
+                // one interleaving, and any other ordering drops the item and hangs the reader. The
+                // hand-off itself is covered by the Wait-mode tests above, which share the same code
+                // path; what is new below the drop modes is only the no-reader case checked here.
+            },
+            this.GetConfiguration().WithTestingIterations(50));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestPrioritizedChannelIsReportedAsUncontrolled()
+        {
+            // A prioritized channel keeps the real implementation, because a priority queue decides the
+            // order items come out in and the controlled channel is a FIFO. It is redirected all the
+            // same, so that the coverage lost by not controlling it is reported instead of a green run
+            // silently having explored fewer interleavings than it looks like.
+            TestReport report = this.RunSystematicTest(() =>
+            {
+                Channel<int> plain = Channel.CreateUnboundedPrioritized<int>();
+                Channel<int> configured = Channel.CreateUnboundedPrioritized<int>(
+                    new UnboundedPrioritizedChannelOptions<int> { SingleReader = true });
+
+                Specification.Assert(!(plain is CoyoteChannels.ControlledChannel<int>),
+                    "A prioritized channel is not controlled.");
+                Specification.Assert(!(configured is CoyoteChannels.ControlledChannel<int>),
+                    "A prioritized channel from options is not controlled either.");
+            },
+            this.GetConfiguration().WithTestingIterations(1));
+
+            Assert.Contains("A prioritized channel", report.UncontrolledInvocations);
+        }
+
+        [Fact(Timeout = 10000)]
+        public void TestRendezvousCompletionFailsParkedWriters()
+        {
+            // Completing while a writer is parked has to fault that write rather than leave it parked
+            // for a reader that can no longer come. The completion races the write deliberately rather
+            // than waiting for it to park: no reader ever arrives, so the write must fault under every
+            // ordering, and over these iterations the scheduler does explore the parked-first one.
+            // ('WaitToWriteAsync' cannot serve as the barrier — with no reader it parks as well.)
+            this.Test(async () =>
+            {
+                Channel<int> channel = Channel.CreateBounded<int>(0);
+                Task writer = Task.Run(async () => await channel.Writer.WriteAsync(1));
+
+                channel.Writer.Complete();
+
+                bool faulted = false;
+                try
+                {
+                    await writer;
+                }
+                catch (ChannelClosedException)
+                {
+                    faulted = true;
+                }
+
+                Specification.Assert(faulted, "A parked write should fault once the channel is completed.");
+                Specification.Assert(!await channel.Reader.WaitToReadAsync(),
+                    "A completed rendezvous channel has nothing more to read.");
+                await channel.Reader.Completion;
+            },
+            this.GetConfiguration().WithTestingIterations(100));
+        }
+#endif
+
+        [Fact(Timeout = 5000)]
+        public void TestInvalidFactoryArgumentsThrow()
+        {
+            // The redirected factories must behave like the real ones for arguments the controlled
+            // channel cannot represent, so that what the program under test really hit is what it
+            // sees rather than a deadlock report from a channel no write could fit into.
+            this.Test(() =>
+            {
+                bool threwOnNegativeCapacity = false;
+                try
+                {
+                    Channel.CreateBounded<int>(-1);
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    threwOnNegativeCapacity = true;
+                }
+
+                Specification.Assert(threwOnNegativeCapacity, "CreateBounded should reject a negative capacity.");
+
+                // A zero capacity is the rendezvous channel on .NET 10 and an argument error on every
+                // earlier framework. Which one it is decides what must happen, so the outcome is
+                // asserted per framework rather than caught and ignored: swallowing the exception would
+                // let the redirection quietly hand back a working channel where the real one throws.
+                // Both the integer overload and the options overloads can ask for a zero, so all three
+                // are covered.
+#if NET10_0_OR_GREATER
+                Channel<int> zeroCapacity = Channel.CreateBounded<int>(0);
+                Specification.Assert(zeroCapacity is CoyoteChannels.ControlledChannel<int>,
+                    "A zero capacity channel should be controlled.");
+
+                Channel<int> fromOptions = Channel.CreateBounded<int>(new BoundedChannelOptions(0));
+                Specification.Assert(fromOptions is CoyoteChannels.ControlledChannel<int>,
+                    "A zero capacity channel from options should be controlled too.");
+
+                Channel<int> withCallback = Channel.CreateBounded<int>(
+                    new BoundedChannelOptions(0), _ => { });
+                Specification.Assert(withCallback is CoyoteChannels.ControlledChannel<int>,
+                    "A zero capacity channel from options with a drop callback should be controlled too.");
+#else
+                bool threwOnZeroCapacity = false;
+                try
+                {
+                    Channel.CreateBounded<int>(0);
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    threwOnZeroCapacity = true;
+                }
+
+                Specification.Assert(threwOnZeroCapacity,
+                    "CreateBounded should reject a zero capacity on a framework without rendezvous channels.");
+
+                bool threwOnZeroCapacityOptions = false;
+                try
+                {
+                    Channel.CreateBounded<int>(new BoundedChannelOptions(0));
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    threwOnZeroCapacityOptions = true;
+                }
+
+                Specification.Assert(threwOnZeroCapacityOptions,
+                    "BoundedChannelOptions should reject a zero capacity on a framework without rendezvous channels.");
+#endif
+
+                bool threwOnNullOptions = false;
+                try
+                {
+                    Channel.CreateUnbounded<int>(default(UnboundedChannelOptions));
+                }
+                catch (ArgumentNullException)
+                {
+                    threwOnNullOptions = true;
+                }
+
+                Specification.Assert(threwOnNullOptions, "CreateUnbounded should reject null options.");
+
+                bool threwOnNullBoundedOptions = false;
+                try
+                {
+                    Channel.CreateBounded<int>(default(BoundedChannelOptions));
+                }
+                catch (ArgumentNullException)
+                {
+                    threwOnNullBoundedOptions = true;
+                }
+
+                Specification.Assert(threwOnNullBoundedOptions, "CreateBounded should reject null options.");
+            });
         }
 
         [Fact(Timeout = 5000)]

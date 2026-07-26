@@ -16,6 +16,13 @@ concurrency defects across our codebase.
 PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
 
 ### (InterleaveX)
+- Bounded channels of zero capacity — the rendezvous channel added in .NET 10 —
+  are now controlled during testing. Each item passes from a writer to a reader
+  directly, and whichever side arrives first is paused by the scheduler; these
+  channels previously kept the real implementation and so were not observed.
+  Prioritized channels still keep the real implementation, since their ordering
+  is not modelled, but now report themselves as an uncontrolled invocation
+  instead of losing the coverage silently.
 - **Breaking (build layout):** build output is now written under a
   configuration-specific directory, so `bin/net8.0` becomes
   `bin/Release/net8.0` and `Tests/X/bin/net8.0` becomes

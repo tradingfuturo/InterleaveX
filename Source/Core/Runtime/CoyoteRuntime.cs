@@ -2366,6 +2366,30 @@ namespace Microsoft.Coyote.Runtime
         }
 
         /// <summary>
+        /// Notify that a primitive the runtime can normally control was created in a shape it does not
+        /// implement, so the program keeps the real, uncontrolled one.
+        /// </summary>
+        /// <remarks>
+        /// Unlike the other notifications here this neither detaches nor fails the test. The primitive
+        /// behaves correctly; it is simply invisible to the scheduler, so the only cost is the
+        /// interleavings that are never explored — which a green run otherwise looks exactly like.
+        /// Warned once per description, because these are routinely created in a loop, and recorded as
+        /// an uncontrolled invocation so that it also survives into the test report.
+        /// </remarks>
+        internal void NotifyUncontrolledPrimitive(string description)
+        {
+            using (SynchronizedSection.Enter(this.RuntimeLock))
+            {
+                if (this.SchedulingPolicy is SchedulingPolicy.Interleaving &&
+                    this.UncontrolledInvocations.Add(description))
+                {
+                    this.LogWriter.LogWarning("[coyote::warning] {0} is not controlled during testing, " +
+                        "so interleavings that depend on it are not explored.", description);
+                }
+            }
+        }
+
+        /// <summary>
         /// Notify that an uncontrolled synchronization method invocation was detected.
         /// </summary>
         internal void NotifyUncontrolledSynchronizationInvocation(string methodName)

@@ -1,4 +1,4 @@
-// Copyright (c) Microsoft Corporation.
+﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 #if NET
@@ -10,6 +10,7 @@ using Microsoft.Coyote.Runtime.CompilerServices;
 using CoyoteTasks = Microsoft.Coyote.Rewriting.Types.Threading.Tasks;
 using SystemCancellationToken = System.Threading.CancellationToken;
 using SystemCancellationTokenRegistration = System.Threading.CancellationTokenRegistration;
+using SystemCancellationTokenSource = System.Threading.CancellationTokenSource;
 using SystemChannels = System.Threading.Channels;
 using SystemTaskCreationOptions = System.Threading.Tasks.TaskCreationOptions;
 using SystemTasks = System.Threading.Tasks;
@@ -124,9 +125,23 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         private static CoyoteRuntime GetRuntime() => CoyoteRuntime.Current;
 
         /// <summary>
-        /// Whether the buffer has room for another item (always true when unbounded).
+        /// Whether the buffer has room for another item (always true when unbounded, and never true
+        /// for a rendezvous channel, which has no buffer at all).
         /// </summary>
         private bool HasSpace => this.Capacity is int.MaxValue || this.Items.Count < this.Capacity;
+
+        /// <summary>
+        /// Whether this is the zero capacity channel that .NET 10 added, where an item is handed from
+        /// a writer to a reader directly because there is nowhere to put it in between.
+        /// </summary>
+        /// <remarks>
+        /// The write side needs no special handling: <see cref="TryWriteLocked"/> already offers the
+        /// item to a parked reader before it tries to buffer, and <see cref="HasSpace"/> is false here,
+        /// so a write with no reader waiting parks exactly as it should. It is the read side that has
+        /// to know about this, because a reader arriving first would otherwise park without ever
+        /// looking at the writers already parked, and the two would wait for each other forever.
+        /// </remarks>
+        private bool IsRendezvous => this.Capacity is 0;
 
         /// <summary>
         /// Creates a completion source whose continuations run asynchronously, as every parked waiter requires.
@@ -176,14 +191,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
             CoyoteRuntime runtime = GetRuntime();
             using (runtime.EnterSynchronizedSection())
             {
-                if (this.Items.Count is 0)
+                if (this.Items.Count > 0)
                 {
-                    item = default;
-                    return false;
+                    item = this.DequeueItem();
+                    return true;
                 }
 
-                item = this.DequeueItem();
-                return true;
+                return this.TryTakeFromPendingWrite(out item);
             }
         }
 
@@ -197,7 +211,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
             CoyoteRuntime runtime = GetRuntime();
             using (runtime.EnterSynchronizedSection())
             {
-                if (this.Items.Count > 0)
+                if (this.Items.Count > 0 || this.HasPendingWrite)
                 {
                     return new SystemTasks.ValueTask<bool>(true);
                 }
@@ -228,6 +242,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
                     return new SystemTasks.ValueTask<T>(this.DequeueItem());
                 }
 
+                if (this.TryTakeFromPendingWrite(out T handedOver))
+                {
+                    return new SystemTasks.ValueTask<T>(handedOver);
+                }
+
                 if (this.IsCompleted)
                 {
                     return new SystemTasks.ValueTask<T>(
@@ -236,6 +255,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
 
                 var tcs = CreateSource<T>();
                 this.BlockedReaders.Enqueue(new ReadItemWaiter(tcs));
+                this.OnReaderParked();
                 return new SystemTasks.ValueTask<T>(Park(runtime, tcs, cancellationToken));
             }
         }
@@ -256,6 +276,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
                     return new SystemTasks.ValueTask<bool>(true);
                 }
 
+                if (this.TryTakeFromPendingWrite(out T handedOver))
+                {
+                    enumerator.CurrentItem = handedOver;
+                    return new SystemTasks.ValueTask<bool>(true);
+                }
+
                 if (this.IsCompleted)
                 {
                     return this.CompletedReadResult();
@@ -263,6 +289,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
 
                 var tcs = CreateSource<bool>();
                 this.BlockedReaders.Enqueue(new MoveNextWaiter(tcs, enumerator));
+                this.OnReaderParked();
                 return new SystemTasks.ValueTask<bool>(Park(runtime, tcs, cancellationToken));
             }
         }
@@ -278,8 +305,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
                     return true;
                 }
 
-                item = default;
-                return false;
+                // The item a writer is parked with is peekable even though it is not buffered, and
+                // peeking must not consume it, so the writer is left parked.
+                return this.TryPeekPendingWrite(out item);
             }
         }
 
@@ -342,10 +370,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
                 }
                 else
                 {
-                    // Bounded, Wait-mode, full: park until a read frees a slot.
+                    // Bounded, Wait-mode, full: park until a read frees a slot — or, on a rendezvous
+                    // channel, until a reader arrives to take the item straight out of this write.
                     Debug.Assert(full, "WriteAsync only parks when the bounded channel is full.");
                     var tcs = CreateSource<bool>();
                     this.PendingWrites.Enqueue(new PendingWrite(tcs, item));
+                    this.OnWriterParked();
                     result = new SystemTasks.ValueTask(Park(runtime, tcs, cancellationToken));
                 }
             }
@@ -376,6 +406,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
                 if (this.HasSpace || this.FullMode != SystemChannels.BoundedChannelFullMode.Wait)
                 {
                     // Space is available, or a drop mode means a write will always be accepted.
+                    return new SystemTasks.ValueTask<bool>(true);
+                }
+
+                if (this.HasBlockedReader)
+                {
+                    // No space, but a reader is parked, so a rendezvous write would be taken at once.
                     return new SystemTasks.ValueTask<bool>(true);
                 }
 
@@ -495,6 +531,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
 
                 case SystemChannels.BoundedChannelFullMode.DropOldest:
                 case SystemChannels.BoundedChannelFullMode.DropNewest:
+                    if (this.Items.Count is 0)
+                    {
+                        // A rendezvous channel buffers nothing, so there is no older or newer item to
+                        // evict and the incoming one is what gets dropped, exactly as the real channel
+                        // does. Reached only here, since a bounded buffer is never both full and empty.
+                        dropped = item;
+                        hasDropped = true;
+                        return true;
+                    }
+
                     // Evict a buffered item to make room for the new one.
                     LinkedListNode<T> evicted = this.FullMode is SystemChannels.BoundedChannelFullMode.DropOldest ?
                         this.Items.First : this.Items.Last;
@@ -508,6 +554,103 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
                 default:
                     full = true;
                     return false;
+            }
+        }
+
+        /// <summary>
+        /// Takes the item of the first live parked writer, completing that write. Returns whether one
+        /// was taken.
+        /// </summary>
+        /// <remarks>
+        /// This is how a rendezvous channel hands an item over: with no buffer to pass through, the
+        /// reader takes it out of the writer directly. Only reachable on such a channel — a bounded one
+        /// parks a writer only when its buffer is full, so an empty buffer means nothing is parked, and
+        /// the callers all check the buffer first.
+        /// </remarks>
+        private bool TryTakeFromPendingWrite(out T item)
+        {
+            while (this.PendingWrites.Count > 0)
+            {
+                PendingWrite pending = this.PendingWrites.Dequeue();
+                if (pending.Promote())
+                {
+                    item = pending.Item;
+                    return true;
+                }
+
+                // Otherwise the writer was canceled: skip it and try the next.
+            }
+
+            item = default;
+            return false;
+        }
+
+        /// <summary>
+        /// Returns the item of the first live parked writer without taking it, leaving that writer parked.
+        /// </summary>
+        private bool TryPeekPendingWrite(out T item)
+        {
+            foreach (PendingWrite pending in this.PendingWrites)
+            {
+                if (pending.IsPending)
+                {
+                    item = pending.Item;
+                    return true;
+                }
+            }
+
+            item = default;
+            return false;
+        }
+
+        /// <summary>
+        /// Whether a writer is parked holding an item that a read could take right now.
+        /// </summary>
+        private bool HasPendingWrite => this.TryPeekPendingWrite(out _);
+
+        /// <summary>
+        /// Whether a reader is parked waiting for an item that a write could hand over right now.
+        /// </summary>
+        private bool HasBlockedReader
+        {
+            get
+            {
+                foreach (IItemWaiter waiter in this.BlockedReaders)
+                {
+                    if (waiter.IsPending)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// A reader parked with nothing to take. On a rendezvous channel that is precisely what makes a
+        /// write able to succeed, so everyone waiting to write is told to retry.
+        /// </summary>
+        private void OnReaderParked()
+        {
+            if (this.IsRendezvous)
+            {
+                while (this.WaitingWriters.Count > 0)
+                {
+                    this.WaitingWriters.Dequeue().TrySetResult(true);
+                }
+            }
+        }
+
+        /// <summary>
+        /// A writer parked still holding its item. On a rendezvous channel that is precisely what makes
+        /// a read able to succeed, so everyone waiting to read is told to retry.
+        /// </summary>
+        private void OnWriterParked()
+        {
+            if (this.IsRendezvous)
+            {
+                this.WakeWaitingReaders();
             }
         }
 
@@ -660,6 +803,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
 
         private interface IItemWaiter
         {
+            /// <summary>Whether this waiter is still waiting, rather than already canceled.</summary>
+            bool IsPending { get; }
+
             /// <summary>Hands an item to the waiter; returns whether it accepted (false if already canceled).</summary>
             bool TryDeliver(T item);
 
@@ -677,6 +823,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
 
             internal ReadItemWaiter(SystemTasks.TaskCompletionSource<T> tcs) => this.Tcs = tcs;
 
+            public bool IsPending => !this.Tcs.Task.IsCompleted;
+
             public bool TryDeliver(T item) => this.Tcs.TrySetResult(item);
 
             // There is no item to return, so even a clean completion faults the read.
@@ -693,6 +841,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
                 this.Tcs = tcs;
                 this.Enumerator = enumerator;
             }
+
+            public bool IsPending => !this.Tcs.Task.IsCompleted;
 
             public bool TryDeliver(T item)
             {
@@ -732,6 +882,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
             }
 
             internal T Item { get; }
+
+            /// <summary>Whether this write is still parked, rather than already canceled.</summary>
+            internal bool IsPending => !this.Tcs.Task.IsCompleted;
 
             /// <summary>Completes the parked write successfully; returns whether it was accepted (not canceled).</summary>
             internal bool Promote() => this.Tcs.TrySetResult(true);
@@ -799,8 +952,28 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
                 this.CancellationToken = cancellationToken;
             }
 
-            public IAsyncEnumerator<T> GetAsyncEnumerator(SystemCancellationToken cancellationToken = default) =>
-                new Enumerator(this.Channel, this.CancellationToken.CanBeCanceled ? this.CancellationToken : cancellationToken);
+            /// <remarks>
+            /// Both tokens must be able to stop the enumeration: 'ReadAllAsync(ct1).WithCancellation(ct2)'
+            /// supplies one at construction and one here, and honouring only one leaves the other unable to
+            /// cancel a parked move-next. They are linked only when both can actually be cancelled, so the
+            /// common case of at most one real token allocates nothing.
+            /// </remarks>
+            public IAsyncEnumerator<T> GetAsyncEnumerator(SystemCancellationToken cancellationToken = default)
+            {
+                if (!this.CancellationToken.CanBeCanceled)
+                {
+                    return new Enumerator(this.Channel, null, cancellationToken);
+                }
+
+                if (!cancellationToken.CanBeCanceled || this.CancellationToken.Equals(cancellationToken))
+                {
+                    return new Enumerator(this.Channel, null, this.CancellationToken);
+                }
+
+                var linkedSource = SystemCancellationTokenSource.CreateLinkedTokenSource(
+                    this.CancellationToken, cancellationToken);
+                return new Enumerator(this.Channel, linkedSource, linkedSource.Token);
+            }
         }
 
         private sealed class Enumerator : IAsyncEnumerator<T>
@@ -808,9 +981,17 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
             private readonly ControlledChannel<T> Channel;
             private readonly SystemCancellationToken CancellationToken;
 
-            internal Enumerator(ControlledChannel<T> channel, SystemCancellationToken cancellationToken)
+            /// <summary>
+            /// The source linking the two tokens this enumerator honours, or null if there was
+            /// at most one token to honour and nothing had to be linked.
+            /// </summary>
+            private readonly SystemCancellationTokenSource LinkedSource;
+
+            internal Enumerator(ControlledChannel<T> channel, SystemCancellationTokenSource linkedSource,
+                SystemCancellationToken cancellationToken)
             {
                 this.Channel = channel;
+                this.LinkedSource = linkedSource;
                 this.CancellationToken = cancellationToken;
             }
 
@@ -822,7 +1003,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
             public SystemTasks.ValueTask<bool> MoveNextAsync() =>
                 this.Channel.CoreMoveNextAsync(this, this.CancellationToken);
 
-            public SystemTasks.ValueTask DisposeAsync() => default;
+            public SystemTasks.ValueTask DisposeAsync()
+            {
+                this.LinkedSource?.Dispose();
+                return default;
+            }
         }
     }
 }
