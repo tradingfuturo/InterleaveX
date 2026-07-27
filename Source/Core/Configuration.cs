@@ -278,11 +278,6 @@ namespace Microsoft.Coyote
         public uint HandoffSpinCount { get; internal set; }
 
         /// <summary>
-        /// True if the user has explicitly set the handoff spin count, else false.
-        /// </summary>
-        internal bool UserExplicitlySetHandoffSpinCount;
-
-        /// <summary>
         /// If enabled then reuse threads across the controlled operations whose thread the program
         /// under test cannot join or inspect, instead of creating one thread per operation.
         /// </summary>
@@ -460,7 +455,6 @@ namespace Microsoft.Coyote
             this.TimeoutDelay = 10;
             this.DeadlockTimeout = 1000;
             this.HandoffSpinCount = DefaultHandoffSpinCount;
-            this.UserExplicitlySetHandoffSpinCount = false;
             this.IsControlledThreadPoolingEnabled = true;
             this.ReportPotentialDeadlocksAsBugs = true;
             this.UncontrolledConcurrencyResolutionAttempts = 10;
@@ -971,7 +965,6 @@ namespace Microsoft.Coyote
             }
 
             this.HandoffSpinCount = spinCount;
-            this.UserExplicitlySetHandoffSpinCount = true;
             return this;
         }
 

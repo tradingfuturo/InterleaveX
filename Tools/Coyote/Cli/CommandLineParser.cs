@@ -401,7 +401,8 @@ namespace Microsoft.Coyote.Cli
 
             var handoffSpinCountOption = new Option<uint>(
                 name: "--handoff-spin-count",
-                parseArgument: CreateUnsignedValueParser(() => configuration.HandoffSpinCount),
+                parseArgument: CreateUnsignedValueParser(() => configuration.HandoffSpinCount,
+                    maximum: Configuration.MaxHandoffSpinCount),
                 isDefault: true,
                 description: "Specify how many iterations a paused operation spins for before blocking, " +
                     "while waiting to be scheduled again. Raising this trades processor time for " +
@@ -417,11 +418,11 @@ namespace Microsoft.Coyote.Cli
             var threadPoolingOption = new Option<bool>(
                 name: "--no-thread-pooling",
                 description: "Give every controlled operation a fresh thread instead of reusing " +
-                    "pooled threads. Slower; useful when diagnosing behavior that depends on thread " +
-                    "identity or thread-static state in the program under test.")
+                    "pooled threads. Slower, but required when the program under test keeps state in " +
+                    "thread-static fields or depends on thread identity, because reused threads carry " +
+                    "that state from one operation to the next.")
             {
-                Arity = ArgumentArity.Zero,
-                IsHidden = true
+                Arity = ArgumentArity.Zero
             };
 
             var maxFuzzDelayOption = new Option<uint>(
@@ -637,9 +638,6 @@ namespace Microsoft.Coyote.Cli
             // Add validators.
             pathArg.AddValidator(result => ValidateArgumentValueIsExpectedFile(result, ".dll", ".exe"));
             timeoutOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
-            handoffSpinCountOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
-            handoffSpinCountOption.AddValidator(result =>
-                ValidateOptionValueDoesNotExceed(result, Configuration.MaxHandoffSpinCount));
             parallelOption.AddValidator(result => ValidateExclusiveOptionValueIsAvailable(result, breakOption));
             workersOption.AddValidator(result => ValidatePrerequisiteOptionValueIsAvailable(result, parallelOption));
             strategyOption.AddValidator(result => ValidateOptionValueIsAllowed(result, allowedStrategies));
@@ -929,14 +927,14 @@ namespace Microsoft.Coyote.Cli
         /// one <see cref="ValidateOptionValueIsUnsignedInteger"/> gives the options that really are signed.
         /// <para>
         /// Pass <paramref name="getDefaultValue"/> only together with <c>isDefault: true</c>, which is what
-        /// makes the parser run with no tokens to produce the default. A <paramref name="minimum"/> is
-        /// enforced here rather than by a validator because reading the value back with
-        /// <c>GetValueOrDefault</c> after this parser has reported an error rethrows that error as an
-        /// unhandled exception instead of printing it.
+        /// makes the parser run with no tokens to produce the default. The <paramref name="minimum"/> and
+        /// <paramref name="maximum"/> are enforced here rather than by a validator because reading the
+        /// value back with <c>GetValueOrDefault</c> after this parser has reported an error rethrows that
+        /// error as an unhandled exception instead of printing it.
         /// </para>
         /// </remarks>
         private static ParseArgument<uint> CreateUnsignedValueParser(Func<uint> getDefaultValue = null,
-            uint minimum = 0) =>
+            uint minimum = 0, uint maximum = uint.MaxValue) =>
             result =>
             {
                 if (result.Tokens.Count is 0)
@@ -949,6 +947,13 @@ namespace Microsoft.Coyote.Cli
                     parsed < minimum)
                 {
                     result.ErrorMessage = "Please give a positive integer to option " +
+                        $"'{GetParsedOptionName(result)}'.";
+                    return default;
+                }
+
+                if (parsed > maximum)
+                {
+                    result.ErrorMessage = $"Please give an integer of at most {maximum} to option " +
                         $"'{GetParsedOptionName(result)}'.";
                     return default;
                 }
@@ -975,19 +980,6 @@ namespace Microsoft.Coyote.Cli
             if (result.Tokens.Select(token => token.Value).Where(v => !uint.TryParse(v, out _)).Any())
             {
                 result.ErrorMessage = $"Please give a positive integer to option '{result.Option.Name}'.";
-            }
-        }
-
-        /// <summary>
-        /// Checks that the value of the specified option does not exceed the given maximum.
-        /// </summary>
-        private static void ValidateOptionValueDoesNotExceed(OptionResult result, uint maxValue)
-        {
-            if (result.Tokens.Select(token => token.Value)
-                .Where(v => uint.TryParse(v, out uint parsed) && parsed > maxValue).Any())
-            {
-                result.ErrorMessage =
-                    $"Please give an integer of at most {maxValue} to option '{result.Option.Name}'.";
             }
         }
 
