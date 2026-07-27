@@ -1509,12 +1509,30 @@ namespace Microsoft.Coyote.Runtime
                 // rescanning every operation for each delayed one.
                 bool isAnyOperationEnabled = IsAnyOperationEnabled(this.SchedulableOperations);
 
-                // The count is re-read on each step because a dependency predicate may append to
-                // the collection; an operation registered mid-walk is not yet paused, so visiting
-                // it (or not) makes no difference to this pass.
+                // A dependency predicate is arbitrary user code that can add to the collection while
+                // this walk runs, in either of two ways. Registering appends, because the new
+                // operation takes the largest registration index. Resetting inserts at the reset
+                // operation's original sorted position, which can be BEFORE the current index; every
+                // later entry then shifts right, so advancing the index lands back on an entry that
+                // was already visited. The count is therefore re-read on each step, and the
+                // registration index is carried as a watermark so that each operation is visited
+                // exactly once however the collection moved underneath.
+                //
+                // Skipping an inserted operation is correct rather than merely tolerable: a reset
+                // sets the status to 'None', which this walk neither enables nor counts, and a newly
+                // registered operation is not yet paused, so neither has anything to contribute to
+                // this pass. Revisiting one, on the other hand, would count it as enabled twice.
+                int lastVisited = -1;
                 for (int idx = 0; idx < this.SchedulableOperations.Count; ++idx)
                 {
                     var op = this.SchedulableOperations[idx];
+                    if (op.RegistrationIndex <= lastVisited)
+                    {
+                        // An insert shifted this entry to a position the walk has already passed.
+                        continue;
+                    }
+
+                    lastVisited = op.RegistrationIndex;
                     if (op.Status is OperationStatus.Completed)
                     {
                         continue;
