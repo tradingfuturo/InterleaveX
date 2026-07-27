@@ -974,17 +974,20 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
 
             public bool IsPending => !this.Tcs.Task.IsCompleted;
 
+            /// <remarks>
+            /// The item is published BEFORE the waiter is completed, not after. A reader resumes once ITS
+            /// runtime observes the task completed, and that is not always the runtime completing it: a write
+            /// arriving from a thread the reader's runtime does not control holds a different runtime's
+            /// section, and <see cref="Enumerator.Current"/> is a plain field read that takes neither section,
+            /// so nothing would order it against a store made after the completion. Publishing first needs no
+            /// such ordering. The reverse is not a race: the waiter is parked, so its reader is not reading
+            /// Current, and if the waiter turns out to be canceled the item is left behind in an enumerator
+            /// whose enumeration has already ended.
+            /// </remarks>
             public bool TryDeliver(T item)
             {
-                if (this.Tcs.TrySetResult(true))
-                {
-                    // Safe to publish after completing: the paused reader cannot observe Current until it is
-                    // rescheduled, which happens only after this synchronized section is released.
-                    this.Enumerator.CurrentItem = item;
-                    return true;
-                }
-
-                return false;
+                this.Enumerator.CurrentItem = item;
+                return this.Tcs.TrySetResult(true);
             }
 
             public void FailNoData(Exception error)
