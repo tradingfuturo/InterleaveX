@@ -120,6 +120,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices
             /// The options are handed to the real awaiter unchanged apart from the captured context,
             /// so <c>SuppressThrowing</c> keeps deciding what <see cref="GetResult"/> propagates, and
             /// <c>ForceYielding</c> is honored through <see cref="IsCompleted"/>.
+            /// <para>
+            /// Adding <c>ContinueOnCapturedContext</c> under a controlling runtime is deliberate and
+            /// mirrors the boolean constructor above, which forces the same thing for
+            /// <c>ConfigureAwait(false)</c>. Running the continuation on the controlled context is how
+            /// the runtime takes charge of it at all, so the two overloads must keep agreeing: making
+            /// this one honor <c>None</c> literally would not restore the BCL contract, it would
+            /// simply leave the continuation uncontrolled on one path and controlled on the other.
+            /// Outside a controlled test the runtime lookup fails and the options pass through
+            /// untouched.
+            /// </para>
             /// </remarks>
             internal ConfiguredTaskAwaiter(SystemTask awaitedTask, SystemTasks.ConfigureAwaitOptions options)
             {

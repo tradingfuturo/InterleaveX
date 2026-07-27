@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Coyote.Specifications;
+using Microsoft.Coyote.SystematicTesting;
 using Xunit;
 using Xunit.Abstractions;
 using CoyoteCompiler = Microsoft.Coyote.Rewriting.Types.Runtime.CompilerServices;
@@ -285,6 +286,44 @@ namespace Microsoft.Coyote.BugFinding.Tests
             configuration: this.GetConfiguration().WithTestingIterations(500),
             expectedError: "Value is 3 instead of 5.",
             replay: true);
+        }
+
+        [Fact(Timeout = 20000)]
+        public void TestConfigureAwaitPathsAgreeOnCapturedContext()
+        {
+            // Both overloads force the continuation onto the controlled context while a runtime is
+            // testing, so neither may leave the awaiting operation uncontrolled. 'ConfigureAwaitOptions.None'
+            // asks for the same thing 'ConfigureAwait(false)' does, and the two must keep answering it the
+            // same way: honoring 'None' literally on one path only would not restore the BCL contract, it
+            // would leave the continuation controlled on one path and not the other. This pins that they
+            // agree, which is the property the two constructors are easy to let drift apart on.
+            foreach (bool useOptions in new[] { false, true })
+            {
+                TestReport report = this.RunSystematicTest(async () =>
+                {
+                    var entry = new SharedEntry();
+                    Task work = Task.Run(async () =>
+                    {
+                        await Task.Yield();
+                        entry.Value = 3;
+                    });
+
+                    if (useOptions)
+                    {
+                        await work.ConfigureAwait(ConfigureAwaitOptions.None);
+                    }
+                    else
+                    {
+                        await work.ConfigureAwait(false);
+                    }
+
+                    Specification.Assert(entry.Value is 3, "The awaited work should have completed.");
+                },
+                this.GetConfiguration().WithTestingIterations(100));
+
+                Assert.Empty(report.UncontrolledInvocations);
+                Assert.Equal(0, report.NumOfFoundBugs);
+            }
         }
 
         [Fact(Timeout = 10000)]
