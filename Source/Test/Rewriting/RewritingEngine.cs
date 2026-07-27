@@ -51,6 +51,13 @@ namespace Microsoft.Coyote.Rewriting
         private readonly LinkedList<Pass> Passes;
 
         /// <summary>
+        /// Reports thread-static state in each assembly. Kept apart from <see cref="Passes"/> because it
+        /// is an <see cref="AnalysisPass"/> rather than a rewriting one, and so must also run for
+        /// assemblies that are already rewritten.
+        /// </summary>
+        private ThreadStaticDetectionPass ThreadStaticDetection;
+
+        /// <summary>
         /// Simple cache to reduce redundant warnings.
         /// </summary>
         private readonly HashSet<string> ResolveWarnings;
@@ -134,6 +141,8 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         private void InitializePasses(IEnumerable<AssemblyInfo> assemblies)
         {
+            this.ThreadStaticDetection = new ThreadStaticDetectionPass(assemblies, this.LogWriter);
+
             // Add the default type rewriting passes. We must first rewrite member types,
             // such as fields and method signatures, before we can rewrite the method bodies.
             this.Passes.AddFirst(new MemberTypeRewritingPass(this.Options, assemblies, this.LogWriter));
@@ -178,6 +187,12 @@ namespace Microsoft.Coyote.Rewriting
             try
             {
                 this.LogWriter.LogImportant("... Rewriting the '{0}' assembly ({1})", assembly.Name, assembly.FullName);
+
+                // Runs before the check below, because it only reports on the assembly and does not
+                // modify it. Reporting it alongside the other passes would hide it on every incremental
+                // build, which is exactly when a developer is most likely to be reading this output.
+                assembly.Invoke(this.ThreadStaticDetection);
+
                 if (assembly.IsRewritten)
                 {
                     this.LogWriter.LogImportant("..... Skipping as assembly is already rewritten with matching signature");

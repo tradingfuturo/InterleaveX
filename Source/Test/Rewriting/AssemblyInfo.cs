@@ -165,10 +165,11 @@ namespace Microsoft.Coyote.Rewriting
                 pass.VisitModule(module);
                 foreach (var type in module.GetTypes())
                 {
-                    if (type.CustomAttributes.Any(
+                    if (!pass.VisitsSkippedTypes && type.CustomAttributes.Any(
                         attr => Pass.IsTypeOf(attr.AttributeType, typeof(SkipRewritingAttribute))))
                     {
-                        // Skip rewriting this type.
+                        // Skip rewriting this type. Passes that only report on the assembly opt out of
+                        // this, because what they report is not confined to the IL that gets rewritten.
                         pass.LogWriter.LogDebug("......... Type: {0} [SKIP]", type);
                         continue;
                     }
@@ -179,6 +180,14 @@ namespace Microsoft.Coyote.Rewriting
                     {
                         pass.LogWriter.LogDebug("........... Field: {0}", field);
                         pass.VisitField(field);
+                    }
+
+                    if (!pass.VisitsMethodBodies)
+                    {
+                        // Reading a body below is what makes Cecil materialize it from the image, so a
+                        // pass that derives nothing from bodies skips the walk entirely rather than
+                        // paying for every one of them and discarding the result.
+                        continue;
                     }
 
                     foreach (var method in type.Methods.ToArray())

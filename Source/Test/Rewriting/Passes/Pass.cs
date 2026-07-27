@@ -83,6 +83,28 @@ namespace Microsoft.Coyote.Rewriting
         }
 
         /// <summary>
+        /// True if this pass visits types that are declared with <see cref="SkipRewritingAttribute"/>.
+        /// </summary>
+        /// <remarks>
+        /// That attribute exempts a type from being instrumented, which is a statement about the IL of
+        /// the type rather than about the behavior of the program it belongs to. A pass that only reports
+        /// on an assembly must therefore still see such types, because the behavior it reports on is just
+        /// as present in them. Set by <see cref="AnalysisPass"/>, which is the only kind of pass that may.
+        /// </remarks>
+        protected internal virtual bool VisitsSkippedTypes => false;
+
+        /// <summary>
+        /// True if this pass visits the body of each method it encounters.
+        /// </summary>
+        /// <remarks>
+        /// Reading a body is what makes Cecil materialize its instructions, variables and exception
+        /// handlers from the image, so a pass that derives nothing from bodies should not ask for them:
+        /// doing so is the most expensive part of a traversal, and it is paid for every assembly on
+        /// every build. Cleared by <see cref="AnalysisPass"/>.
+        /// </remarks>
+        protected internal virtual bool VisitsMethodBodies => true;
+
+        /// <summary>
         /// Visits the specified <see cref="AssemblyInfo"/>.
         /// </summary>
         /// <param name="assembly">The assembly to visit.</param>
