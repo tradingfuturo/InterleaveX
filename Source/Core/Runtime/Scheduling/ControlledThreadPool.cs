@@ -57,6 +57,17 @@ namespace Microsoft.Coyote.Runtime
         internal const int MaxIdleThreads = 1024;
 
         /// <summary>
+        /// How long a parked thread waits for an operation before retiring itself, in milliseconds.
+        /// </summary>
+        /// <remarks>
+        /// A drain is the primary way threads are released, but it only runs when a testing engine
+        /// finishes, so without an expiry a pool that is never drained again retains its threads for the
+        /// lifetime of the process. Mutable so that tests can shorten it; a thread that is already parked
+        /// completes its current wait at the previous value.
+        /// </remarks>
+        internal static int IdleTimeoutMs = 30000;
+
+        /// <summary>
         /// The threads that are currently parked and available for reuse.
         /// </summary>
         /// <remarks>
@@ -68,7 +79,27 @@ namespace Microsoft.Coyote.Runtime
         /// <summary>
         /// The number of threads that have been added to <see cref="IdleThreads"/> and not yet taken.
         /// </summary>
+        /// <remarks>
+        /// Ownership rule for keeping this accurate: whoever takes a thread out of the idle state owns
+        /// the matching decrement. That is <see cref="Rent"/> when its assignment wins, <see cref="Drain"/>
+        /// when its retirement wins, and the thread itself when it expires. Every mutation is interlocked;
+        /// <see cref="ParkLock"/> orders park against drain, it does not guard this counter.
+        /// </remarks>
         private int IdleCount;
+
+        /// <summary>
+        /// Orders parking a thread against draining the pool, so that a thread cannot be added to
+        /// <see cref="IdleThreads"/> in between a drain retiring the threads it found and that drain
+        /// completing.
+        /// </summary>
+        private readonly object ParkLock;
+
+        /// <summary>
+        /// Incremented by every drain. A thread rented before a drain carries an older value and is
+        /// refused when it tries to park, which is what makes <see cref="Drain"/> a barrier rather than
+        /// a sweep of whatever happened to be parked at that instant.
+        /// </summary>
+        private long DrainEpoch;
 
         /// <summary>
         /// The total number of threads this pool has created.
@@ -81,12 +112,24 @@ namespace Microsoft.Coyote.Runtime
         private ControlledThreadPool()
         {
             this.IdleThreads = new ConcurrentBag<PooledThread>();
+            this.ParkLock = new object();
         }
 
         /// <summary>
         /// The total number of threads this pool has created. Used to verify that reuse is happening.
         /// </summary>
         internal static long ThreadsCreated => Interlocked.Read(ref CreatedCount);
+
+        /// <summary>
+        /// Invoked with a freshly reserved thread before the runtime hands it an operation. Null unless a
+        /// test installs it to fail in that window on purpose.
+        /// </summary>
+        internal static Action<PooledThread> ReservationFaultInjector;
+
+        /// <summary>
+        /// Accounts for a thread that retired itself because it waited longer than the idle timeout.
+        /// </summary>
+        internal void OnThreadExpired() => Interlocked.Decrement(ref this.IdleCount);
 
         /// <summary>
         /// The number of threads currently available for reuse.
@@ -98,25 +141,33 @@ namespace Microsoft.Coyote.Runtime
         /// </summary>
         internal PooledThread Rent()
         {
+            // Read the epoch before looking at any thread. Reading it later would allow this rental to
+            // reserve a thread from before a drain and then stamp it with the epoch that same drain
+            // installed, which would let that thread park again after the drain completed. Reading it
+            // first can only stamp a thread as older than it really is, which merely retires a thread
+            // that could have been kept.
+            long epoch = Interlocked.Read(ref this.DrainEpoch);
+
             while (this.IdleThreads.TryTake(out PooledThread worker))
             {
-                Interlocked.Decrement(ref this.IdleCount);
-                if (worker.TryAssign())
+                if (worker.TryAssign(epoch))
                 {
+                    Interlocked.Decrement(ref this.IdleCount);
                     return worker;
                 }
 
                 // The thread retired itself before it could be assigned, so it is a tombstone that is
-                // only reachable from this bag. Dropping it here is what removes it.
+                // only reachable from this bag. Dropping it here is what removes it, and it already
+                // accounted for itself when it retired.
             }
 
             Interlocked.Increment(ref CreatedCount);
-            return new PooledThread(this);
+            return new PooledThread(this, epoch);
         }
 
         /// <summary>
-        /// Parks the specified thread for reuse and returns true, or returns false if this pool is full,
-        /// in which case the caller must retire the thread.
+        /// Parks the specified thread for reuse and returns true, or returns false if this pool is full
+        /// or the thread was rented before the most recent drain, in which case the caller must retire it.
         /// </summary>
         /// <remarks>
         /// It is assumed that the caller is the thread being parked, and that it has already reset its
@@ -125,28 +176,79 @@ namespace Microsoft.Coyote.Runtime
         /// </remarks>
         internal bool TryPark(PooledThread worker)
         {
-            if (Interlocked.Increment(ref this.IdleCount) > MaxIdleThreads)
+            lock (this.ParkLock)
             {
-                Interlocked.Decrement(ref this.IdleCount);
-                return false;
-            }
+                if (worker.Epoch != Interlocked.Read(ref this.DrainEpoch))
+                {
+                    return false;
+                }
 
-            this.IdleThreads.Add(worker);
-            return true;
+                if (Interlocked.Increment(ref this.IdleCount) > MaxIdleThreads)
+                {
+                    Interlocked.Decrement(ref this.IdleCount);
+                    return false;
+                }
+
+                this.IdleThreads.Add(worker);
+                return true;
+            }
         }
 
         /// <summary>
-        /// Retires every thread that is currently parked. Threads that are executing an operation are
-        /// left alone, and retire themselves once that operation completes.
+        /// Retires every thread that this pool holds, and guarantees that no thread rented before this
+        /// call can park afterwards.
         /// </summary>
+        /// <remarks>
+        /// Threads that are executing an operation are not waited for, because a controlled thread can be
+        /// blocked indefinitely inside an uncontrolled call, so no join would be both correct and bounded.
+        /// They are instead refused when they try to park and retire themselves. The guarantee is scoped
+        /// to a single testing engine: another engine renting concurrently can legitimately repopulate
+        /// the pool, and its in-flight threads are retired by this drain and replaced on demand.
+        /// </remarks>
         internal void Drain()
         {
-            while (this.IdleThreads.TryTake(out PooledThread worker))
+            lock (this.ParkLock)
             {
-                Interlocked.Decrement(ref this.IdleCount);
-                worker.Retire();
+                Interlocked.Increment(ref this.DrainEpoch);
+                while (this.IdleThreads.TryTake(out PooledThread worker))
+                {
+                    if (worker.Retire())
+                    {
+                        Interlocked.Decrement(ref this.IdleCount);
+                    }
+
+                    // Otherwise the thread had already retired itself and accounted for itself.
+                }
             }
         }
+    }
+
+    /// <summary>
+    /// What a pooled thread must do once the operation assigned to it returns.
+    /// </summary>
+    /// <remarks>
+    /// Named rather than boolean because "this thread cannot simply be reused" covers two cases that
+    /// must be handled differently: an operation cut short by its iteration tearing down leaves a
+    /// thread that is reusable once its latched interrupt is drained, whereas a thread that finished
+    /// in an unsafe state must never run another operation.
+    /// </remarks>
+    internal enum WorkerDisposition
+    {
+        /// <summary>
+        /// The operation completed normally, so this thread is clean and can be reused as is.
+        /// </summary>
+        Reuse,
+
+        /// <summary>
+        /// The operation was cut short by its iteration tearing down, so this thread may still carry
+        /// a latched interrupt, and is reusable once that interrupt has been drained.
+        /// </summary>
+        Drain,
+
+        /// <summary>
+        /// This thread is in an unknown or unsafe state and must terminate.
+        /// </summary>
+        Retire
     }
 
     /// <summary>
@@ -184,9 +286,9 @@ namespace Microsoft.Coyote.Runtime
         private readonly ManualResetEventSlim SignalEvent;
 
         /// <summary>
-        /// The operation to execute, which returns true if this thread can be reused afterwards.
+        /// The operation to execute, which returns what this thread must do once it returns.
         /// </summary>
-        private Func<bool> WorkItem;
+        private Func<WorkerDisposition> WorkItem;
 
         /// <summary>
         /// The current state of this thread.
@@ -194,16 +296,24 @@ namespace Microsoft.Coyote.Runtime
         private int State;
 
         /// <summary>
+        /// The drain epoch this thread was most recently rented in. It may only park while this still
+        /// matches the pool's epoch. Written by the renter before the thread can observe it, and read by
+        /// the thread itself only while parking.
+        /// </summary>
+        internal long Epoch;
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="PooledThread"/> class and starts it.
         /// </summary>
         /// <remarks>
         /// The new thread is created in the assigned state, because the caller is renting it.
         /// </remarks>
-        internal PooledThread(ControlledThreadPool pool)
+        internal PooledThread(ControlledThreadPool pool, long epoch)
         {
             this.Pool = pool;
             this.SignalEvent = new ManualResetEventSlim(false, 0);
             this.State = AssignedState;
+            this.Epoch = epoch;
 
             var thread = new Thread(this.RunLoop);
 
@@ -238,10 +348,21 @@ namespace Microsoft.Coyote.Runtime
         internal string Name { get; }
 
         /// <summary>
-        /// Tries to reserve this thread, and returns false if it has retired itself.
+        /// Tries to reserve this thread for the specified drain epoch, and returns false if it has
+        /// retired itself.
         /// </summary>
-        internal bool TryAssign() =>
-            Interlocked.CompareExchange(ref this.State, AssignedState, IdleState) is IdleState;
+        internal bool TryAssign(long epoch)
+        {
+            if (Interlocked.CompareExchange(ref this.State, AssignedState, IdleState) is IdleState)
+            {
+                // Safe to write plainly: this thread is now reserved, and it is parked waiting for the
+                // signal that the caller sends after this returns, which publishes the write to it.
+                this.Epoch = epoch;
+                return true;
+            }
+
+            return false;
+        }
 
         /// <summary>
         /// Assigns the specified operation to this thread and signals it to execute it.
@@ -250,25 +371,29 @@ namespace Microsoft.Coyote.Runtime
         /// It is assumed that the caller has already reserved this thread through <see cref="TryAssign"/>,
         /// so no other thread can be assigning to it concurrently.
         /// </remarks>
-        internal void Dispatch(Func<bool> workItem)
+        internal void Dispatch(Func<WorkerDisposition> workItem)
         {
             this.WorkItem = workItem;
             this.SignalEvent.Set();
         }
 
         /// <summary>
-        /// Retires this thread if it is still parked, waking it so that it can terminate.
+        /// Retires this thread if it is still parked, waking it so that it can terminate, and returns
+        /// true if this call is the one that retired it.
         /// </summary>
         /// <remarks>
-        /// Does nothing if this thread has already been reserved, because the caller that reserved it
-        /// owns it and is responsible for either dispatching to it or releasing it.
+        /// Returns false if this thread has already been reserved or has already expired, because the
+        /// party that took it out of the idle state owns it, including accounting for it.
         /// </remarks>
-        internal void Retire()
+        internal bool Retire()
         {
             if (Interlocked.CompareExchange(ref this.State, RetiredState, IdleState) is IdleState)
             {
                 this.SignalEvent.Set();
+                return true;
             }
+
+            return false;
         }
 
         /// <summary>
@@ -286,6 +411,29 @@ namespace Microsoft.Coyote.Runtime
         }
 
         /// <summary>
+        /// Retires this thread because it waited for an operation for longer than the idle timeout, and
+        /// returns true if it may now terminate.
+        /// </summary>
+        /// <remarks>
+        /// Returns false when a caller reserved this thread while it was timing out. That caller has
+        /// already sent, or is about to send, a signal carrying an operation, and dropping it would leave
+        /// an operation that never starts, which the runtime reports as a hang rather than as a bug in
+        /// this pool. The reservation is therefore binding, and this thread must run that operation.
+        /// </remarks>
+        private bool TryExpire()
+        {
+            if (Interlocked.CompareExchange(ref this.State, RetiredState, IdleState) is IdleState)
+            {
+                // This thread stays in the pool's bag as a tombstone that Rent discards, so account for
+                // it here: the party that takes a thread out of the idle state owns its accounting.
+                this.Pool.OnThreadExpired();
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// Executes assigned operations until this thread retires.
         /// </summary>
         private void RunLoop()
@@ -298,8 +446,21 @@ namespace Microsoft.Coyote.Runtime
                     // dispatch that follows construction, and afterwards it is the dispatch that follows
                     // being taken from the pool. The signal is sticky, so a dispatch that happens before
                     // this point completes the wait immediately rather than being missed.
-                    this.SignalEvent.Wait();
-                    Func<bool> workItem = this.WorkItem;
+                    if (!this.SignalEvent.Wait(ControlledThreadPool.IdleTimeoutMs))
+                    {
+                        if (this.TryExpire())
+                        {
+                            return;
+                        }
+
+                        // This thread waited long enough to expire but lost the race to a caller that was
+                        // assigning to it. That caller has sent, or is about to send, the signal, so wait
+                        // for it without a timeout and without resetting: resetting here would discard a
+                        // signal that has already been sent.
+                        this.SignalEvent.Wait();
+                    }
+
+                    Func<WorkerDisposition> workItem = this.WorkItem;
                     this.WorkItem = null;
                     if (workItem is null)
                     {
@@ -349,14 +510,25 @@ namespace Microsoft.Coyote.Runtime
         /// the process exits. Retiring workers at every teardown made tests with frequent deadlock
         /// detaches mint thousands of such threads and exhaust that heap, failing unrelated code with
         /// Win32 error 8.
+        ///
+        /// That is why the work item reports a <see cref="WorkerDisposition"/> rather than a boolean:
+        /// a torn-down operation and an operation that left this thread unsafe both mean "not directly
+        /// reusable", but only the former may park again once its interrupt is drained. Collapsing them
+        /// would make one of the two unreachable.
         /// </remarks>
-        private static bool TryExecuteAssignedWork(Func<bool> workItem)
+        private static bool TryExecuteAssignedWork(Func<WorkerDisposition> workItem)
         {
             try
             {
-                if (workItem())
+                WorkerDisposition disposition = workItem();
+                if (disposition is WorkerDisposition.Reuse)
                 {
                     return true;
+                }
+
+                if (disposition is WorkerDisposition.Retire)
+                {
+                    return false;
                 }
             }
             catch (ThreadInterruptedException)

@@ -1,4 +1,4 @@
-// Copyright (c) Microsoft Corporation.
+﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 using System.Threading;
@@ -21,10 +21,11 @@ namespace Microsoft.Coyote.Runtime.Tests
         }
 
         /// <summary>
-        /// Returns a configuration with controlled thread pooling enabled, which is off by default.
+        /// Returns a configuration with controlled thread pooling enabled, which is also the default,
+        /// stated explicitly here because these tests are about pooling.
         /// </summary>
-        private static Configuration CreateConfiguration() =>
-            Configuration.Create().WithControlledThreadPoolingEnabled();
+        private Configuration CreateConfiguration() =>
+            this.GetConfiguration().WithControlledThreadPoolingEnabled();
 
         [Fact(Timeout = 30000)]
         public void TestThreadsAreReusedAcrossIterations()
@@ -34,7 +35,7 @@ namespace Microsoft.Coyote.Runtime.Tests
 
             long createdBefore = ControlledThreadPool.ThreadsCreated;
 
-            Configuration configuration = CreateConfiguration()
+            Configuration configuration = this.CreateConfiguration()
                 .WithTestingIterations(iterations)
                 .WithTestIterationsRunToCompletion();
 
@@ -69,7 +70,7 @@ namespace Microsoft.Coyote.Runtime.Tests
 
             long createdBefore = ControlledThreadPool.ThreadsCreated;
 
-            Configuration configuration = CreateConfiguration()
+            Configuration configuration = this.CreateConfiguration()
                 .WithTestingIterations(1)
                 .WithTestIterationsRunToCompletion();
 
@@ -96,7 +97,7 @@ namespace Microsoft.Coyote.Runtime.Tests
             // The threads those operations were running must retire instead of returning to the pool,
             // because an interrupt latches until the thread next waits and would otherwise be raised
             // inside an unrelated operation later on.
-            Configuration configuration = CreateConfiguration()
+            Configuration configuration = this.CreateConfiguration()
                 .WithTestingIterations(20)
                 .WithTestIterationsRunToCompletion()
                 .WithMaxSchedulingSteps(100);
@@ -126,7 +127,7 @@ namespace Microsoft.Coyote.Runtime.Tests
         {
             // A deadlock detaches the runtime from the background monitor thread rather than from the
             // operation itself, which is a different interrupt path to the one above.
-            Configuration configuration = CreateConfiguration()
+            Configuration configuration = this.CreateConfiguration()
                 .WithTestingIterations(20)
                 .WithTestIterationsRunToCompletion()
                 .WithDeadlockTimeout(10)
@@ -140,10 +141,52 @@ namespace Microsoft.Coyote.Runtime.Tests
             configuration);
         }
 
+        [Fact(Timeout = 60000)]
+        public void TestNoThreadLeakWhenReservationsAreRolledBack()
+        {
+            // A thread reserved for an operation is no longer reachable from the pool, so a rollback
+            // that fails to release it leaves it blocked for the life of the process. Detaching while
+            // operations are still being created is what lands a detach in the window between reserving
+            // a thread and dispatching to it, which is the branch that rolls a reservation back.
+            const uint iterations = 50;
+
+            long createdBefore = ControlledThreadPool.ThreadsCreated;
+
+            Configuration configuration = this.CreateConfiguration()
+                .WithTestingIterations(iterations)
+                .WithTestIterationsRunToCompletion()
+                .WithMaxSchedulingSteps(20)
+                .WithDeadlockTimeout(10)
+                .WithPotentialDeadlocksReportedAsBugs(false);
+
+            this.RunSystematicTest(() =>
+            {
+                for (int i = 0; i < 50; i++)
+                {
+                    CoyoteTypes.Threading.Tasks.Task.Run(() =>
+                        CoyoteTypes.Threading.Tasks.Task.Run(() => { }));
+                }
+            },
+            configuration);
+
+            long created = ControlledThreadPool.ThreadsCreated - createdBefore;
+
+            // A thread whose reservation was rolled back without being released can never park again,
+            // so every leak forces the next rental to create a replacement. Reuse therefore collapses
+            // towards one thread per operation if rollback leaks, and stays far below it if it does not.
+            Assert.True(created < iterations * 5,
+                $"Created {created} threads across {iterations} iterations that each detach mid-flight, " +
+                "which indicates that rolled back reservations are leaking their threads.");
+
+            Assert.True(ControlledThreadPool.Instance.IdleThreadCount is 0,
+                $"Expected the pool to be empty after the test completed, but it retains " +
+                $"{ControlledThreadPool.Instance.IdleThreadCount} threads.");
+        }
+
         [Fact(Timeout = 30000)]
         public void TestPoolIsDrainedAfterTestCompletes()
         {
-            Configuration configuration = CreateConfiguration()
+            Configuration configuration = this.CreateConfiguration()
                 .WithTestingIterations(20)
                 .WithTestIterationsRunToCompletion();
 

@@ -85,7 +85,19 @@ namespace Microsoft.Coyote.Testing.Fuzzing
         /// an <see cref="AsyncLocal{T}"/> that is never otherwise reset, so leaving it set would allow a
         /// thread that goes on to execute another operation to be treated as the same logical operation,
         /// which would conflate their delay distributions.
+        ///
+        /// Guarded because writing an <see cref="AsyncLocal{T}"/> of a value type always boxes, and so
+        /// never matches the value already stored: the write would allocate a new value map and a new
+        /// execution context on every completed operation, including under
+        /// <see cref="SchedulingPolicy.Interleaving"/>, which never assigns an id in the first place.
+        /// Reading one is a lookup that allocates nothing.
         /// </remarks>
-        internal static void ClearOperationId() => OperationId.Value = Guid.Empty;
+        internal static void ClearOperationId()
+        {
+            if (OperationId.Value != Guid.Empty)
+            {
+                OperationId.Value = Guid.Empty;
+            }
+        }
     }
 }

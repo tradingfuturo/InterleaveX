@@ -287,7 +287,21 @@ namespace Microsoft.Coyote.Runtime
         /// <summary>
         /// The execution status of the runtime.
         /// </summary>
-        internal ExecutionStatus ExecutionStatus { get; private set; }
+        /// <remarks>
+        /// Volatile because the rewritten synchronization shims read it outside the runtime lock, on
+        /// threads that are unwinding after their iteration ended, to decide whether they may still touch
+        /// shared synchronization state.
+        /// </remarks>
+        private volatile ExecutionStatus ExecutionStatusValue;
+
+        /// <summary>
+        /// The execution status of the runtime.
+        /// </summary>
+        internal ExecutionStatus ExecutionStatus
+        {
+            get => this.ExecutionStatusValue;
+            private set => this.ExecutionStatusValue = value;
+        }
 
         /// <summary>
         /// True if this runtime has stopped executing the current test iteration, which happens once
@@ -710,10 +724,37 @@ namespace Microsoft.Coyote.Runtime
                 thread.Name = Guid.NewGuid().ToString();
                 thread.IsBackground = true;
 
-                this.ThreadPool.AddOrUpdate(op.Id, thread, (id, oldThread) => thread);
-                this.ControlledThreads.AddOrUpdate(thread.Name, op, (threadName, oldOp) => op);
+                this.PublishThreadMappings(op, thread);
                 return thread;
             }
+        }
+
+        /// <summary>
+        /// Associates the specified operation with the specified thread in both directions.
+        /// </summary>
+        /// <remarks>
+        /// It is assumed that the caller holds the runtime lock.
+        /// </remarks>
+        private void PublishThreadMappings(ControlledOperation op, Thread thread)
+        {
+            this.ThreadPool.AddOrUpdate(op.Id, thread, (id, oldThread) => thread);
+            this.ControlledThreads.AddOrUpdate(thread.Name, op, (threadName, oldOp) => op);
+        }
+
+        /// <summary>
+        /// Removes the association between the specified operation and the specified thread.
+        /// </summary>
+        /// <remarks>
+        /// It is assumed that the caller holds the runtime lock. The operation is unmapped only if this
+        /// thread is still the one associated with it: an operation can be reset and reused, and
+        /// operation ids are reused, so a newer thread may already own this id and must stay reachable
+        /// for <see cref="Detach"/> to interrupt it. Matching on the value is what expresses that.
+        /// </remarks>
+        private void RemoveThreadMappings(ControlledOperation op, Thread thread)
+        {
+            this.ControlledThreads.TryRemove(thread.Name, out ControlledOperation _);
+            (this.ThreadPool as ICollection<KeyValuePair<ulong, Thread>>).Remove(
+                new KeyValuePair<ulong, Thread>(op.Id, thread));
         }
 
         /// <summary>
@@ -809,7 +850,7 @@ namespace Microsoft.Coyote.Runtime
             }
 
             PooledThread worker;
-            Func<bool> workItem;
+            ControlledWorkItem workItem;
 
             // Capture the caller's execution context, so that the operation observes the same ambient
             // state it would observe on a dedicated thread, whose Start captures the creator's context.
@@ -831,90 +872,187 @@ namespace Microsoft.Coyote.Runtime
                 }
 
                 worker = ControlledThreadPool.Instance.Rent();
-                PooledThread reservedWorker = worker;
-                workItem = () =>
-                {
-                    if (creatorContext is null)
-                    {
-                        // The caller suppressed execution context flow, which is also what a dedicated
-                        // thread would have started under.
-                        this.ExecuteOperation(op, logic, null, preCondition, postCondition);
-                    }
-                    else
-                    {
-                        ExecutionContext.Run(
-                            creatorContext,
-                            _ => this.ExecuteOperation(op, logic, null, preCondition, postCondition),
-                            null);
-                    }
-
-                    // Deliberately outside the exception handling in ExecuteOperation. If releasing the
-                    // thread fails, which happens when the runtime interrupts it while it is reacquiring
-                    // the runtime lock, that must reach the pool so it retires the thread rather than
-                    // reuse one that has a pending interrupt.
-                    return this.TryReleaseControlledThread(op, reservedWorker);
-                };
-
-                this.ThreadPool.AddOrUpdate(op.Id, worker.OSThread, (id, oldThread) => worker.OSThread);
-                this.ControlledThreads.AddOrUpdate(worker.Name, op, (threadName, oldOp) => op);
+                workItem = new ControlledWorkItem(this, op, logic, preCondition, postCondition,
+                    creatorContext, worker);
+                this.PublishThreadMappings(op, worker.OSThread);
             }
 
-            using (SynchronizedSection.Enter(this.RuntimeLock))
+            // A reserved thread is not reachable from the pool, so nothing else can ever wake it. If this
+            // method leaves without handing it an operation or releasing it, that thread stays blocked for
+            // the life of the process, and the mappings published above outlive the operation that never
+            // started. This happens when the runtime detaches in between the two sections and the
+            // interrupt it sends lands on the section below.
+            bool isWorkerOwned = false;
+            try
             {
-                if (this.ExecutionStatus is ExecutionStatus.Running)
+                ControlledThreadPool.ReservationFaultInjector?.Invoke(worker);
+                using (SynchronizedSection.Enter(this.RuntimeLock))
                 {
-                    this.StartOperation(op);
-                    worker.Dispatch(workItem);
+                    if (this.ExecutionStatus is ExecutionStatus.Running)
+                    {
+                        this.StartOperation(op);
+                        worker.Dispatch(workItem.Run);
+                        isWorkerOwned = true;
+                    }
+
+                    // Otherwise the runtime detached between the two sections, so the operation must
+                    // not start. Leaving the worker unowned rolls the reservation back through the
+                    // finally below, which is the same path a failure in this section takes: both must
+                    // release the thread and remove the mappings, and having one path rather than two
+                    // is what keeps them from diverging.
                 }
-                else
+            }
+            finally
+            {
+                if (!isWorkerOwned)
                 {
-                    // The runtime detached between the two sections, so the operation must not start.
-                    // The thread is reserved and waiting, and is no longer reachable from the pool, so it
-                    // has to be released here or it would stay blocked for the life of the process.
-                    worker.Release();
+                    this.AbandonControlledThread(op, worker);
                 }
             }
         }
 
         /// <summary>
-        /// Releases the pooled thread that finished executing the specified operation, and returns true
-        /// if the thread can be reused.
+        /// One execution of a controlled operation on a pooled thread.
         /// </summary>
         /// <remarks>
-        /// A thread can be reused unless this runtime has detached, because <see cref="Detach"/> is the
-        /// only place that interrupts a controlled thread, and an interrupt latches until the thread next
-        /// waits, so reusing an interrupted thread would raise the interrupt inside an unrelated
-        /// operation. Detach assigns the execution status before interrupting, and does both while
-        /// holding the runtime lock, so reading the status here under the same lock is decisive. Either
-        /// this operation completed first, in which case Detach skipped it and did not interrupt this
-        /// thread, or Detach ran first, in which case the status read below retires the thread.
+        /// The state of a dispatch is held in fields rather than captured in a closure because a pooled
+        /// thread outlives the operation it runs: whatever the work item references stays reachable
+        /// until that thread is handed its next operation, so capturing the enclosing scope would pin
+        /// every local in it, and the runtime, for that whole time. Naming the state also lets the
+        /// callback below be allocated once instead of once per execution.
         /// </remarks>
-        private bool TryReleaseControlledThread(ControlledOperation op, PooledThread worker)
+        private sealed class ControlledWorkItem
+        {
+            /// <summary>
+            /// Runs a work item passed as the state of an <see cref="ExecutionContext"/>.
+            /// </summary>
+            private static readonly ContextCallback ExecuteCallback =
+                state => (state as ControlledWorkItem).Execute();
+
+            private readonly CoyoteRuntime Runtime;
+            private readonly ControlledOperation Operation;
+            private readonly Delegate Logic;
+            private readonly Action PreCondition;
+            private readonly Action PostCondition;
+            private readonly PooledThread Worker;
+
+            /// <summary>
+            /// The execution context captured from the creator of this operation, or null if the
+            /// creator suppressed its flow.
+            /// </summary>
+            private readonly ExecutionContext CreatorContext;
+
+            /// <summary>
+            /// Initializes a new instance of the <see cref="ControlledWorkItem"/> class.
+            /// </summary>
+            internal ControlledWorkItem(CoyoteRuntime runtime, ControlledOperation op, Delegate logic,
+                Action preCondition, Action postCondition, ExecutionContext creatorContext, PooledThread worker)
+            {
+                this.Runtime = runtime;
+                this.Operation = op;
+                this.Logic = logic;
+                this.PreCondition = preCondition;
+                this.PostCondition = postCondition;
+                this.CreatorContext = creatorContext;
+                this.Worker = worker;
+            }
+
+            /// <summary>
+            /// Executes this operation and releases the thread, returning what the thread must do next.
+            /// </summary>
+            internal WorkerDisposition Run()
+            {
+                if (this.CreatorContext is null)
+                {
+                    // The creator suppressed execution context flow, which is also what a dedicated
+                    // thread would have started under.
+                    this.Execute();
+                }
+                else
+                {
+                    ExecutionContext.Run(this.CreatorContext, ExecuteCallback, this);
+                }
+
+                // Deliberately outside the exception handling in ExecuteOperation. If releasing the
+                // thread fails, which happens when the runtime interrupts it while it is reacquiring
+                // the runtime lock, that must reach the pool so it retires the thread rather than
+                // reuse one that has a pending interrupt.
+                return this.Runtime.ReleaseControlledThread(this.Operation, this.Worker);
+            }
+
+            /// <summary>
+            /// Executes this operation on the current thread.
+            /// </summary>
+            private void Execute() => this.Runtime.ExecuteOperation(
+                this.Operation, this.Logic, null, this.PreCondition, this.PostCondition);
+        }
+
+        /// <summary>
+        /// Returns true if this runtime still associates the specified thread with an operation, or
+        /// associates any operation with that thread. Used to verify that abandoning a reserved thread
+        /// leaves nothing behind.
+        /// </summary>
+        internal bool HasMappingsForThread(PooledThread worker) =>
+            this.ControlledThreads.ContainsKey(worker.Name) ||
+            this.ThreadPool.Values.Contains(worker.OSThread);
+
+        /// <summary>
+        /// Releases a thread that was reserved for the specified operation but never given it, and
+        /// removes the mappings that were published for the pair.
+        /// </summary>
+        private void AbandonControlledThread(ControlledOperation op, PooledThread worker)
+        {
+            using (SynchronizedSection.Enter(this.RuntimeLock))
+            {
+                this.RemoveThreadMappings(op, worker.OSThread);
+            }
+
+            worker.Release();
+        }
+
+        /// <summary>
+        /// Releases the pooled thread that finished executing the specified operation, and returns
+        /// what that thread must do next.
+        /// </summary>
+        /// <remarks>
+        /// A thread can be reused directly unless this runtime has detached, because
+        /// <see cref="Detach"/> is the only place that interrupts a controlled thread, and an interrupt
+        /// latches until the thread next waits, so reusing an interrupted thread would raise the
+        /// interrupt inside an unrelated operation. Detach assigns the execution status before
+        /// interrupting, and does both while holding the runtime lock, so reading the status here under
+        /// the same lock is decisive. Either this operation completed first, in which case Detach
+        /// skipped it and did not interrupt this thread, or Detach ran first, in which case the status
+        /// read below sends the thread through the pool's interrupt drain before it is reused.
+        /// </remarks>
+        private WorkerDisposition ReleaseControlledThread(ControlledOperation op, PooledThread worker)
         {
             // Checked before entering the section below, which would otherwise mask the condition. A
             // thread that still holds the runtime lock here has leaked it, and reusing it would leave
-            // every later operation on it running unsynchronized, because the lock is tracked per thread.
-            Debug.Assert(!IsExecutionSynchronized,
-                "Operation '{0}' released its thread while holding the runtime lock.", op.Name);
+            // every later operation on it running unsynchronized, because the lock is tracked per thread
+            // and a nested enter on a thread that already holds it is a no-op. This must retire the
+            // thread rather than drain it: draining is for a latched interrupt, and would park a thread
+            // that still owns the runtime lock. It is reported in every configuration, because an
+            // assertion alone is compiled out of release builds, which is where such a leak would do
+            // the most damage and be the hardest to explain.
             if (IsExecutionSynchronized)
             {
-                return false;
+                this.LogWriter.LogError(
+                    "[coyote::error] Operation '{0}' released its thread while holding the runtime lock.",
+                    op.Name);
+                Debug.Assert(false,
+                    $"Operation '{op.Name}' released its thread while holding the runtime lock.");
+                return WorkerDisposition.Retire;
             }
 
             using (SynchronizedSection.Enter(this.RuntimeLock))
             {
-                this.ControlledThreads.TryRemove(worker.Name, out ControlledOperation _);
-
-                // Remove only if this thread is still the one associated with the operation. An operation
-                // can be reset and reused, in which case a newer thread already owns this id and must
-                // stay reachable for Detach to interrupt.
-                (this.ThreadPool as ICollection<KeyValuePair<ulong, Thread>>).Remove(
-                    new KeyValuePair<ulong, Thread>(op.Id, worker.OSThread));
+                this.RemoveThreadMappings(op, worker.OSThread);
 
                 Debug.Assert(op.Status is OperationStatus.Completed,
-                    "Operation '{0}' released its thread without completing.", op.Name);
+                    $"Operation '{op.Name}' released its thread without completing.");
 
-                return this.ExecutionStatus is ExecutionStatus.Running;
+                return this.ExecutionStatus is ExecutionStatus.Running ?
+                    WorkerDisposition.Reuse : WorkerDisposition.Drain;
             }
         }
 
