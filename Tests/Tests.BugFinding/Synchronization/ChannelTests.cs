@@ -644,6 +644,59 @@ namespace Microsoft.Coyote.BugFinding.Tests
         }
 #endif
 
+        /// <summary>
+        /// A channel that outlives the iteration that created it, which is what a process-lifetime
+        /// singleton amounts to.
+        /// </summary>
+        /// <remarks>
+        /// Only the reporting of that situation is covered below, not the data race it opens up. The
+        /// channel's own lock exists because two threads running under two runtimes guard its buffer
+        /// and waiter queues with two different monitors — which is a race by construction — but a
+        /// reproducer for it was tried and withdrawn: driving the channel from uncontrolled threads
+        /// across an iteration boundary passed just as reliably with the lock removed, over tens of
+        /// thousands of racing writes. A test that cannot tell the fix from its absence is worse than
+        /// no test, so the lock is justified by inspection and this note, not by a reproduction.
+        /// </remarks>
+        private static Channel<int> SharedChannel;
+
+        [Fact(Timeout = 10000)]
+        public void TestChannelUsedAcrossIterationsIsReported()
+        {
+            // A channel is guarded by the synchronized section of whichever runtime is current, and
+            // each iteration has a runtime with a lock of its own. Using one across iterations is
+            // legitimate and keeps working, but the scheduler of the later iteration cannot see the
+            // operations of the earlier one, so the interleavings between them go unexplored. That is
+            // reported rather than left to look like a fully explored run.
+            SharedChannel = null;
+            TestReport report = this.RunSystematicTest(() =>
+            {
+                Channel<int> channel = SharedChannel ??= Channel.CreateUnbounded<int>();
+                Specification.Assert(channel.Writer.TryWrite(1), "The write should be accepted.");
+                Specification.Assert(channel.Reader.TryRead(out int item) && item is 1,
+                    "The item should be read back.");
+            },
+            this.GetConfiguration().WithTestingIterations(3));
+
+            SharedChannel = null;
+            Assert.Contains("A channel created in a previous test iteration", report.UncontrolledInvocations);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestChannelCreatedAndUsedInOneIterationIsNotReported()
+        {
+            // The complement, so that the report above cannot be produced by every channel. A channel
+            // that never leaves its iteration is fully controlled and must say nothing.
+            TestReport report = this.RunSystematicTest(() =>
+            {
+                Channel<int> channel = Channel.CreateUnbounded<int>();
+                channel.Writer.TryWrite(1);
+                channel.Reader.TryRead(out _);
+            },
+            this.GetConfiguration().WithTestingIterations(3));
+
+            Assert.DoesNotContain("A channel created in a previous test iteration", report.UncontrolledInvocations);
+        }
+
         [Fact(Timeout = 5000)]
         public void TestInvalidFactoryArgumentsThrow()
         {
