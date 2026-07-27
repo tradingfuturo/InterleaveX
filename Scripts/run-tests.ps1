@@ -1,5 +1,9 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
+#
+# Modifications Copyright (c) 2026 pipflow.com <https://pipflow.com>
+# Modifications are licensed under the GNU General Public License v3.0 or
+# later. See LICENSE-GPL for the full text.
 
 param(
     [ValidateSet("net10.0", "net9.0", "net8.0", "net6.0", "net462")]

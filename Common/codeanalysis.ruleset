@@ -142,6 +142,12 @@
     <Rule Id="SA1628" Action="Error" />
     <Rule Id="SA1629" Action="Error" />
     <Rule Id="SA1633" Action="Error" />
+    <!-- This repository is dual-licensed: upstream Coyote files keep the Microsoft MIT
+         notice, while fork-authored files and fork modifications carry a pipflow.com
+         GPL-3.0 notice (see NOTICE.md). A single exact copyright text therefore cannot
+         apply repo-wide, so the text match is disabled. SA1633 above still requires
+         every file to have a header. -->
+    <Rule Id="SA1636" Action="None" />
     <Rule Id="SA1642" Action="Error" />
     <Rule Id="SA1649" Action="None" />
     <Rule Id="SA1652" Action="None" />

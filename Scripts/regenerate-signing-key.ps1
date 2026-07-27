@@ -1,3 +1,8 @@
+# Copyright (c) 2026 pipflow.com <https://pipflow.com>
+#
+# This file is part of InterleaveX and is licensed under the GNU General
+# Public License v3.0 or later. See LICENSE-GPL for the full text.
+
 # Regenerate the InterleaveX strong-name signing key.
 #
 # This script generates a new .snk for the InterleaveX fork and updates every

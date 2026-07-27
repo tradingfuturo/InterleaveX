@@ -1,5 +1,7 @@
-﻿// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
+﻿// Copyright (c) 2026 pipflow.com <https://pipflow.com>
+//
+// This file is part of InterleaveX and is licensed under the GNU General
+// Public License v3.0 or later. See LICENSE-GPL for the full text.
 
 using System.Collections.Generic;
 using System.Linq;

@@ -1,5 +1,9 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
+#
+# Modifications Copyright (c) 2026 pipflow.com <https://pipflow.com>
+# Modifications are licensed under the GNU General Public License v3.0 or
+# later. See LICENSE-GPL for the full text.
 
 # Run benchmarks on entire git history using the version of the benchmark test
 # that is currently checked out, up to some given -max number of commits

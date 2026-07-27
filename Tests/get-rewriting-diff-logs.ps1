@@ -1,5 +1,9 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
+#
+# Modifications Copyright (c) 2026 pipflow.com <https://pipflow.com>
+# Modifications are licensed under the GNU General Public License v3.0 or
+# later. See LICENSE-GPL for the full text.
 
 # Debug and release builds do not emit the same IL, so the configuration whose logs are
 # gathered has to match the one the expected hashes were taken from. Keep this in step with
