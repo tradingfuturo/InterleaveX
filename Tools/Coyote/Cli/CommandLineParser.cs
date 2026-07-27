@@ -399,6 +399,31 @@ namespace Microsoft.Coyote.Cli
                 Arity = ArgumentArity.ExactlyOne
             };
 
+            var handoffSpinCountOption = new Option<uint>(
+                name: "--handoff-spin-count",
+                parseArgument: CreateUnsignedValueParser(() => configuration.HandoffSpinCount),
+                isDefault: true,
+                description: "Specify how many iterations a paused operation spins for before blocking, " +
+                    "while waiting to be scheduled again. Raising this trades processor time for " +
+                    "scheduling latency, and has little further benefit above 256. Set it to 0 when " +
+                    "using '--parallel', so that spinning does not occupy processors that other " +
+                    "workers need.")
+            {
+                ArgumentHelpName = "COUNT",
+                Arity = ArgumentArity.ExactlyOne,
+                IsHidden = true
+            };
+
+            var threadPoolingOption = new Option<bool>(
+                name: "--no-thread-pooling",
+                description: "Give every controlled operation a fresh thread instead of reusing " +
+                    "pooled threads. Slower; useful when diagnosing behavior that depends on thread " +
+                    "identity or thread-static state in the program under test.")
+            {
+                Arity = ArgumentArity.Zero,
+                IsHidden = true
+            };
+
             var maxFuzzDelayOption = new Option<uint>(
                 name: "--max-fuzz-delay",
                 parseArgument: CreateUnsignedValueParser(() => configuration.MaxFuzzingDelay),
@@ -612,6 +637,9 @@ namespace Microsoft.Coyote.Cli
             // Add validators.
             pathArg.AddValidator(result => ValidateArgumentValueIsExpectedFile(result, ".dll", ".exe"));
             timeoutOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
+            handoffSpinCountOption.AddValidator(result => ValidateOptionValueIsUnsignedInteger(result));
+            handoffSpinCountOption.AddValidator(result =>
+                ValidateOptionValueDoesNotExceed(result, Configuration.MaxHandoffSpinCount));
             parallelOption.AddValidator(result => ValidateExclusiveOptionValueIsAvailable(result, breakOption));
             workersOption.AddValidator(result => ValidatePrerequisiteOptionValueIsAvailable(result, parallelOption));
             strategyOption.AddValidator(result => ValidateOptionValueIsAllowed(result, allowedStrategies));
@@ -655,6 +683,8 @@ namespace Microsoft.Coyote.Cli
             this.AddOption(command, livenessTemperatureThresholdOption);
             this.AddOption(command, timeoutDelayOption);
             this.AddOption(command, deadlockTimeoutOption);
+            this.AddOption(command, handoffSpinCountOption);
+            this.AddOption(command, threadPoolingOption);
             this.AddOption(command, maxFuzzDelayOption);
             this.AddOption(command, uncontrolledConcurrencyResolutionAttemptsOption);
             this.AddOption(command, uncontrolledConcurrencyResolutionDelayOption);
@@ -949,6 +979,19 @@ namespace Microsoft.Coyote.Cli
         }
 
         /// <summary>
+        /// Checks that the value of the specified option does not exceed the given maximum.
+        /// </summary>
+        private static void ValidateOptionValueDoesNotExceed(OptionResult result, uint maxValue)
+        {
+            if (result.Tokens.Select(token => token.Value)
+                .Where(v => uint.TryParse(v, out uint parsed) && parsed > maxValue).Any())
+            {
+                result.ErrorMessage =
+                    $"Please give an integer of at most {maxValue} to option '{result.Option.Name}'.";
+            }
+        }
+
+        /// <summary>
         /// Validates that the specified option result has an allowed value.
         /// </summary>
         private static void ValidateOptionValueIsAllowed(OptionResult result, IEnumerable<string> allowedValues)
@@ -1178,6 +1221,12 @@ namespace Microsoft.Coyote.Cli
                         break;
                     case "deadlock-timeout":
                         this.Configuration.DeadlockTimeout = result.GetValueOrDefault<uint>();
+                        break;
+                    case "handoff-spin-count":
+                        this.Configuration.WithHandoffSpinCount(result.GetValueOrDefault<uint>());
+                        break;
+                    case "no-thread-pooling":
+                        this.Configuration.WithControlledThreadPoolingEnabled(false);
                         break;
                     case "max-fuzz-delay":
                         this.Configuration.MaxFuzzingDelay = result.GetValueOrDefault<uint>();

@@ -15,6 +15,7 @@ using Microsoft.Coyote.Logging;
 using Microsoft.Coyote.Runtime.CompilerServices;
 using Microsoft.Coyote.Specifications;
 using Microsoft.Coyote.Testing;
+using Microsoft.Coyote.Testing.Fuzzing;
 using SpecMonitor = Microsoft.Coyote.Specifications.Monitor;
 
 namespace Microsoft.Coyote.Runtime
@@ -289,6 +290,19 @@ namespace Microsoft.Coyote.Runtime
         internal ExecutionStatus ExecutionStatus { get; private set; }
 
         /// <summary>
+        /// True if this runtime has stopped executing the current test iteration, which happens once
+        /// it detaches.
+        /// </summary>
+        /// <remarks>
+        /// Reading this without holding the runtime lock is safe, because the status only ever moves
+        /// away from <see cref="ExecutionStatus.Running"/> and never back. The rewritten
+        /// synchronization shims read it to recognize operations that are still unwinding after their
+        /// iteration was torn down: such operations must not touch shared synchronization state,
+        /// because the engine clears it concurrently and repopulates it for the next iteration.
+        /// </remarks>
+        internal bool HasExecutionEnded => this.ExecutionStatus != ExecutionStatus.Running;
+
+        /// <summary>
         /// If this value is not null, then it represents the last scheduling point that
         /// was postponed, which the runtime will try to schedule in the next available
         /// thread that invokes a scheduling point.
@@ -458,7 +472,11 @@ namespace Microsoft.Coyote.Runtime
                 extensionQuiescenceTask.GetAwaiter().GetResult();
             };
 
-            Thread thread = this.CreateControlledThread(op, runTest, postCondition: () =>
+            // The thread running the test method is never observed by the program under test, so it can
+            // be reused. Note that this operation detaches the runtime in its post-condition, so this
+            // thread always retires rather than returning to the pool. It still benefits from reusing a
+            // thread that an earlier iteration left parked.
+            this.RunOnControlledThread(op, runTest, postCondition: () =>
             {
                 using (SynchronizedSection.Enter(this.RuntimeLock))
                 {
@@ -467,9 +485,6 @@ namespace Microsoft.Coyote.Runtime
                     this.Detach(ExecutionStatus.PathExplored);
                 }
             });
-
-            // Start executing the controlled thread.
-            this.StartControlledThread(thread, op: op);
 
             // Start running a background monitor that checks for potential deadlocks. This
             // mechanism is defensive for cases where there is uncontrolled concurrency or
@@ -500,10 +515,10 @@ namespace Microsoft.Coyote.Runtime
             this.ControlledTasks.TryAdd(task, op);
 
             Action runTask = () => this.ControlledTaskScheduler.ExecuteTask(task);
-            Thread thread = this.CreateControlledThread(op, runTask);
 
-            // Start executing the controlled thread.
-            this.StartControlledThread(thread, op: op);
+            // The thread executing this task is never observed by the program under test, so it can be
+            // reused once the task completes.
+            this.RunOnControlledThread(op, runTask);
 
             // Add a scheduling point to explore interleavings between the current operation
             // and the operation that was just scheduled.
@@ -516,10 +531,10 @@ namespace Microsoft.Coyote.Runtime
         internal void Schedule(Action continuation, OperationGroup group = null, Action preCondition = null, Action postCondition = null)
         {
             ControlledOperation op = this.CreateControlledOperation(group: group ?? ExecutingOperation?.Group);
-            Thread thread = this.CreateControlledThread(op, continuation, preCondition, postCondition);
 
-            // Start executing the controlled thread.
-            this.StartControlledThread(thread, op: op);
+            // The thread executing this continuation is never observed by the program under test, so it
+            // can be reused once the continuation completes.
+            this.RunOnControlledThread(op, continuation, preCondition, postCondition);
 
             // Add a scheduling point to explore interleavings between the current operation
             // and the operation that was just scheduled.
@@ -689,67 +704,217 @@ namespace Microsoft.Coyote.Runtime
                 }
 
                 // Create a new thread that is instrumented to control and execute the operation.
-                var thread = new Thread(input =>
-                {
-                    try
-                    {
-                        // Start executing the operation.
-                        this.OnStarted(op);
-
-                        // If fuzzing is enabled, and this is not the first started operation,
-                        // then try to delay it to explore race conditions.
-                        if (this.SchedulingPolicy is SchedulingPolicy.Fuzzing && op.Id > 0)
-                        {
-                            this.DelayOperation(op);
-                        }
-
-                        // Execute the optional pre-condition.
-                        preCondition?.Invoke();
-
-                        // Execute the controlled logic.
-                        if (logic is ThreadStart threadStart)
-                        {
-                            threadStart();
-                        }
-                        else if (logic is ParameterizedThreadStart parameterizedThreadStart)
-                        {
-                            parameterizedThreadStart(input);
-                        }
-                        else if (logic is Action action)
-                        {
-                            action();
-                        }
-                        else
-                        {
-                            throw new InvalidOperationException($"Unsupported controlled logic of type '{logic.GetType()}'.");
-                        }
-
-                        // Complete the operation and schedule the next enabled operation.
-                        this.OnCompleted(op);
-
-                        // Execute the optional post-condition.
-                        postCondition?.Invoke();
-
-                        // Schedule the next operation, if there is one enabled.
-                        this.ScheduleNextOperation(op, SchedulingPointType.Complete);
-                    }
-                    catch (Exception ex)
-                    {
-                        this.ProcessUnhandledExceptionInOperation(op, ex);
-                    }
-                    finally
-                    {
-                        CleanCurrentExecutionContext();
-                    }
-                }, maxStackSize);
+                var thread = new Thread(input => this.ExecuteOperation(op, logic, input, preCondition, postCondition),
+                    maxStackSize);
 
                 thread.Name = Guid.NewGuid().ToString();
                 thread.IsBackground = true;
 
-                // TODO: optimize by reusing threads instead of creating a new thread each time?
                 this.ThreadPool.AddOrUpdate(op.Id, thread, (id, oldThread) => thread);
                 this.ControlledThreads.AddOrUpdate(thread.Name, op, (threadName, oldOp) => op);
                 return thread;
+            }
+        }
+
+        /// <summary>
+        /// Executes the specified operation on the current thread, alongside an optional pre-condition
+        /// and post-condition.
+        /// </summary>
+        /// <remarks>
+        /// This always completes the operation, either normally or through
+        /// <see cref="ProcessUnhandledExceptionInOperation"/>, which is what allows <see cref="Detach"/>
+        /// to distinguish an operation that is still running from one that has finished.
+        /// </remarks>
+        private void ExecuteOperation(ControlledOperation op, Delegate logic, object input,
+            Action preCondition, Action postCondition)
+        {
+            try
+            {
+                // Start executing the operation.
+                this.OnStarted(op);
+
+                // If fuzzing is enabled, and this is not the first started operation,
+                // then try to delay it to explore race conditions.
+                if (this.SchedulingPolicy is SchedulingPolicy.Fuzzing && op.Id > 0)
+                {
+                    this.DelayOperation(op);
+                }
+
+                // Execute the optional pre-condition.
+                preCondition?.Invoke();
+
+                // Execute the controlled logic.
+                if (logic is ThreadStart threadStart)
+                {
+                    threadStart();
+                }
+                else if (logic is ParameterizedThreadStart parameterizedThreadStart)
+                {
+                    parameterizedThreadStart(input);
+                }
+                else if (logic is Action action)
+                {
+                    action();
+                }
+                else
+                {
+                    throw new InvalidOperationException($"Unsupported controlled logic of type '{logic.GetType()}'.");
+                }
+
+                // Complete the operation and schedule the next enabled operation.
+                this.OnCompleted(op);
+
+                // Execute the optional post-condition.
+                postCondition?.Invoke();
+
+                // Schedule the next operation, if there is one enabled.
+                this.ScheduleNextOperation(op, SchedulingPointType.Complete);
+            }
+            catch (Exception ex)
+            {
+                this.ProcessUnhandledExceptionInOperation(op, ex);
+            }
+            finally
+            {
+                CleanCurrentExecutionContext();
+            }
+        }
+
+        /// <summary>
+        /// Executes the specified operation on a pooled controlled thread, alongside an optional
+        /// pre-condition and post-condition.
+        /// </summary>
+        /// <remarks>
+        /// This is the counterpart of <see cref="CreateControlledThread"/> for operations whose
+        /// <see cref="Thread"/> object is never handed to the program under test, so nothing can join it
+        /// or assert on its state. Such a thread can be reused once the operation completes, which avoids
+        /// creating one thread per task and per continuation in every testing iteration. Use
+        /// <see cref="CreateControlledThread"/> instead whenever the thread object is handed out, because
+        /// user code then relies on it terminating with its operation.
+        ///
+        /// Reuse is still indirectly observable: user code can read
+        /// <see cref="Thread.CurrentThread"/> identity, and thread-static state it writes survives onto
+        /// whichever operation this thread executes next. The runtime clears its own per-thread state
+        /// between operations, but application-owned thread-static state is not cleared, which is an
+        /// inherent limitation of any thread reuse.
+        /// </remarks>
+        internal void RunOnControlledThread(ControlledOperation op, Delegate logic, Action preCondition = null,
+            Action postCondition = null)
+        {
+            if (!this.Configuration.IsControlledThreadPoolingEnabled)
+            {
+                Thread unpooled = this.CreateControlledThread(op, logic, preCondition, postCondition);
+                this.StartControlledThread(unpooled, op: op);
+                return;
+            }
+
+            PooledThread worker;
+            Func<bool> workItem;
+
+            // Capture the caller's execution context, so that the operation observes the same ambient
+            // state it would observe on a dedicated thread, whose Start captures the creator's context.
+            // This is what carries async-local state installed outside of controlled code into the
+            // operation, such as a test harness registering service overrides before running the test.
+            // The worker runs the operation under this captured context, and discards any changes the
+            // operation made to it once the operation completes.
+            ExecutionContext creatorContext = ExecutionContext.Capture();
+
+            // These are two separate synchronized sections rather than one, mirroring the pairing of
+            // CreateControlledThread and StartControlledThread on the unpooled path. Merging them would
+            // remove a window in which the runtime lock is released, changing which interleavings are
+            // reachable and therefore what the exploration strategies explore.
+            using (SynchronizedSection.Enter(this.RuntimeLock))
+            {
+                if (this.ExecutionStatus != ExecutionStatus.Running)
+                {
+                    throw new ThreadInterruptedException();
+                }
+
+                worker = ControlledThreadPool.Instance.Rent();
+                PooledThread reservedWorker = worker;
+                workItem = () =>
+                {
+                    if (creatorContext is null)
+                    {
+                        // The caller suppressed execution context flow, which is also what a dedicated
+                        // thread would have started under.
+                        this.ExecuteOperation(op, logic, null, preCondition, postCondition);
+                    }
+                    else
+                    {
+                        ExecutionContext.Run(
+                            creatorContext,
+                            _ => this.ExecuteOperation(op, logic, null, preCondition, postCondition),
+                            null);
+                    }
+
+                    // Deliberately outside the exception handling in ExecuteOperation. If releasing the
+                    // thread fails, which happens when the runtime interrupts it while it is reacquiring
+                    // the runtime lock, that must reach the pool so it retires the thread rather than
+                    // reuse one that has a pending interrupt.
+                    return this.TryReleaseControlledThread(op, reservedWorker);
+                };
+
+                this.ThreadPool.AddOrUpdate(op.Id, worker.OSThread, (id, oldThread) => worker.OSThread);
+                this.ControlledThreads.AddOrUpdate(worker.Name, op, (threadName, oldOp) => op);
+            }
+
+            using (SynchronizedSection.Enter(this.RuntimeLock))
+            {
+                if (this.ExecutionStatus is ExecutionStatus.Running)
+                {
+                    this.StartOperation(op);
+                    worker.Dispatch(workItem);
+                }
+                else
+                {
+                    // The runtime detached between the two sections, so the operation must not start.
+                    // The thread is reserved and waiting, and is no longer reachable from the pool, so it
+                    // has to be released here or it would stay blocked for the life of the process.
+                    worker.Release();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Releases the pooled thread that finished executing the specified operation, and returns true
+        /// if the thread can be reused.
+        /// </summary>
+        /// <remarks>
+        /// A thread can be reused unless this runtime has detached, because <see cref="Detach"/> is the
+        /// only place that interrupts a controlled thread, and an interrupt latches until the thread next
+        /// waits, so reusing an interrupted thread would raise the interrupt inside an unrelated
+        /// operation. Detach assigns the execution status before interrupting, and does both while
+        /// holding the runtime lock, so reading the status here under the same lock is decisive. Either
+        /// this operation completed first, in which case Detach skipped it and did not interrupt this
+        /// thread, or Detach ran first, in which case the status read below retires the thread.
+        /// </remarks>
+        private bool TryReleaseControlledThread(ControlledOperation op, PooledThread worker)
+        {
+            // Checked before entering the section below, which would otherwise mask the condition. A
+            // thread that still holds the runtime lock here has leaked it, and reusing it would leave
+            // every later operation on it running unsynchronized, because the lock is tracked per thread.
+            Debug.Assert(!IsExecutionSynchronized,
+                "Operation '{0}' released its thread while holding the runtime lock.", op.Name);
+            if (IsExecutionSynchronized)
+            {
+                return false;
+            }
+
+            using (SynchronizedSection.Enter(this.RuntimeLock))
+            {
+                this.ControlledThreads.TryRemove(worker.Name, out ControlledOperation _);
+
+                // Remove only if this thread is still the one associated with the operation. An operation
+                // can be reset and reused, in which case a newer thread already owns this id and must
+                // stay reachable for Detach to interrupt.
+                (this.ThreadPool as ICollection<KeyValuePair<ulong, Thread>>).Remove(
+                    new KeyValuePair<ulong, Thread>(op.Id, worker.OSThread));
+
+                Debug.Assert(op.Status is OperationStatus.Completed,
+                    "Operation '{0}' released its thread without completing.", op.Name);
+
+                return this.ExecutionStatus is ExecutionStatus.Running;
             }
         }
 
@@ -917,7 +1082,8 @@ namespace Microsoft.Coyote.Runtime
                     // As this is not the first operation getting created, assign an event
                     // handler so that the next scheduling decision cannot be made until
                     // this operation starts executing to avoid race conditions.
-                    this.PendingStartOperationMap.Add(op, new ManualResetEventSlim(false));
+                    this.PendingStartOperationMap.Add(op,
+                        new ManualResetEventSlim(false, (int)this.Configuration.HandoffSpinCount));
                 }
             }
         }
@@ -3022,13 +3188,53 @@ namespace Microsoft.Coyote.Runtime
         }
 
         /// <summary>
+        /// Handlers that clear per-thread state owned by assemblies that this one cannot reference.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="CleanCurrentExecutionContext"/> cannot reach thread-static state declared in
+        /// 'Microsoft.Coyote.Test', so that assembly registers a handler here instead.
+        /// </remarks>
+        private static Action ThreadStateResetHandlers;
+
+        /// <summary>
+        /// Registers a handler that clears per-thread state when a controlled thread finishes
+        /// executing an operation. Registering the same handler more than once has no effect.
+        /// </summary>
+        internal static void RegisterThreadStateResetHandler(Action handler)
+        {
+            if (handler != null)
+            {
+                // Delegate equality compares target and method, so re-registering the same static
+                // method is a no-op. This matters because the registering type is set up per test.
+                ThreadStateResetHandlers = (ThreadStateResetHandlers?.GetInvocationList().Contains(handler) ?? false) ?
+                    ThreadStateResetHandlers : ThreadStateResetHandlers + handler;
+            }
+        }
+
+        /// <summary>
         /// Removes any runtime related data from the context of the executing controlled thread.
         /// </summary>
+        /// <remarks>
+        /// Everything set up by <see cref="SetCurrentExecutionContext"/>, plus any other per-thread
+        /// state the runtime installs, must be cleared here. A controlled thread can outlive the
+        /// operation it was executing, so state left behind can be observed by a subsequent operation
+        /// or can keep a disposed runtime alive.
+        /// </remarks>
         private static void CleanCurrentExecutionContext()
         {
             ExecutingOperation = null;
             ThreadLocalRuntime = null;
             AsyncLocalRuntime.Value = null;
+
+            // Set by SetCurrentExecutionContext but, until now, never cleared. Leaving it installed
+            // means the thread holds a synchronization context whose runtime is about to be disposed,
+            // and whose Post then silently drops continuations.
+            SynchronizationContext.SetSynchronizationContext(null);
+
+            // Stored in an async local that is otherwise never reset.
+            FuzzingStrategy.ClearOperationId();
+
+            ThreadStateResetHandlers?.Invoke();
         }
 
         /// <inheritdoc/>

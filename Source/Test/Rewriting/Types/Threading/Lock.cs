@@ -26,6 +26,18 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         private static Stack<Monitor.SynchronizedBlock> ScopeStack;
 
         /// <summary>
+        /// Clears the lock scopes tracked for the current thread.
+        /// </summary>
+        /// <remarks>
+        /// The stack is only balanced when every <see cref="EnterScope"/> is matched by a
+        /// <see cref="Dispose"/>. That does not happen when an operation is terminated part way through
+        /// a lock scope, which is how every iteration that detaches ends. On a thread that goes on to
+        /// execute another operation, a leftover entry would cause the next <see cref="Dispose"/> to exit
+        /// a block belonging to an operation that has already completed.
+        /// </remarks>
+        internal static void ResetScopeStack() => ScopeStack?.Clear();
+
+        /// <summary>
         /// Creates a new <see cref="SystemThreading.Lock"/> instance.
         /// </summary>
         public static SystemThreading.Lock Create() => new SystemThreading.Lock();
@@ -39,8 +51,14 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                var block = Monitor.SynchronizedBlock.Lock(lockObj);
-                (ScopeStack ??= new Stack<Monitor.SynchronizedBlock>()).Push(block);
+                // A null block means the iteration is tearing down; see Monitor.LockBlock. The real
+                // scope is still entered, matching Dispose, which always disposes it.
+                var block = Monitor.LockBlock(runtime, lockObj);
+                if (block != null)
+                {
+                    (ScopeStack ??= new Stack<Monitor.SynchronizedBlock>()).Push(block);
+                }
+
                 return lockObj.EnterScope();
             }
             else
@@ -67,8 +85,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 runtime.TryGetExecutingOperation(out _) &&
                 ScopeStack?.Count > 0)
             {
+                // Pop to keep the scope stack balanced even during teardown, but only touch the block
+                // while the iteration is still running; see Monitor.FindBlock.
                 var block = ScopeStack.Pop();
-                block.Exit();
+                if (!runtime.HasExecutionEnded)
+                {
+                    block.Exit();
+                }
             }
         }
 
@@ -81,7 +104,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                Monitor.SynchronizedBlock.Lock(lockObj);
+                Monitor.LockBlock(runtime, lockObj);
             }
             else
             {
@@ -104,9 +127,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                var block = Monitor.SynchronizedBlock.Find(lockObj) ??
-                    throw new SystemThreading.SynchronizationLockException();
-                block.Exit();
+                Monitor.FindBlock(runtime, lockObj)?.Exit();
             }
             else
             {
@@ -124,7 +145,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 runtime.TryGetExecutingOperation(out _))
             {
                 // In systematic testing, always succeed to explore all interleavings.
-                Monitor.SynchronizedBlock.Lock(lockObj);
+                Monitor.LockBlock(runtime, lockObj);
                 return true;
             }
             else
@@ -148,7 +169,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                Monitor.SynchronizedBlock.Lock(lockObj);
+                Monitor.LockBlock(runtime, lockObj);
                 return true;
             }
             else
@@ -172,7 +193,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                Monitor.SynchronizedBlock.Lock(lockObj);
+                Monitor.LockBlock(runtime, lockObj);
                 return true;
             }
             else
@@ -196,6 +217,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
+                if (runtime.HasExecutionEnded)
+                {
+                    // During teardown the block state is unreliable; the real lock is what EnterScope
+                    // actually holds, so answer from it.
+                    return lockObj.IsHeldByCurrentThread;
+                }
+
                 var block = Monitor.SynchronizedBlock.Find(lockObj);
                 return block != null && block.IsEntered();
             }

@@ -29,7 +29,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                SynchronizedBlock.Lock(obj);
+                LockBlock(runtime, obj);
             }
             else
             {
@@ -52,7 +52,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                lockTaken = SynchronizedBlock.Lock(obj).IsLockTaken;
+                lockTaken = LockBlock(runtime, obj)?.IsLockTaken ?? true;
             }
             else
             {
@@ -75,9 +75,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                var block = SynchronizedBlock.Find(obj) ??
-                    throw new SystemThreading.SynchronizationLockException();
-                block.Exit();
+                FindBlock(runtime, obj)?.Exit();
             }
             else
             {
@@ -94,9 +92,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                var block = SynchronizedBlock.Find(obj) ??
-                    throw new SystemThreading.SynchronizationLockException();
-                return block.IsEntered();
+                return FindBlock(runtime, obj)?.IsEntered() ?? false;
             }
 
             return SystemThreading.Monitor.IsEntered(obj);
@@ -111,9 +107,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                var block = SynchronizedBlock.Find(obj) ??
-                    throw new SystemThreading.SynchronizationLockException();
-                block.Pulse();
+                FindBlock(runtime, obj)?.Pulse();
             }
             else
             {
@@ -130,9 +124,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                var block = SynchronizedBlock.Find(obj) ??
-                    throw new SystemThreading.SynchronizationLockException();
-                block.PulseAll();
+                FindBlock(runtime, obj)?.PulseAll();
             }
             else
             {
@@ -151,7 +143,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 runtime.TryGetExecutingOperation(out _))
             {
                 // TODO: how to implement this timeout?
-                lockTaken = SynchronizedBlock.Lock(obj).IsLockTaken;
+                lockTaken = LockBlock(runtime, obj)?.IsLockTaken ?? true;
             }
             else
             {
@@ -176,7 +168,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 runtime.TryGetExecutingOperation(out _))
             {
                 // TODO: how to implement this timeout?
-                return SynchronizedBlock.Lock(obj).IsLockTaken;
+                return LockBlock(runtime, obj)?.IsLockTaken ?? true;
             }
             else if (runtime.SchedulingPolicy is SchedulingPolicy.Fuzzing &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
@@ -198,7 +190,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 runtime.TryGetExecutingOperation(out _))
             {
                 // TODO: how to implement this timeout?
-                lockTaken = SynchronizedBlock.Lock(obj).IsLockTaken;
+                lockTaken = LockBlock(runtime, obj)?.IsLockTaken ?? true;
             }
             else
             {
@@ -223,7 +215,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 runtime.TryGetExecutingOperation(out _))
             {
                 // TODO: how to implement this timeout?
-                lockTaken = SynchronizedBlock.Lock(obj).IsLockTaken;
+                lockTaken = LockBlock(runtime, obj)?.IsLockTaken ?? true;
             }
             else
             {
@@ -246,7 +238,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                return SynchronizedBlock.Lock(obj).IsLockTaken;
+                return LockBlock(runtime, obj)?.IsLockTaken ?? true;
             }
             else if (runtime.SchedulingPolicy is SchedulingPolicy.Fuzzing &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
@@ -266,9 +258,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                var block = SynchronizedBlock.Find(obj) ??
-                    throw new SystemThreading.SynchronizationLockException();
-                return block.Wait();
+                return FindBlock(runtime, obj)?.Wait() ?? true;
             }
 
             return SystemThreading.Monitor.Wait(obj);
@@ -284,9 +274,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                var block = SynchronizedBlock.Find(obj) ??
-                    throw new SystemThreading.SynchronizationLockException();
-                return block.Wait(millisecondsTimeout);
+                return FindBlock(runtime, obj)?.Wait(millisecondsTimeout) ?? true;
             }
 
             return SystemThreading.Monitor.Wait(obj, millisecondsTimeout);
@@ -304,11 +292,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                var block = SynchronizedBlock.Find(obj) ??
-                    throw new SystemThreading.SynchronizationLockException();
-
                 // TODO: implement exitContext.
-                return block.Wait(millisecondsTimeout);
+                return FindBlock(runtime, obj)?.Wait(millisecondsTimeout) ?? true;
             }
 
             return SystemThreading.Monitor.Wait(obj, millisecondsTimeout, exitContext);
@@ -324,9 +309,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                var block = SynchronizedBlock.Find(obj) ??
-                    throw new SystemThreading.SynchronizationLockException();
-                return block.Wait(timeout);
+                return FindBlock(runtime, obj)?.Wait(timeout) ?? true;
             }
 
             return SystemThreading.Monitor.Wait(obj, timeout);
@@ -344,14 +327,56 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                var block = SynchronizedBlock.Find(obj) ??
-                    throw new SystemThreading.SynchronizationLockException();
-
                 // TODO: implement exitContext.
-                return block.Wait(timeout);
+                return FindBlock(runtime, obj)?.Wait(timeout) ?? true;
             }
 
             return SystemThreading.Monitor.Wait(obj, timeout, exitContext);
+        }
+
+        /// <summary>
+        /// Acquires the synchronized block for the specified object on behalf of the executing
+        /// operation, or returns null without touching the block cache if the specified runtime has
+        /// stopped executing its test iteration.
+        /// </summary>
+        /// <remarks>
+        /// When an iteration detaches, operations that were executing user code keep running until
+        /// their interrupt is delivered, while the testing engine concurrently disposes the runtime and
+        /// clears the block cache for the next iteration. Such an operation must not create or acquire
+        /// blocks: a block it creates would pollute the cache the next iteration is about to use, and a
+        /// block it finds may already belong to that iteration. Callers treat null as an immediately
+        /// successful acquisition, which lets the unwinding code run to its next interruptible point
+        /// instead of failing with an exception the program under test never caused.
+        /// </remarks>
+        internal static SynchronizedBlock LockBlock(CoyoteRuntime runtime, object obj) =>
+            runtime.HasExecutionEnded ? null : SynchronizedBlock.Lock(obj);
+
+        /// <summary>
+        /// Finds the synchronized block for the specified object on behalf of the executing operation,
+        /// throwing if none exists, or returns null without touching the block cache if the specified
+        /// runtime has stopped executing its test iteration.
+        /// </summary>
+        /// <remarks>
+        /// The teardown check deliberately happens after the lookup: the engine changes the execution
+        /// status before it clears the block cache, so an operation that finds its block missing due to
+        /// teardown is guaranteed to observe the ended status here, rather than throwing
+        /// <see cref="SystemThreading.SynchronizationLockException"/> into the program under test.
+        /// Callers treat null as an immediately successful no-op. See <see cref="LockBlock"/>.
+        /// </remarks>
+        internal static SynchronizedBlock FindBlock(CoyoteRuntime runtime, object obj)
+        {
+            var block = SynchronizedBlock.Find(obj);
+            if (runtime.HasExecutionEnded)
+            {
+                return null;
+            }
+
+            if (block is null)
+            {
+                throw new SystemThreading.SynchronizationLockException();
+            }
+
+            return block;
         }
 
         /// <summary>

@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Threading.Tasks;
 using Microsoft.Coyote.SystematicTesting;
@@ -36,6 +37,10 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
             int repeat = int.Parse(GetOption(args, "--repeat", "5"));
             int warmup = int.Parse(GetOption(args, "--warmup", "3"));
             string label = GetOption(args, "--label", "run");
+            // Left null unless requested, so that omitting it measures the configured default.
+            string spinCountValue = GetOption(args, "--handoff-spin-count", null);
+            uint? spinCount = spinCountValue is null ? null :
+                uint.Parse(spinCountValue, CultureInfo.InvariantCulture);
             bool header = Array.IndexOf(args, "--no-header") < 0;
 
             if (workload is not "deep" and not "wide")
@@ -50,9 +55,14 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
                 return 1;
             }
 
+            // Recorded in every row so that runs with different spin counts stay distinguishable
+            // in merged CSVs without relying on the label.
+            string spinLabel = spinCount.HasValue ?
+                spinCount.Value.ToString(CultureInfo.InvariantCulture) : "default";
+
             if (header)
             {
-                Console.WriteLine("label,workload,strategy,iterations,run,elapsed_ms,cpu_ms,allocated_bytes,paths,steps,bugs");
+                Console.WriteLine("label,workload,strategy,spin,iterations,run,elapsed_ms,cpu_ms,allocated_bytes,paths,steps,bugs");
             }
 
             // The first few runs are dominated by JIT and are discarded. Without this the
@@ -65,7 +75,7 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
 
             for (int run = 0; run < warmup + repeat; run++)
             {
-                RunResult result = RunOnce(workload, strategy, iterations, seed);
+                RunResult result = RunOnce(workload, strategy, iterations, seed, spinCount);
                 if (result.Bugs > 0)
                 {
                     Console.Error.WriteLine(
@@ -84,7 +94,7 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
                 }
 
                 Console.WriteLine(
-                    $"{label},{workload},{strategy},{iterations},{(isWarmup ? "warmup" : run.ToString())}," +
+                    $"{label},{workload},{strategy},{spinLabel},{iterations},{(isWarmup ? "warmup" : run.ToString())}," +
                     $"{result.ElapsedMs:F1},{result.CpuMs:F1},{result.AllocatedBytes}," +
                     $"{result.Paths},{result.Steps},{result.Bugs}");
             }
@@ -102,7 +112,7 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
                 (double)(allocatedSamples[allocatedSamples.Count - 1] - allocatedSamples[0]) / medianAllocated * 100 : 0;
 
             Console.WriteLine(
-                $"{label},{workload},{strategy},{iterations},MEDIAN,{medianElapsed:F1},{medianCpu:F1}," +
+                $"{label},{workload},{strategy},{spinLabel},{iterations},MEDIAN,{medianElapsed:F1},{medianCpu:F1}," +
                 $"{medianAllocated},steps={steps},cpuSpread={cpuSpread:F1}%,allocSpread={allocSpread:F3}%");
             return 0;
         }
@@ -110,11 +120,17 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
         /// <summary>
         /// Runs the specified workload once for the given number of testing iterations.
         /// </summary>
-        private static RunResult RunOnce(string workload, string strategy, uint iterations, uint seed)
+        private static RunResult RunOnce(string workload, string strategy, uint iterations, uint seed,
+            uint? spinCount)
         {
             Configuration configuration = Configuration.Create()
                 .WithTestingIterations(iterations)
                 .WithRandomGeneratorSeed(seed);
+            if (spinCount.HasValue)
+            {
+                configuration = configuration.WithHandoffSpinCount(spinCount.Value);
+            }
+
             if (strategy is "random")
             {
                 // Sets PortfolioMode.None, which in turn leaves implicit program state

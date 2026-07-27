@@ -190,6 +190,14 @@ namespace Microsoft.Coyote.SystematicTesting
 
             AppDomain.CurrentDomain.UnhandledException += this.OnUnhandledException;
 
+#if NET9_0_OR_GREATER
+            // The runtime cannot reach thread-static state declared in this assembly, so register a
+            // handler that clears it when a controlled thread finishes executing an operation.
+            // Registration is idempotent, which matters because an engine is created per test.
+            CoyoteRuntime.RegisterThreadStateResetHandler(
+                Microsoft.Coyote.Rewriting.Types.Threading.Lock.ResetScopeStack);
+#endif
+
             // Do some sanity checking.
             if (configuration.IsSystematicFuzzingEnabled && prefixTrace.Length > 0)
             {
@@ -339,6 +347,13 @@ namespace Microsoft.Coyote.SystematicTesting
                     {
                         ExceptionDispatchInfo.Capture(innerException).Throw();
                     }
+                }
+                finally
+                {
+                    // Release the threads that this test left parked. The pool is process-wide, so
+                    // without this it would retain them for the lifetime of the host process, which
+                    // matters when many tests run in one process.
+                    ControlledThreadPool.Instance.Drain();
                 }
             }, this.CancellationTokenSource.Token);
         }

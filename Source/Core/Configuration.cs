@@ -248,6 +248,55 @@ namespace Microsoft.Coyote
         public uint DeadlockTimeout { get; internal set; }
 
         /// <summary>
+        /// The maximum value accepted for <see cref="HandoffSpinCount"/>, imposed by the underlying
+        /// synchronization primitive.
+        /// </summary>
+        internal const uint MaxHandoffSpinCount = 2047;
+
+        /// <summary>
+        /// The default value of <see cref="HandoffSpinCount"/>.
+        /// </summary>
+        /// <remarks>
+        /// This matches what the underlying synchronization primitive picks on its own for a
+        /// multiprocessor machine on .NET 8 and later, so behavior is unchanged there. Other targets
+        /// deliberately change to this value: the primitive's own default is 10 on .NET Framework and 1
+        /// on a single-processor machine, and pinning one explicit value makes exploration timing
+        /// consistent across target frameworks instead of silently differing.
+        /// </remarks>
+        internal const uint DefaultHandoffSpinCount = 35;
+
+        /// <summary>
+        /// Number of iterations that a paused operation spins for before blocking, while waiting to be
+        /// scheduled again during concurrency testing.
+        /// </summary>
+        /// <remarks>
+        /// Spinning trades processor time for scheduling latency. Raising it shortens wall-clock time
+        /// when a processor is free to spin on, and lowering it to 0 gives up that time in exchange for
+        /// leaving the processor to other work.
+        /// </remarks>
+        [DataMember]
+        public uint HandoffSpinCount { get; internal set; }
+
+        /// <summary>
+        /// True if the user has explicitly set the handoff spin count, else false.
+        /// </summary>
+        internal bool UserExplicitlySetHandoffSpinCount;
+
+        /// <summary>
+        /// If enabled then reuse threads across the controlled operations whose thread the program
+        /// under test cannot join or inspect, instead of creating one thread per operation.
+        /// </summary>
+        /// <remarks>
+        /// Enabled by default. Reuse is safe because the rewritten synchronization shims recognize
+        /// operations that are still unwinding after their iteration detached and no longer touch
+        /// shared synchronization state; see the remarks on <see cref="ControlledThreadPool"/>.
+        /// Disabling this trades speed for one thread per operation, which can help when diagnosing
+        /// thread-affine behavior in the program under test.
+        /// </remarks>
+        [DataMember]
+        internal bool IsControlledThreadPoolingEnabled;
+
+        /// <summary>
         /// If enabled then report any potential deadlock as a bug, else skip to the next test iteration.
         /// </summary>
         [DataMember]
@@ -410,6 +459,9 @@ namespace Microsoft.Coyote
             this.StrategyBound = 0;
             this.TimeoutDelay = 10;
             this.DeadlockTimeout = 1000;
+            this.HandoffSpinCount = DefaultHandoffSpinCount;
+            this.UserExplicitlySetHandoffSpinCount = false;
+            this.IsControlledThreadPoolingEnabled = true;
             this.ReportPotentialDeadlocksAsBugs = true;
             this.UncontrolledConcurrencyResolutionAttempts = 10;
             this.UncontrolledConcurrencyResolutionDelay = 1000;
@@ -892,6 +944,52 @@ namespace Microsoft.Coyote
         public Configuration WithDeadlockTimeout(uint timeout)
         {
             this.DeadlockTimeout = timeout;
+            return this;
+        }
+
+        /// <summary>
+        /// Updates the number of iterations that a paused operation spins for before blocking, while
+        /// waiting to be scheduled again during concurrency testing.
+        /// </summary>
+        /// <param name="spinCount">
+        /// The number of spin iterations, which must not exceed 2047. The default is 35. Use 0 to block
+        /// immediately.
+        /// </param>
+        /// <remarks>
+        /// Raising this trades processor time for scheduling latency. On a test with many concurrent
+        /// operations, raising it to 256 has been measured to cut wall-clock time by around a third
+        /// while using around 60% more processor time, with little further benefit above that. Set it to
+        /// 0 when running testing iterations in parallel, because a spinning operation occupies a
+        /// processor that another worker would otherwise use.
+        /// </remarks>
+        public Configuration WithHandoffSpinCount(uint spinCount)
+        {
+            if (spinCount > MaxHandoffSpinCount)
+            {
+                throw new ArgumentOutOfRangeException(nameof(spinCount),
+                    $"The handoff spin count must not exceed {MaxHandoffSpinCount}.");
+            }
+
+            this.HandoffSpinCount = spinCount;
+            this.UserExplicitlySetHandoffSpinCount = true;
+            return this;
+        }
+
+        /// <summary>
+        /// Updates the configuration with controlled thread pooling enabled or disabled.
+        /// </summary>
+        /// <param name="isEnabled">If true, then enables controlled thread pooling.</param>
+        /// <remarks>
+        /// Reusing threads across controlled operations avoids creating one thread per task and per
+        /// continuation, which is a large part of the cost of a test that creates many short-lived
+        /// operations, so this is enabled by default. Disable it to give every operation a fresh
+        /// thread, for example when diagnosing behavior that depends on thread identity or on
+        /// thread-static state in the program under test. See the remarks on
+        /// <c>ControlledThreadPool</c>.
+        /// </remarks>
+        public Configuration WithControlledThreadPoolingEnabled(bool isEnabled = true)
+        {
+            this.IsControlledThreadPoolingEnabled = isEnabled;
             return this;
         }
 

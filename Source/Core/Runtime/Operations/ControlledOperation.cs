@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 
 namespace Microsoft.Coyote.Runtime
@@ -97,9 +98,11 @@ namespace Microsoft.Coyote.Runtime
         private Func<bool> Dependency;
 
         /// <summary>
-        /// Synchronization mechanism for controlling the execution of this operation.
+        /// Synchronization mechanism for controlling the execution of this operation. This is null
+        /// unless the operation is scheduled by interleaving, which is the only policy that pauses and
+        /// resumes operations.
         /// </summary>
-        private ManualResetEventSlim SyncEvent;
+        private readonly ManualResetEventSlim SyncEvent;
 
         /// <summary>
         /// The type of the last encountered scheduling point.
@@ -197,7 +200,8 @@ namespace Microsoft.Coyote.Runtime
             this.LastCallSite = string.Empty;
             this.LastCallSiteHash = 0;
             this.AwaitedResources = new HashSet<Guid>();
-            this.SyncEvent = new ManualResetEventSlim(false);
+            this.SyncEvent = runtime.SchedulingPolicy is SchedulingPolicy.Interleaving ?
+                new ManualResetEventSlim(false, (int)runtime.Configuration.HandoffSpinCount) : null;
             this.LastSchedulingPoint = SchedulingPointType.Start;
             this.LastHashedProgramState = 0;
             this.LastAccessedSharedState = string.Empty;
@@ -339,6 +343,7 @@ namespace Microsoft.Coyote.Runtime
         /// </remarks>
         internal void WaitSignal()
         {
+            Debug.Assert(this.SyncEvent != null, "Operation '{0}' is not scheduled by interleaving.", this.Name);
             try
             {
                 this.SyncEvent.Wait();
@@ -353,7 +358,11 @@ namespace Microsoft.Coyote.Runtime
         /// <summary>
         /// Signals this operation to resume its execution.
         /// </summary>
-        internal void Signal() => this.SyncEvent.Set();
+        internal void Signal()
+        {
+            Debug.Assert(this.SyncEvent != null, "Operation '{0}' is not scheduled by interleaving.", this.Name);
+            this.SyncEvent.Set();
+        }
 
         /// <summary>
         /// Registers the specified call site as visited.
@@ -476,7 +485,7 @@ namespace Microsoft.Coyote.Runtime
         /// </summary>
         public void Dispose()
         {
-            this.SyncEvent.Dispose();
+            this.SyncEvent?.Dispose();
         }
     }
 }

@@ -76,5 +76,16 @@ namespace Microsoft.Coyote.Testing.Fuzzing
 
             return id;
         }
+
+        /// <summary>
+        /// Clears the operation id associated with the current asynchronous control flow.
+        /// </summary>
+        /// <remarks>
+        /// This is invoked when a controlled thread finishes executing an operation. The id is stored in
+        /// an <see cref="AsyncLocal{T}"/> that is never otherwise reset, so leaving it set would allow a
+        /// thread that goes on to execute another operation to be treated as the same logical operation,
+        /// which would conflate their delay distributions.
+        /// </remarks>
+        internal static void ClearOperationId() => OperationId.Value = Guid.Empty;
     }
 }
