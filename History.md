@@ -15,7 +15,7 @@ concurrency defects across our codebase.
 
 PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
 
-### (InterleaveX)
+### v1.8.0 (InterleaveX)
 - **Breaking (command line):** `--parallel` no longer takes a value. It is now a
   flag that uses one worker per logical processor, and the count moved to a new
   `--workers N` option that requires it, so `--parallel 8` becomes
