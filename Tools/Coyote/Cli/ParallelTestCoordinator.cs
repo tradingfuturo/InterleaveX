@@ -162,7 +162,7 @@ namespace Microsoft.Coyote.Cli
                 shards.Count, baseSeed);
 
             string stopFile = Path.Combine(runDirectory, ".stop");
-            SafeDelete(stopFile);
+            ParallelTestFiles.TryDelete(stopFile);
 
             ConsoleCancelEventHandler cancelHandler = (sender, e) =>
             {
@@ -183,11 +183,36 @@ namespace Microsoft.Coyote.Cli
             }
             finally
             {
-                Console.CancelKeyPress -= cancelHandler;
-                this.RequestStop(stopFile, null);
-                this.KillSurvivors();
-                SafeDelete(stopFile);
+                this.Cleanup(stopFile, cancelHandler);
             }
+        }
+
+        /// <summary>
+        /// Stops and cleans up after the workers of a finished run.
+        /// </summary>
+        /// <remarks>
+        /// Runs in the finally block that also produces the merged report, so nothing in it may throw:
+        /// an exception here would discard the report of a run that already completed, and would skip
+        /// whatever cleanup follows the step that failed, leaving worker processes behind.
+        /// </remarks>
+        private void Cleanup(string stopFile, ConsoleCancelEventHandler cancelHandler)
+        {
+            Console.CancelKeyPress -= cancelHandler;
+            this.RequestStop(stopFile, null);
+
+            try
+            {
+                this.KillSurvivors();
+            }
+            catch (Exception ex)
+            {
+                // Every process this touches is one this run started, and it already tolerates each
+                // of them exiting underneath it, so reaching here means something outside this run's
+                // control. Report it rather than losing the run over it.
+                this.LogWriter.LogError("..... Failed to stop every worker process: {0}", ex.Message);
+            }
+
+            ParallelTestFiles.TryDelete(stopFile);
         }
 
         /// <summary>
@@ -200,7 +225,7 @@ namespace Microsoft.Coyote.Cli
             // that the trace promoted as the repro is the previous run's, and would let a
             // worker that dies before writing its report contribute a stale one to the merge.
             string workerDirectory = Path.Combine(runDirectory, $"w{shard.Index}");
-            SafeDeleteDirectory(workerDirectory);
+            ParallelTestFiles.TryDeleteDirectory(workerDirectory);
             Directory.CreateDirectory(workerDirectory);
 
             // Name the report after this run rather than reusing a fixed name. Deleting is best
@@ -208,7 +233,7 @@ namespace Microsoft.Coyote.Cli
             // an earlier run's report whenever neither the directory nor the file could be removed.
             // A name no earlier run can have produced makes that impossible rather than unlikely.
             string reportFile = Path.Combine(workerDirectory, $"report-{this.RunId}.ser");
-            SafeDelete(reportFile);
+            ParallelTestFiles.TryDelete(reportFile);
 
             string[] childArgs = ParallelTestPlan.BuildChildArgs(this.RawArgs, method, shard, workerDirectory);
 
@@ -310,19 +335,16 @@ namespace Microsoft.Coyote.Cli
                 return;
             }
 
-            try
+            if (ParallelTestFiles.TryCreate(stopFile))
             {
-                File.Create(stopFile).Dispose();
                 if (reason != null)
                 {
                     this.LogWriter.LogImportant("..... Stopping the remaining worker(s) because {0}.", reason);
                 }
             }
-            catch (IOException)
-            {
-                // Nothing more can be done to stop the workers gracefully; they are killed
-                // by the caller once the grace period elapses.
-            }
+
+            // Otherwise nothing more can be done to stop the workers gracefully; they are killed by
+            // the caller once the grace period elapses.
         }
 
         /// <summary>
@@ -456,48 +478,6 @@ namespace Microsoft.Coyote.Cli
                 // The directory cannot be read, so nothing in it can be told apart from this run's
                 // output. Treat everything as pre-existing rather than risk promoting a stale trace.
                 return int.MaxValue;
-            }
-        }
-
-        /// <summary>
-        /// Deletes the specified file if it exists.
-        /// </summary>
-        private static void SafeDelete(string path)
-        {
-            try
-            {
-                if (File.Exists(path))
-                {
-                    File.Delete(path);
-                }
-            }
-            catch (IOException)
-            {
-                // The file is in use or already gone; either way there is nothing to do.
-            }
-        }
-
-        /// <summary>
-        /// Deletes the specified worker directory and everything below it, if it exists.
-        /// </summary>
-        /// <remarks>
-        /// Only ever called on a directory this class created itself, under the run directory
-        /// of the current parallel run.
-        /// </remarks>
-        private static void SafeDeleteDirectory(string path)
-        {
-            try
-            {
-                if (Directory.Exists(path))
-                {
-                    Directory.Delete(path, recursive: true);
-                }
-            }
-            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
-            {
-                // Something below the directory is in use or already gone. The worker still
-                // gets a directory to write into; it just may not be empty, which the report
-                // merge and the artifact promotion both tolerate.
             }
         }
 

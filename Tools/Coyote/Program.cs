@@ -441,7 +441,9 @@ namespace Microsoft.Coyote
         /// <remarks>
         /// Does nothing unless this process was launched as a worker. Stopping this way lets
         /// the engine finish its current iteration and emit its report, so the work already
-        /// done still counts towards the merged result.
+        /// done still counts towards the merged result. The callback runs at every iteration
+        /// boundary, so the checks themselves are throttled by the probe rather than performed
+        /// here; see <see cref="ParallelWorkerStopProbe"/>.
         /// </remarks>
         private static void RegisterWorkerStopCallback(TestingEngine engine)
         {
@@ -454,9 +456,10 @@ namespace Microsoft.Coyote
             string parentId = Environment.GetEnvironmentVariable(ParallelTestCoordinator.ParentProcessVariable);
             _ = int.TryParse(parentId, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parentProcessId);
 
+            var probe = ParallelWorkerStopProbe.Create(stopFile, parentProcessId);
             engine.RegisterStartIterationCallBack(_ =>
             {
-                if (File.Exists(stopFile) || (parentProcessId != 0 && !IsProcessRunning(parentProcessId)))
+                if (probe.ShouldStop())
                 {
                     engine.Stop();
                 }
@@ -473,22 +476,6 @@ namespace Microsoft.Coyote
             if (!string.IsNullOrEmpty(reportFile))
             {
                 engine.TestReport.Save(reportFile);
-            }
-        }
-
-        /// <summary>
-        /// Returns true if a process with the specified id is running.
-        /// </summary>
-        private static bool IsProcessRunning(int processId)
-        {
-            try
-            {
-                using Process process = Process.GetProcessById(processId);
-                return !process.HasExited;
-            }
-            catch (ArgumentException)
-            {
-                return false;
             }
         }
 
