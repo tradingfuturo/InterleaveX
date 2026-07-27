@@ -224,7 +224,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     return lockObj.IsHeldByCurrentThread;
                 }
 
-                var block = Monitor.SynchronizedBlock.Find(lockObj);
+                var block = Monitor.SynchronizedBlock.FindForRuntime(runtime, lockObj);
                 return block != null && block.IsEntered();
             }
 

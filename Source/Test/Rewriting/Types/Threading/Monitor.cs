@@ -349,7 +349,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// instead of failing with an exception the program under test never caused.
         /// </remarks>
         internal static SynchronizedBlock LockBlock(CoyoteRuntime runtime, object obj) =>
-            runtime.HasExecutionEnded ? null : SynchronizedBlock.Lock(obj);
+            SynchronizedBlock.Lock(runtime, obj);
 
         /// <summary>
         /// Finds the synchronized block for the specified object on behalf of the executing operation,
@@ -365,7 +365,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </remarks>
         internal static SynchronizedBlock FindBlock(CoyoteRuntime runtime, object obj)
         {
-            var block = SynchronizedBlock.Find(obj);
+            var block = SynchronizedBlock.FindForRuntime(runtime, obj);
             if (runtime.HasExecutionEnded)
             {
                 return null;
@@ -389,6 +389,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// </summary>
             private static readonly ConcurrentDictionary<object, Lazy<SynchronizedBlock>> Cache =
                 new ConcurrentDictionary<object, Lazy<SynchronizedBlock>>();
+
+            /// <summary>
+            /// How many times acquiring a block discards one left behind by an ended iteration before
+            /// giving up and reporting that the cache is not converging.
+            /// </summary>
+            private const int HealAttempts = 16;
 
             /// <summary>
             /// The id of the <see cref="CoyoteRuntime"/> that created this semaphore.
@@ -475,14 +481,123 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// to the specified object and enters the lock.
             /// </summary>
             internal static SynchronizedBlock Lock(object syncObject) =>
-                Cache.GetOrAdd(syncObject, key => new Lazy<SynchronizedBlock>(
-                    () => new SynchronizedBlock(CoyoteRuntime.Current, key))).Value.EnterLock();
+                Lock(CoyoteRuntime.Current, syncObject);
+
+            /// <summary>
+            /// Creates a new <see cref="SynchronizedBlock"/> for synchronizing access to the specified
+            /// object on behalf of the specified runtime, and enters the lock, or returns null if that
+            /// runtime has stopped executing its test iteration.
+            /// </summary>
+            internal static SynchronizedBlock Lock(CoyoteRuntime runtime, object syncObject) =>
+                Resolve(runtime, syncObject, create: true)?.EnterLock();
 
             /// <summary>
             /// Finds the synchronized block associated with the specified synchronization object.
             /// </summary>
             internal static SynchronizedBlock Find(object syncObject) =>
                 Cache.TryGetValue(syncObject, out Lazy<SynchronizedBlock> lazyMock) ? lazyMock.Value : null;
+
+            /// <summary>
+            /// Finds the synchronized block associated with the specified synchronization object on
+            /// behalf of the specified runtime, discarding any block left behind by an iteration that has
+            /// already ended and looking again, so that discarding one never reports a miss on an object
+            /// this iteration does hold a block for.
+            /// </summary>
+            internal static SynchronizedBlock FindForRuntime(CoyoteRuntime runtime, object syncObject) =>
+                Resolve(runtime, syncObject, create: false);
+
+            /// <summary>
+            /// Returns the synchronized block of the specified object for the specified runtime,
+            /// creating and caching one if requested, or null if there is none and
+            /// <paramref name="create"/> is false, or if the runtime has stopped executing its test
+            /// iteration.
+            /// </summary>
+            /// <remarks>
+            /// Any block left behind by an iteration that has already ended is discarded and the
+            /// lookup retried, because reporting a miss immediately after discarding an entry would be
+            /// wrong whenever this iteration installed its own entry for the object in the meantime:
+            /// the discard is matched on the value that was read, and so does nothing at all in
+            /// exactly that case. The retry is bounded only to keep a corrupted cache from spinning
+            /// forever. Each thread can leave at most one stale entry behind, because publishing it
+            /// synchronizes with the reset that preceded it, so the next attempt by that thread
+            /// observes the ended status up front.
+            /// </remarks>
+            private static SynchronizedBlock Resolve(CoyoteRuntime runtime, object syncObject, bool create)
+            {
+                for (int attempt = 0; attempt < HealAttempts; attempt++)
+                {
+                    if (!Cache.TryGetValue(syncObject, out Lazy<SynchronizedBlock> lazyBlock))
+                    {
+                        if (!create)
+                        {
+                            return null;
+                        }
+
+                        // The block is created for the runtime that is acquiring it, rather than for
+                        // whichever runtime happens to be current on the thread that first forces the
+                        // entry, so that ownership of a block is always the ownership the check below
+                        // assumes. The lookup above only skips building a factory that a hit would
+                        // discard anyway, as GetOrAdd itself starts by looking the key up without
+                        // taking a bucket lock.
+                        lazyBlock = Cache.GetOrAdd(syncObject,
+                            key => new Lazy<SynchronizedBlock>(() => new SynchronizedBlock(runtime, key)));
+                    }
+
+                    SynchronizedBlock block = lazyBlock.Value;
+                    if (create && runtime.HasExecutionEnded)
+                    {
+                        // Checked after publishing rather than before, which is what makes it decisive:
+                        // adding to the cache takes a bucket lock that the clearing reset also took, so a
+                        // block that was added after the reset is guaranteed to observe the ended status
+                        // that was written before it. A block added before the reset is removed by it.
+                        // A lookup deliberately does not check, so that its caller can tell teardown
+                        // apart from a genuine miss afterwards; see FindBlock.
+                        if (block.RuntimeId == runtime.Id)
+                        {
+                            TryEvict(syncObject, lazyBlock);
+                        }
+
+                        return null;
+                    }
+
+                    if (block.RuntimeId != runtime.Id && IsAbandoned(block.RuntimeId))
+                    {
+                        // Left behind by an iteration that has ended. The undo above is not guaranteed to
+                        // run, because the interrupt that terminates such an operation can be raised
+                        // inside the cache itself, so entries are also healed here on the way in.
+                        TryEvict(syncObject, lazyBlock);
+                        continue;
+                    }
+
+                    return block;
+                }
+
+                // Reported rather than returned as a miss, which the caller would raise into the program
+                // under test as a lock that was never taken, blaming it for an internal invariant.
+                runtime.NotifyAssertionFailure(
+                    $"Unable to {(create ? "acquire" : "look up")} the synchronized block for an object " +
+                    $"after {HealAttempts} attempts, because the block cache keeps being repopulated " +
+                    "with blocks from test iterations that have already ended.");
+                return null;
+            }
+
+            /// <summary>
+            /// Returns true if the runtime with the specified id is no longer running a test iteration.
+            /// </summary>
+            private static bool IsAbandoned(Guid runtimeId) =>
+                !RuntimeProvider.TryGetFromId(runtimeId, out CoyoteRuntime owner) || owner.HasExecutionEnded;
+
+            /// <summary>
+            /// Removes the specified cache entry, unless it has already been replaced.
+            /// </summary>
+            /// <remarks>
+            /// Matching on the value matters: removing by key alone can delete an entry that the next
+            /// test iteration has already installed for the same object, which would leave that iteration
+            /// with two blocks for one lock and silently stop it from enforcing mutual exclusion.
+            /// </remarks>
+            private static void TryEvict(object syncObject, Lazy<SynchronizedBlock> lazyBlock) =>
+                (Cache as ICollection<KeyValuePair<object, Lazy<SynchronizedBlock>>>).Remove(
+                    new KeyValuePair<object, Lazy<SynchronizedBlock>>(syncObject, lazyBlock));
 
             /// <summary>
             /// Resets the cache. This should be called after each testing iteration
@@ -734,10 +849,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 }
 
                 int useCount = SystemInterlocked.Decrement(ref this.UseCount);
-                if (useCount is 0 && Cache[this.SyncObject].Value == this)
+                if (useCount is 0 &&
+                    Cache.TryGetValue(this.SyncObject, out Lazy<SynchronizedBlock> lazyBlock) &&
+                    lazyBlock.IsValueCreated && ReferenceEquals(lazyBlock.Value, this))
                 {
-                    // It is safe to remove this instance from the cache.
-                    Cache.TryRemove(this.SyncObject, out _);
+                    // It is safe to remove this instance from the cache. The entry is matched by value
+                    // rather than by key, so that an entry a later iteration has already installed for
+                    // this object is not removed, and it is only inspected if its block has been created,
+                    // so that a block belonging to another iteration is not created by this one.
+                    TryEvict(this.SyncObject, lazyBlock);
                 }
             }
 
