@@ -66,6 +66,34 @@ namespace Microsoft.Coyote.Rewriting.Tests.Configuration
             Assert.False(options.IsRewritingConcurrentCollections);
         }
 
+        [Fact(Timeout = 5000)]
+        public void TestJsonConfigurationDependencySearchPaths()
+        {
+            string configDirectory = GetJsonConfigurationDirectory("Configurations");
+            string configPath = Path.Combine(configDirectory, "test3.coyote.json");
+            Assert.True(File.Exists(configPath), "File not found: " + configPath);
+
+            var options = RewritingOptions.ParseFromJSON(configPath);
+            Assert.NotNull(options);
+            options = options.Sanitize(Assembly.GetExecutingAssembly());
+
+            // The configuration file sits in '<target framework>/Configurations', so the build it
+            // belongs to names the tokens that the paths below are expected to have expanded to.
+            string targetFrameworkDirectory = Path.GetDirectoryName(configDirectory);
+            string targetFramework = Path.GetFileName(targetFrameworkDirectory);
+            string configuration = Path.GetFileName(Path.GetDirectoryName(targetFrameworkDirectory));
+
+            Assert.NotNull(options.DependencySearchPaths);
+            Assert.Equal(
+                new string[]
+                {
+                    // Resolved against the configuration file, not the working directory.
+                    Path.Combine(targetFrameworkDirectory, "Dependencies", configuration, targetFramework),
+                    Path.Combine(configDirectory, "Nested")
+                },
+                options.DependencySearchPaths.ToArray());
+        }
+
         private static string GetJsonConfigurationDirectory(string subDirectory = null)
         {
             string binaryDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);

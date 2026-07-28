@@ -1,0 +1,10 @@
+{
+  "AssembliesPath": "../../../../bin/$(Configuration)/$(TargetFramework)/Configurations",
+  "DependencySearchPaths": [
+    "../Dependencies/$(Configuration)/$(TargetFramework)",
+    "./Nested"
+  ],
+  "Assemblies": [
+    "Test1.dll"
+  ]
+}

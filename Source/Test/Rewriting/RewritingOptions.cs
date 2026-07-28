@@ -28,6 +28,12 @@ namespace Microsoft.Coyote.Rewriting
     internal class RewritingOptions
     {
         /// <summary>
+        /// The environment variable that disables incremental rewriting for every invocation that
+        /// sees it, for builds that invoke the rewriter and cannot pass it an extra argument.
+        /// </summary>
+        private const string DisableIncrementalRewritingVariable = "INTERLEAVEX_NO_REWRITE_CACHE";
+
+        /// <summary>
         /// The directory containing the assemblies to rewrite.
         /// </summary>
         internal string AssembliesDirectory { get; set; }
@@ -64,6 +70,16 @@ namespace Microsoft.Coyote.Rewriting
         /// mscorlib.
         /// </remarks>
         private Regex IgnoredAssembliesPattern { get; set; }
+
+        /// <summary>
+        /// True if the rewriting cache must not be consulted, so that everything is rewritten again
+        /// even when nothing changed, else false.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately absent from the JSON configuration and from <see cref="AssemblySignature"/>:
+        /// it is an escape hatch for a single invocation, not a property of the rewritten output.
+        /// </remarks>
+        internal bool IsIncrementalRewritingDisabled { get; set; }
 
         /// <summary>
         /// True if rewriting for memory locations is enabled, else false.
@@ -118,6 +134,7 @@ namespace Microsoft.Coyote.Rewriting
                 AssemblyPaths = new HashSet<string>(),
                 DependencySearchPaths = null,
                 IgnoredAssembliesPattern = GetDisallowedAssembliesRegex(new List<string>()),
+                IsIncrementalRewritingDisabled = false,
                 IsRewritingMemoryLocations = true,
                 IsRewritingConcurrentCollections = true,
                 IsDataRaceCheckingEnabled = false,
@@ -169,7 +186,16 @@ namespace Microsoft.Coyote.Rewriting
                     }
                 }
 
-                options.DependencySearchPaths = configuration.DependencySearchPaths;
+                if (configuration.DependencySearchPaths != null)
+                {
+                    // Resolved against the configuration file, as every other path in it is. Left
+                    // relative, these would be resolved against the working directory of whatever
+                    // invoked the rewriter instead, and a search directory that does not exist is
+                    // ignored rather than reported, so the only symptom would be different IL.
+                    options.DependencySearchPaths = configuration.DependencySearchPaths
+                        .Select(path => new Uri(baseUri, path).LocalPath).ToList();
+                }
+
                 options.IgnoredAssembliesPattern = GetDisallowedAssembliesRegex(
                     configuration.IgnoredAssemblies ?? Array.Empty<string>());
                 options.IsRewritingMemoryLocations = configuration.IsRewritingMemoryLocations;
@@ -191,6 +217,15 @@ namespace Microsoft.Coyote.Rewriting
         /// Returns true if the assembly with the specified name must be ignored during rewriting, else false.
         /// </summary>
         internal bool IsAssemblyIgnored(string assemblyName) => this.IgnoredAssembliesPattern.IsMatch(assemblyName);
+
+        /// <summary>
+        /// Returns the pattern used to decide which assemblies to ignore.
+        /// </summary>
+        /// <remarks>
+        /// Exposed for the rewriting cache: the ignore list decides both which assemblies are rewritten
+        /// and which dependencies are followed, so a change to it changes what a run produces.
+        /// </remarks>
+        internal string GetIgnoredAssembliesPatternText() => this.IgnoredAssembliesPattern.ToString();
 
         /// <summary>
         /// Returns true if the input assemblies are being replaced by the rewritten ones, else false.
@@ -252,6 +287,12 @@ namespace Microsoft.Coyote.Rewriting
                 throw new InvalidOperationException("Please provide RewritingOptions.AssemblyPaths");
             }
 
+            // Folded in here rather than read where the cache is consulted, so that these options are
+            // the whole answer to what this run will do. The environment variable exists because a
+            // build that invokes the rewriter for you cannot always be handed an extra argument.
+            this.IsIncrementalRewritingDisabled |= !string.IsNullOrEmpty(
+                Environment.GetEnvironmentVariable(DisableIncrementalRewritingVariable));
+
             // We try resolve assemblies in the following order: (a) the calling assembly only for our unit tests,
             // (b) the entry assembly which is typically the coyote CLI tool, and (c) the current assembly. If the
             // resolution fails,then we throw an error so that the user can be explicit.
@@ -279,6 +320,16 @@ namespace Microsoft.Coyote.Rewriting
                     this.AssemblyPaths.Remove(path);
                     this.AssemblyPaths.Add(newPath);
                 }
+            }
+
+            if (this.DependencySearchPaths != null)
+            {
+                // Made absolute here rather than where they are read, because a path given on the
+                // command line is relative to the working directory, while one from a configuration
+                // file was already resolved against that file and is unchanged by this.
+                this.DependencySearchPaths = this.DependencySearchPaths
+                    .Select(path => Path.GetFullPath(ResolvePath(path, targetFramework, configuration)))
+                    .ToList();
             }
 
             if (this.AssemblyPaths is null || this.AssemblyPaths.Count is 0)
@@ -378,6 +429,16 @@ namespace Microsoft.Coyote.Rewriting
         ///     // The assemblies to rewrite. The paths are relative to 'AssembliesPath'.
         ///     "Assemblies": [
         ///         "Example.exe"
+        ///     ],
+        ///     // The directories to search when resolving the assemblies that the rewritten
+        ///     // code references. These paths are relative to this configuration file.
+        ///     "DependencySearchPaths": [
+        ///         "../OtherProject/bin/$(Configuration)/$(TargetFramework)"
+        ///     ],
+        ///     // Regular expressions matching the assemblies to leave alone. These are added
+        ///     // to the assemblies that are always ignored, such as the runtime itself.
+        ///     "IgnoredAssemblies": [
+        ///         "Example\\.Generated\\.dll"
         ///     ]
         /// }
         /// </code>

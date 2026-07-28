@@ -839,6 +839,25 @@ namespace Microsoft.Coyote.Cli
                 Arity = ArgumentArity.Zero
             };
 
+            var dependencySearchPathOption = new Option<string[]>(
+                name: "--dependency-search-path",
+                description: "Path to search for resolving dependencies. Repeat to add more than one. " +
+                    "Use when the assemblies being rewritten do not sit beside the assemblies they reference.")
+            {
+                ArgumentHelpName = "PATH",
+                AllowMultipleArgumentsPerToken = false
+            };
+
+            var noIncrementalOption = new Option<bool>(
+                name: "--no-incremental",
+                getDefaultValue: () => options.IsIncrementalRewritingDisabled,
+                description: "Ignore the rewriting cache and redo the work it would have skipped. This " +
+                    "does not affect an assembly that was already rewritten in place, which is skipped " +
+                    "because the assembly itself says so, not because the cache does.")
+            {
+                Arity = ArgumentArity.Zero
+            };
+
             // Add validators.
             pathArg.AddValidator(result => ValidateArgumentValueIsExpectedFile(result, ".dll", ".exe", ".json"));
 
@@ -854,6 +873,8 @@ namespace Microsoft.Coyote.Cli
             this.AddOption(command, assertDataRacesOption);
             this.AddOption(command, dumpILOption);
             this.AddOption(command, dumpILDiffOption);
+            this.AddOption(command, dependencySearchPathOption);
+            this.AddOption(command, noIncrementalOption);
             command.TreatUnmatchedTokensAsErrors = true;
             return command;
         }
@@ -1031,13 +1052,22 @@ namespace Microsoft.Coyote.Cli
         {
             CommandResult commandResult = result.CommandResult;
             Command command = commandResult.Command;
+            // Arguments before options, in two passes, rather than in whatever order the results
+            // happen to come in. The path argument of 'rewrite' can be a configuration file, and
+            // reading one sets the same properties that options do; taken in the other order, a
+            // configuration file would overwrite what was asked for explicitly on the command line.
+            // An option is the more specific instruction, so it is applied last and wins.
             foreach (var symbolResult in commandResult.Children)
             {
                 if (symbolResult is ArgumentResult argument)
                 {
                     this.UpdateConfigurationsWithParsedArgument(command, argument);
                 }
-                else if (symbolResult is OptionResult option)
+            }
+
+            foreach (var symbolResult in commandResult.Children)
+            {
+                if (symbolResult is OptionResult option)
                 {
                     this.UpdateConfigurationsWithParsedOption(option);
                 }
@@ -1338,6 +1368,15 @@ namespace Microsoft.Coyote.Cli
                         break;
                     case "dump-il-diff":
                         this.RewritingOptions.IsDiffingAssemblyContents = true;
+                        break;
+                    case "dependency-search-path":
+                        this.RewritingOptions.DependencySearchPaths =
+                            (this.RewritingOptions.DependencySearchPaths ?? new List<string>())
+                            .Concat(result.GetValueOrDefault<string[]>() ?? Array.Empty<string>())
+                            .Distinct().ToList();
+                        break;
+                    case "no-incremental":
+                        this.RewritingOptions.IsIncrementalRewritingDisabled = true;
                         break;
                     case "verbosity":
                         switch (result.GetValueOrDefault<string>())
