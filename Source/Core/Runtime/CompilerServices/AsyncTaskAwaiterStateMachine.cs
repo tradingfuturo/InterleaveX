@@ -7,6 +7,7 @@
 
 using System;
 using SystemTasks = System.Threading.Tasks;
+using SystemThreading = System.Threading;
 
 namespace Microsoft.Coyote.Runtime.CompilerServices
 {
@@ -82,7 +83,13 @@ namespace Microsoft.Coyote.Runtime.CompilerServices
                     this.CurrentStatus = Status.Completed;
                     if (this.AwaitedTask.IsCanceled)
                     {
-                        this.CompletionSource.SetCanceled();
+                        // Mirror the token the awaited task was canceled with. A parameterless
+                        // 'SetCanceled' records none, which would hand the awaiter a
+                        // 'CancellationToken.None' and make a cancellation that arrives mid-wait
+                        // distinguishable from one that arrives before the call, whose source
+                        // returns 'Task.FromCanceled(token)'. Callers compare this token and filter
+                        // catches on it, so the difference decides whether their catch runs.
+                        this.CompletionSource.TrySetCanceled(GetCancellationToken(this.AwaitedTask));
                     }
                     else if (this.AwaitedTask.IsFaulted)
                     {
@@ -99,6 +106,31 @@ namespace Microsoft.Coyote.Runtime.CompilerServices
                     this.CompletionSource.SetException(exception);
                 }
             }
+        }
+
+        /// <summary>
+        /// Returns the token the specified canceled task was canceled with, or none if it recorded no token.
+        /// </summary>
+        /// <remarks>
+        /// A canceled task exposes its token only through the exception it throws, so the task is awaited
+        /// to obtain it. It has already completed, so this cannot block. The 'try' is self-contained so
+        /// that a task canceled without a token cannot escape into the caller's exception handling.
+        /// </remarks>
+        private static SystemThreading.CancellationToken GetCancellationToken(SystemTasks.Task<TResult> task)
+        {
+            try
+            {
+                task.GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException exception)
+            {
+                return exception.CancellationToken;
+            }
+            catch (Exception)
+            {
+            }
+
+            return default;
         }
     }
 }

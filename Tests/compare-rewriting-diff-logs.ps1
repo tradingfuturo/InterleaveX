@@ -24,12 +24,20 @@ $targets = [ordered]@{
 
 # Hashes of the release build, which is what build.ps1 and CI produce. Regenerate with
 # get-rewriting-diff-logs.ps1 using the same configuration.
+#
+# Rebaselined because the previous values had been stale since 'Redirect every producer of a
+# configured awaitable', which changed the IL injected into Tests.BugFinding without regenerating
+# them; the rewriter work that followed, on channels, Monitor, Lock and thread pooling, moved the
+# rest. Every project below except Tests.BugFinding drifted before the change this rebaseline ships
+# with, which only adds a test method. The hashes are reproducible rather than machine specific:
+# the previous values were reproduced exactly at the commit that recorded them, which is how the
+# first divergence was placed.
 $expected_hashes = [ordered]@{
-    "rewriting" = "2BAF0F754A273649857D44741546B1DF822DEFD809236720A21FD59331268BAB"
-    "rewriting-helpers" = "DF8CF299C162ECA5392793BF5E3E6D7C8B61A75E029501ED6F41C1DD1AD3183B"
-    "testing" = "24718D8B9A44CDF215505E9E4B44924950659969D5CA07AABF6D99B023123F68"
-    "actors" = "9BC8B815D49CF0D64A815F1492C58B327DAB10B6DE921D6283ED799A367D7AB8"
-    "actors-testing" = "29D71EE8298B402FF3477D5EE89639C22B5295027B3C09EE366373DAE37A5D59"
+    "rewriting" = "A9016EE75232E1EE719D36F7A38776D09A462B5896B117FBF14C0F759E68857E"
+    "rewriting-helpers" = "6C25B8F64593309BD37E258A2C59683FB56B63B281AA20A9B41015D2BFDD2D85"
+    "testing" = "4D48FEE90DC5C7D34C151CE7D9BFDADFF806D4D217E99F281682EB54737A1893"
+    "actors" = "531E0CC7818CC9B5B23C2DACF1B0DF4570C13BD45DB018E964AEE28E08179FF9"
+    "actors-testing" = "8A3F2C008BB108C5C587DECF3205B10817E316D489CB670332119C460460AC4D"
 }
 
 Write-Comment -prefix "." -text "Comparing the test rewriting diff logs" -color "yellow"

@@ -287,6 +287,65 @@ namespace Microsoft.Coyote.BugFinding.Tests
             this.GetConfiguration().WithTestingIterations(300));
         }
 
+        [Fact(Timeout = 10000)]
+        public void TestCancellationCarriesTheCallersToken()
+        {
+            // Cancelling a wait must surface the caller's token whether it lands before the call or after
+            // the waiter parks. The pre-canceled path returns Task.FromCanceled(token) and so carries it;
+            // a parked waiter is completed by a cancellation callback, and the token has to survive being
+            // mirrored out to the awaiter. Callers compare this token and filter catches on it, so losing
+            // it turns a matched catch into an unhandled exception rather than into a visible failure.
+            //
+            // The waits below are started on this operation and their tasks materialized before Cancel, so
+            // that the cancellation is guaranteed to arrive after parking. Starting them with Task.Run, as
+            // the tests above do, would let a schedule cancel first and quietly retest the pre-canceled
+            // path instead.
+            this.Test(async () =>
+            {
+                using var cts = new CancellationTokenSource();
+
+                Channel<int> unbounded = Channel.CreateUnbounded<int>();
+                Task<int> parkedRead = unbounded.Reader.ReadAsync(cts.Token).AsTask();
+
+                Channel<int> bounded = Channel.CreateBounded<int>(1);
+                Specification.Assert(bounded.Writer.TryWrite(1), "The bounded channel should accept its one item.");
+                Task parkedWrite = bounded.Writer.WriteAsync(2, cts.Token).AsTask();
+
+                cts.Cancel();
+
+                await AssertCarriesToken(parkedRead, "parked ReadAsync", cts.Token);
+                await AssertCarriesToken(parkedWrite, "parked WriteAsync", cts.Token);
+
+                // The same channels, now with a token that was already canceled when the call was made.
+                await AssertCarriesToken(unbounded.Reader.ReadAsync(cts.Token).AsTask(), "pre-canceled ReadAsync", cts.Token);
+                await AssertCarriesToken(bounded.Writer.WriteAsync(3, cts.Token).AsTask(), "pre-canceled WriteAsync", cts.Token);
+            },
+            this.GetConfiguration().WithTestingIterations(200));
+        }
+
+        /// <summary>
+        /// Asserts that awaiting <paramref name="wait"/> reports cancellation with the expected token.
+        /// </summary>
+        private static async Task AssertCarriesToken(Task wait, string description, CancellationToken expected)
+        {
+            bool canceled = false;
+            CancellationToken observed = default;
+            try
+            {
+                await wait;
+            }
+            catch (OperationCanceledException exception)
+            {
+                canceled = true;
+                observed = exception.CancellationToken;
+            }
+
+            Specification.Assert(canceled, "The {0} should have been canceled.", description);
+            Specification.Assert(observed == expected,
+                "The {0} should report the caller's token, but reported {1}.",
+                description, observed == default ? "CancellationToken.None" : "a different token");
+        }
+
         [Fact(Timeout = 5000)]
         public void TestDropOldestInvokesCallback()
         {
