@@ -34,15 +34,44 @@ namespace Microsoft.Coyote.Runtime.Tests.Logging
         }
 
         /// <summary>
-        /// Enough iterations that any per-call allocation dwarfs the constant background, and small
-        /// enough to stay fast.
+        /// Enough iterations that any per-call allocation is unmistakable, and small enough to stay
+        /// fast.
         /// </summary>
         private const int Iterations = 20000;
 
         /// <summary>
-        /// Returns the bytes allocated by the specified action, having first run it once so that
-        /// any one-off costs, such as JIT and the format string literals, are already paid.
+        /// How much the measurement may grow when the call count doubles.
         /// </summary>
+        /// <remarks>
+        /// Measured growth is zero, so this is slack rather than an expected cost. It is not tuned
+        /// to anything: the smallest per-call allocation worth worrying about is a single boxed
+        /// int, and that would show up as <see cref="Iterations"/> times 24 bytes, roughly a
+        /// hundred times this. Anything between one byte and a hundred kilobytes would catch the
+        /// same regressions, so the value is chosen to avoid a knife-edge rather than to draw a
+        /// meaningful line.
+        /// </remarks>
+        private const int GrowthBudgetBytes = 4096;
+
+        /// <summary>
+        /// Returns the bytes allocated on the current thread by the specified action, having first
+        /// run it once so that any one-off costs, such as JIT and the format string literals, are
+        /// already paid.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately the per-thread counter and not <see cref="GC.GetTotalAllocatedBytes(bool)"/>.
+        /// The process-wide counter attributes allocations made by any other thread in the process
+        /// to whatever is being measured here, and a test host runs plenty of them: measured against
+        /// it, the no-argument case picked up 62,728 bytes of unrelated traffic when it ran
+        /// alongside the execution-trace tests, and passed on its own. That cuts both ways, so it
+        /// could as easily have hidden a real per-call allocation as invented one. The action is
+        /// synchronous and allocates only on the calling thread, so the per-thread counter measures
+        /// exactly it.
+        /// <para>
+        /// The collection beforehand is not needed for correctness, since the counter is cumulative
+        /// rather than a heap measurement, but it keeps a collection from landing in the middle of
+        /// the measured region and perturbing its timing.
+        /// </para>
+        /// </remarks>
         private static long MeasureAllocation(Action action)
         {
             action();
@@ -51,9 +80,9 @@ namespace Microsoft.Coyote.Runtime.Tests.Logging
             GC.WaitForPendingFinalizers();
             GC.Collect();
 
-            long before = GC.GetTotalAllocatedBytes(precise: true);
+            long before = GC.GetAllocatedBytesForCurrentThread();
             action();
-            return GC.GetTotalAllocatedBytes(precise: true) - before;
+            return GC.GetAllocatedBytesForCurrentThread() - before;
         }
 
         /// <summary>
@@ -61,24 +90,30 @@ namespace Microsoft.Coyote.Runtime.Tests.Logging
         /// call counts and comparing the growth.
         /// </summary>
         /// <remarks>
-        /// Testing for zero bytes outright is the obvious thing to do and it does not work: a
-        /// measurement carries a small constant background, on the order of a kilobyte, that has
-        /// nothing to do with the calls being measured. What distinguishes "allocates nothing per
-        /// call" from "allocates a little per call" is whether the total grows with the call count,
-        /// so that is what is asserted. Boxing four arguments would put this in the megabytes.
+        /// Asserting on the growth between two call counts rather than on an absolute byte count is
+        /// what makes this robust: the property under test is that cost does not scale with the
+        /// number of calls, and any fixed cost cancels out of a difference. Boxing the arguments of
+        /// the four-argument shape would put the growth in the megabytes.
         /// </remarks>
-        private static void AssertNoPerCallAllocation(Action<int> action, string what)
+        private void AssertNoPerCallAllocation(Action<int> action, string what)
         {
             long single = MeasureAllocation(() => action(Iterations));
             long doubled = MeasureAllocation(() => action(Iterations * 2));
             long growth = doubled - single;
 
-            Assert.True(growth < Iterations,
-                $"{what} allocated {growth} additional bytes when the call count doubled from " +
-                $"{Iterations} to {Iterations * 2} ({single} then {doubled} bytes). That is more " +
-                $"than one byte per additional call, so something is allocating per call: the " +
-                $"generic overloads should bind in preference to the object-typed ones, leaving " +
-                $"the arguments unboxed unless the message is actually written.");
+            // Recorded even on success. The expected reading is zero at both call counts, so a
+            // later reader seeing anything else knows the measurement drifted before it knows the
+            // budget was breached.
+            this.TestOutput.WriteLine(
+                $"{what}: {Iterations} calls -> {single} bytes, {Iterations * 2} calls -> {doubled} bytes, " +
+                $"growth {growth} bytes (budget {GrowthBudgetBytes}).");
+
+            Assert.True(growth < GrowthBudgetBytes,
+                $"{what} allocated {growth} additional bytes on the calling thread when the call " +
+                $"count doubled from {Iterations} to {Iterations * 2} ({single} then {doubled} " +
+                $"bytes), against a budget of {GrowthBudgetBytes}. Something is allocating per " +
+                $"call: the generic overloads should bind in preference to the object-typed ones, " +
+                $"leaving the arguments unboxed unless the message is actually written.");
         }
 
         private static LogWriter CreateSuppressedWriter() =>
@@ -95,7 +130,7 @@ namespace Microsoft.Coyote.Runtime.Tests.Logging
             // reference types with the value types that would otherwise be boxed. The four-argument
             // shape matters most, since it would otherwise bind to the params overload and allocate
             // the array as well.
-            AssertNoPerCallAllocation(
+            this.AssertNoPerCallAllocation(
                 count =>
                 {
                     for (int i = 0; i < count; ++i)
@@ -113,7 +148,7 @@ namespace Microsoft.Coyote.Runtime.Tests.Logging
         public void TestSuppressedDebugMessagesWithoutArgumentsDoNotAllocate()
         {
             using var logWriter = CreateSuppressedWriter();
-            AssertNoPerCallAllocation(
+            this.AssertNoPerCallAllocation(
                 count =>
                 {
                     for (int i = 0; i < count; ++i)
