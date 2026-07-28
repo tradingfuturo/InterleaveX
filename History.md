@@ -16,6 +16,57 @@ concurrency defects across our codebase.
 PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
 
 ### v1.8.0 (InterleaveX)
+- Exploration allocates far less per scheduling step. Measured with
+  `Tools/SchedulerBench` at 100 iterations, allocation falls 45% on the `deep`
+  workload, which isolates per-step cost, and 67% on `wide`, which isolates cost
+  that scales with the number of operations created. Four sources, all on paths
+  that run at every step. `OperationGroup.IsCompleted` used LINQ `All`, which
+  takes an `IEnumerable` and so boxes the set's struct enumerator; the
+  prioritization and delay-bounding strategies evaluate it for every group they
+  track at every step, so a test with two hundred operations boxed two hundred
+  enumerators per step, and this alone accounts for most of the `wide` result.
+  Q-learning built its cumulative distribution through a LINQ projection that
+  closed over a running total, allocating a closure, a delegate, an iterator and
+  a list per decision, and allocated a fresh list for each boolean and integer
+  choice besides; these are now a prefix sum computed in place and a reusable
+  buffer. Its execution path was a linked list, allocating a node per step, a
+  hundred thousand of them per iteration at the default fair bound. And
+  `ExecutionTrace.Step` carried `Previous` and `Next` fields that were written on
+  every push and read nowhere.
+- Debug log arguments are no longer boxed only to be discarded. The
+  `object`-typed `LogDebug` overloads box at the call site, and the verbosity
+  check happens two frames further in, so with debug logging off — the default —
+  every scheduling step boxed several thread ids, scheduling point kinds and
+  runtime identifiers for the callee to drop. The four-argument call in
+  `ScheduleNextOperation` also allocated a `params` array. Generic overloads now
+  check the level first; overload resolution prefers them without any call site
+  changing. `LogWriterAllocationTests` pins the property by asserting that
+  allocation does not grow with the call count, since nothing observable changes
+  if boxing returns.
+- The program state is computed only for the strategies that read it. The
+  scheduler enabled implicit program-state hashing for the whole run whenever
+  portfolio mode was on, which is the default, and computing that state walks
+  every registered operation and every specification monitor at every scheduling
+  point and every nondeterministic choice. Q-learning is the only strategy that
+  reads the result and is one of the five the portfolio rotates through, so four
+  iterations in five paid for a value nothing consumed. A strategy now declares
+  whether it needs the state and the scheduler caches the answer per iteration.
+  Scheduler setup also no longer writes to the caller's configuration, which had
+  turned a per-iteration decision into a run-wide, caller-visible mutation.
+  Note that only the implicit operation and monitor contribution is gated:
+  state-hashing functions registered through `Specification` are the user
+  computing state for their own purposes and still run on every iteration. The
+  visited-state count reported for portfolio runs is correspondingly lower, since
+  only the iterations that compute the state contribute to it.
+- The determinism goldens record the explored traces separately from the
+  statistics they were previously fused with, so a mismatch distinguishes
+  "exploration changed" from "a reported number changed". All three changes above
+  leave the trace digests of all 39 swept configurations byte-identical.
+- `Tools/SchedulerBench` gained `--force-hashing`, which restores the pre-gating
+  behaviour so both configurations can be measured from one build. Comparing two
+  builds attributes everything that differs between them to whichever change is
+  under test, and that cross-tree noise proved larger than the effect being
+  measured.
 - The build output layout check no longer reports its own examples. It excuses a
   line by quoting it verbatim, so its own table of exceptions, its description
   and the message it prints on failure all read as stale references the moment
