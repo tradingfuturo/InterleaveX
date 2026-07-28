@@ -32,9 +32,19 @@ namespace Microsoft.Coyote.BugFinding.Tests
     /// therefore not detect a reordering of the schedules explored.
     /// </para>
     /// <para>
+    /// Two digests are recorded per configuration, and the split is what makes the goldens
+    /// diagnostic rather than merely a tripwire. <see cref="GoldenTraceDigests"/> covers the ordered
+    /// traces alone, so it moves if and only if exploration itself changed.
+    /// <see cref="GoldenDigests"/> additionally folds in the summary statistics of the run. A change
+    /// that leaves the traces alone but moves a reported statistic therefore shows up as a
+    /// combined-only mismatch, which a single fused digest could not distinguish from a genuine
+    /// change of schedule.
+    /// </para>
+    /// <para>
     /// To regenerate after an intentional behavioral change, run the test and paste the replacement
-    /// table from the failure message over <see cref="GoldenDigests"/>. Never regenerate to make a
-    /// red test go green without first explaining why the schedule changed.
+    /// tables from the failure message over the two dictionaries. Never regenerate to make a red
+    /// test go green without first explaining why the schedule changed. A trace-digest mismatch in
+    /// particular is a claim that exploration moved, and needs to be justified as such.
     /// </para>
     /// </remarks>
     public class SchedulingDeterminismTests : BaseBugFindingTest
@@ -57,7 +67,65 @@ namespace Microsoft.Coyote.BugFinding.Tests
         private const uint Seed = 199;
 
         /// <summary>
-        /// The expected digest for each '{program}/{strategy}/{reducers}/{hashing}' configuration.
+        /// The expected digest of the ordered execution traces alone, for each
+        /// '{program}/{strategy}/{reducers}/{hashing}' configuration.
+        /// </summary>
+        /// <remarks>
+        /// This table is the exploration invariant. It excludes every summary statistic, so it moves
+        /// only when the sequence of scheduling decisions moves. An optimization that is meant to
+        /// leave exploration untouched must leave this table byte-identical.
+        /// </remarks>
+        private static readonly Dictionary<string, string> GoldenTraceDigests = new Dictionary<string, string>
+        {
+            ["race/random/none/all"] = "89dfb05a78f2f270",
+            ["race/probabilistic/none/all"] = "dc6a6c096fab7f03",
+            ["race/prioritization/none/all"] = "e8da9549c38b0aa8",
+            ["race/fair-prioritization/none/all"] = "e8da9549c38b0aa8",
+            ["race/delay-bounding/none/all"] = "cbaba95471be64c5",
+            ["race/fair-delay-bounding/none/all"] = "cbaba95471be64c5",
+            ["race/q-learning/none/all"] = "d0feb905769b45e2",
+            ["race/dfs/none/all"] = "9d4c05bfcf22d98d",
+            ["race/portfolio-fair/none/all"] = "535028a4e4fd6e14",
+            ["race/portfolio-unfair/none/all"] = "535028a4e4fd6e14",
+            ["nondet/random/none/all"] = "ee4eda9960ba70fc",
+            ["nondet/probabilistic/none/all"] = "00e0ed802894342a",
+            ["nondet/prioritization/none/all"] = "349cb262aef42fac",
+            ["nondet/fair-prioritization/none/all"] = "349cb262aef42fac",
+            ["nondet/delay-bounding/none/all"] = "e341ad6e333fc670",
+            ["nondet/fair-delay-bounding/none/all"] = "e341ad6e333fc670",
+            ["nondet/q-learning/none/all"] = "1ce82532a88bc8ed",
+            ["nondet/dfs/none/all"] = "723de41b119a3b9f",
+            ["nondet/portfolio-fair/none/all"] = "f6ffe61bc97f2229",
+            ["nondet/portfolio-unfair/none/all"] = "f6ffe61bc97f2229",
+            ["readwrite/random/none/all"] = "70f6ebd42de89ce6",
+            ["readwrite/probabilistic/none/all"] = "36f7319f970872f3",
+            ["readwrite/prioritization/none/all"] = "16fb80ed89ca82e3",
+            ["readwrite/fair-prioritization/none/all"] = "16fb80ed89ca82e3",
+            ["readwrite/delay-bounding/none/all"] = "fa2411e378d59281",
+            ["readwrite/fair-delay-bounding/none/all"] = "fa2411e378d59281",
+            ["readwrite/q-learning/none/all"] = "8942c9dfd955ad48",
+            ["readwrite/dfs/none/all"] = "68c7c6985f31f5cd",
+            ["readwrite/portfolio-fair/none/all"] = "d7f0b09aa301c6ea",
+            ["readwrite/portfolio-unfair/none/all"] = "d7f0b09aa301c6ea",
+            ["readwrite/random/cycle/all"] = "99d5a2f3a5293f80",
+            ["readwrite/fair-prioritization/cycle/all"] = "db28985c3fd40f8f",
+            ["readwrite/random/partial-order/all"] = "7c14e8cc7942fee1",
+            ["readwrite/fair-prioritization/partial-order/all"] = "6ccb8c3cd6982c1b",
+            ["readwrite/random/both/all"] = "0d03bf2bb8acdaf4",
+            ["readwrite/fair-prioritization/both/all"] = "29299296daba4a7f",
+
+            // The live-hashing variants coarsen the program state, so q-learning keys on fewer
+            // distinct states and explores a different sequence. Each therefore differs from its
+            // '/all' counterpart above; a pair that agreed would mean the setting stopped taking
+            // effect. This is the one place where a trace digest is expected to differ by design.
+            ["race/q-learning/none/live"] = "1ad0b8f71730e160",
+            ["nondet/q-learning/none/live"] = "2a373672b888ea50",
+            ["readwrite/q-learning/none/live"] = "fe5e1b268d9bf821",
+        };
+
+        /// <summary>
+        /// The expected digest for each '{program}/{strategy}/{reducers}/{hashing}' configuration,
+        /// covering the ordered execution traces together with the summary statistics of the run.
         /// </summary>
         private static readonly Dictionary<string, string> GoldenDigests = new Dictionary<string, string>
         {
@@ -263,10 +331,17 @@ namespace Microsoft.Coyote.BugFinding.Tests
         }
 
         /// <summary>
-        /// Runs the specified configuration and returns a digest of the ordered sequence of
-        /// execution traces explored, followed by the summary statistics of the run.
+        /// Runs the specified configuration and returns two digests: one over the ordered sequence
+        /// of execution traces explored, and one over those traces together with the summary
+        /// statistics of the run.
         /// </summary>
-        private static string ComputeDigest(string program, string strategy, string reducers, string hashing)
+        /// <remarks>
+        /// Both come from a single run, so the pair is always self-consistent. Computing them
+        /// separately rather than folding everything into one value is what lets a caller tell
+        /// "exploration changed" apart from "a reported statistic changed".
+        /// </remarks>
+        private static (string Trace, string Combined) ComputeDigest(string program, string strategy,
+            string reducers, string hashing)
         {
             // Race checking is left at its default (enabled) so that the collection, lock, atomic
             // and volatile scheduling points injected by the rewriter are all exercised.
@@ -305,6 +380,11 @@ namespace Microsoft.Coyote.BugFinding.Tests
             var report = engine.TestReport;
             var builder = new StringBuilder();
             builder.Append(string.Join(",", digests));
+
+            // Snapshot the trace-only digest before the statistics are appended, so the two values
+            // describe the same run.
+            string traceDigest = Hash(builder.ToString());
+
             builder.Append('|').Append(report.NumOfFoundBugs.ToString(CultureInfo.InvariantCulture));
             builder.Append('|').Append(report.NumOfExploredFairPaths.ToString(CultureInfo.InvariantCulture));
             builder.Append('|').Append(report.NumOfExploredUnfairPaths.ToString(CultureInfo.InvariantCulture));
@@ -312,7 +392,7 @@ namespace Microsoft.Coyote.BugFinding.Tests
             builder.Append('|').Append(report.TotalControlledOperations.ToString(CultureInfo.InvariantCulture));
             builder.Append('|').Append(report.TotalConcurrencyDegree.ToString(CultureInfo.InvariantCulture));
             builder.Append('|').Append(report.TotalOperationGroupingDegree.ToString(CultureInfo.InvariantCulture));
-            return Hash(builder.ToString());
+            return (traceDigest, Hash(builder.ToString()));
         }
 
         /// <summary>
@@ -383,29 +463,66 @@ namespace Microsoft.Coyote.BugFinding.Tests
         [Fact(Timeout = 600000)]
         public void TestExplorationIsDeterministic()
         {
-            var mismatches = new List<string>();
-            var table = new StringBuilder();
+            var traceMismatches = new List<string>();
+            var combinedMismatches = new List<string>();
+            var traceTable = new StringBuilder();
+            var combinedTable = new StringBuilder();
+
             foreach ((string program, string strategy, string reducers, string hashing) in Configurations())
             {
                 string key = $"{program}/{strategy}/{reducers}/{hashing}";
-                string actual = ComputeDigest(program, strategy, reducers, hashing);
-                table.AppendLine($"            [\"{key}\"] = \"{actual}\",");
-                if (!GoldenDigests.TryGetValue(key, out string expected))
-                {
-                    mismatches.Add($"{key}: no golden recorded, actual '{actual}'");
-                }
-                else if (expected != actual)
-                {
-                    mismatches.Add($"{key}: expected '{expected}', actual '{actual}'");
-                }
+                (string trace, string combined) = ComputeDigest(program, strategy, reducers, hashing);
+                traceTable.AppendLine($"            [\"{key}\"] = \"{trace}\",");
+                combinedTable.AppendLine($"            [\"{key}\"] = \"{combined}\",");
+                Compare(GoldenTraceDigests, key, trace, traceMismatches);
+                Compare(GoldenDigests, key, combined, combinedMismatches);
             }
 
-            Assert.True(mismatches.Count is 0,
-                $"The explored schedules changed for {mismatches.Count} configuration(s):" +
-                Environment.NewLine + string.Join(Environment.NewLine, mismatches) +
-                Environment.NewLine + Environment.NewLine +
-                "If this change is intentional, replace GoldenDigests with:" +
-                Environment.NewLine + table.ToString());
+            var message = new StringBuilder();
+            if (traceMismatches.Count > 0)
+            {
+                // Report this first and describe it as what it is: exploration moved, which is a
+                // different and more serious claim than a statistic moving.
+                message.AppendLine($"The explored schedules changed for {traceMismatches.Count} configuration(s):");
+                message.AppendLine(string.Join(Environment.NewLine, traceMismatches));
+                message.AppendLine();
+            }
+
+            if (combinedMismatches.Count > 0)
+            {
+                message.AppendLine(traceMismatches.Count is 0 ?
+                    $"The explored schedules are unchanged, but the reported statistics changed for " +
+                    $"{combinedMismatches.Count} configuration(s):" :
+                    $"Combined digest mismatches ({combinedMismatches.Count}):");
+                message.AppendLine(string.Join(Environment.NewLine, combinedMismatches));
+                message.AppendLine();
+            }
+
+            if (message.Length > 0)
+            {
+                message.AppendLine("If this change is intentional, replace GoldenTraceDigests with:");
+                message.AppendLine(traceTable.ToString());
+                message.AppendLine("and GoldenDigests with:");
+                message.AppendLine(combinedTable.ToString());
+            }
+
+            Assert.True(traceMismatches.Count is 0 && combinedMismatches.Count is 0, message.ToString());
+        }
+
+        /// <summary>
+        /// Records a mismatch against the specified golden table, if there is one.
+        /// </summary>
+        private static void Compare(Dictionary<string, string> goldens, string key, string actual,
+            List<string> mismatches)
+        {
+            if (!goldens.TryGetValue(key, out string expected))
+            {
+                mismatches.Add($"{key}: no golden recorded, actual '{actual}'");
+            }
+            else if (expected != actual)
+            {
+                mismatches.Add($"{key}: expected '{expected}', actual '{actual}'");
+            }
         }
 
         /// <summary>
@@ -432,6 +549,28 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 ComputeDigest("readwrite", "q-learning", "both", "all"));
             Assert.Equal(ComputeDigest("readwrite", "q-learning", "none", "live"),
                 ComputeDigest("readwrite", "q-learning", "none", "live"));
+        }
+
+        /// <summary>
+        /// Verifies that the two golden tables cover exactly the swept configurations, so that a
+        /// configuration cannot be added without recording both of its digests.
+        /// </summary>
+        [Fact(Timeout = 5000)]
+        public void TestGoldenTablesCoverEveryConfiguration()
+        {
+            var keys = new List<string>();
+            foreach ((string program, string strategy, string reducers, string hashing) in Configurations())
+            {
+                keys.Add($"{program}/{strategy}/{reducers}/{hashing}");
+            }
+
+            Assert.Equal(keys.Count, GoldenTraceDigests.Count);
+            Assert.Equal(keys.Count, GoldenDigests.Count);
+            foreach (string key in keys)
+            {
+                Assert.True(GoldenTraceDigests.ContainsKey(key), $"No trace digest recorded for '{key}'.");
+                Assert.True(GoldenDigests.ContainsKey(key), $"No combined digest recorded for '{key}'.");
+            }
         }
     }
 }
