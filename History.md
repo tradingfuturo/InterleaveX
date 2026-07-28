@@ -16,6 +16,81 @@ concurrency defects across our codebase.
 PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
 
 ### v1.8.0 (InterleaveX)
+- A failing benchmark run now fails the script. Both benchmark scripts ignored
+  the runner's exit code, and the history script's only check was that the
+  output directory existed — which proves nothing, because the runner creates
+  that directory while parsing its arguments, before a single benchmark runs.
+  A filter that matched nothing, a failed benchmark build and any unhandled
+  exception all reported success. The exit code is now propagated and the
+  results themselves are checked.
+- `run-tests.ps1` no longer reports success after running no tests. A target
+  whose configuration was never built produced only a non-terminating error, and
+  a `-framework` that named an output nobody built was filtered out in silence;
+  either way the run reached the end and exited 0. Each selected target must now
+  contribute a test run, and the two causes are reported separately.
+- Historical benchmark runs are no longer contaminated by the tree they start
+  from. The snapshot held constant across commits was taken with a recursive
+  copy, so it carried `bin` and `obj` into every commit measured, where a build
+  can reuse them instead of rebuilding; only the files git tracks are copied
+  now. The snapshot also omitted `Tests/Tests.Actors.Performance`, leaving six
+  of the eight benchmarks commit-specific and able to read as runtime
+  regressions.
+- Both benchmark scripts run on any platform. They invoked
+  `BenchmarkRunner.exe`, which exists only on Windows, and the history script
+  used `$ENV:TEMP`, which is unset elsewhere and would have placed its scratch
+  and output directories inside the repository it resets. The runner is now
+  invoked through the dotnet host.
+- Uploading benchmark results is opt-in. `run-benchmark-history.ps1` passed
+  `-cosmos` unconditionally, which made the runner read and parse the git log
+  once per commit and would have uploaded to the shared database whenever the
+  credentials happened to be present. `run-benchmarks.ps1` tested
+  `$env:AZURE_COSMOSDB_ENDPOINT -ne ""`, which is true when the variable is
+  unset, so it always asked for an upload it usually could not perform; it now
+  requires both credentials.
+- An output directory beside the repository is no longer rejected as being
+  inside it. The check compared raw prefixes, so `coyote-results` looked like
+  part of `coyote`. Added `Scripts/check-script-helpers.ps1`, run by CI and by
+  `run-tests.ps1`, which asserts this and the other decisions the build and
+  benchmark scripts share.
+- Cancelling a channel wait now reports the caller's token whether the
+  cancellation arrives before the call or after the waiter parks. A parked
+  waiter's completion source recorded the token, but the awaiter state machine
+  that surfaces it to the caller completed with a parameterless `SetCanceled`,
+  which records none; the resulting `OperationCanceledException` carried
+  `CancellationToken.None`, unlike the pre-canceled path, which returns
+  `Task.FromCanceled(token)`. Callers that compare the token, or filter a catch
+  on it, silently stopped matching once the cancellation raced the wait.
+- A worker process of a parallel run that fails after producing its results no
+  longer passes as a successful run. Workers saved their report before emitting
+  trace and coverage artifacts, and the coordinator consulted only whether that
+  report existed, so a worker that exited with an error after writing a clean
+  report was merged and the run reported success. The report is now saved last,
+  once everything that can fail has run, and the coordinator reports any worker
+  that exits with an unexpected code as an internal error of the merged run,
+  along with that worker's output.
+- The local NuGet feed, the sample rewrite steps and the documented install
+  command follow the configuration-specific build layout introduced below.
+  Packages moved to `bin/Release/nuget` but `NuGet.config` still pointed the
+  `local` feed at `bin/nuget`, and package source mapping routes `InterleaveX*`
+  exclusively to that feed, so restoring the samples against a local build
+  failed to find any package at all. Added `Scripts/check-build-layout.ps1`,
+  run by CI and by `run-tests.ps1`, which reports any reference to the product
+  output that does not name a configuration.
+- CI artifacts are named after the platform that produced them. All three
+  matrix legs uploaded under one name, which is a conflict rather than a merge,
+  and the packages the samples job needs are now published once from the leg
+  that produces them.
+- The IL-diff golden hashes are rebaselined. They had been stale since
+  "Redirect every producer of a configured awaitable" changed the IL injected
+  into `Tests.BugFinding` without regenerating them, and the rewriter work that
+  followed moved the rest, so the validation job had been failing on four
+  projects that no recent change had touched.
+- `run-benchmark-history.ps1` works again. It copied test directories renamed
+  long ago and shelled out to `sed`, so it stopped before reaching the
+  benchmark runner. It now builds the benchmark runner project directly rather
+  than rewriting the solution file, is restricted to the fork's own history,
+  refuses to run against a dirty working tree, keeps its copies and results
+  outside the repository, and restores the branch it started from.
 - **Breaking (command line):** `--parallel` no longer takes a value. It is now a
   flag that uses one worker per logical processor, and the count moved to a new
   `--workers N` option that requires it, so `--parallel 8` becomes
