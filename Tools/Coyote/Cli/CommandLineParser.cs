@@ -16,6 +16,7 @@ using System.IO;
 using System.Linq;
 using Microsoft.Coyote.Logging;
 using Microsoft.Coyote.Rewriting;
+using Microsoft.Coyote.SystematicTesting;
 using Microsoft.Coyote.Testing;
 using Microsoft.Coyote.Visualization;
 

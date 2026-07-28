@@ -1,11 +1,21 @@
-﻿// Copyright (c) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+//
+// Modifications Copyright (c) 2026 pipflow.com <https://pipflow.com>
+// Modifications are licensed under the GNU General Public License v3.0 or
+// later. See LICENSE-GPL for the full text.
 
-namespace Microsoft.Coyote.Cli
+namespace Microsoft.Coyote.SystematicTesting
 {
     /// <summary>
     /// The exit code returned by the tool.
     /// </summary>
+    /// <remarks>
+    /// Also the contract between the coordinator of a parallel run and its worker processes, which is
+    /// why this lives beside the rest of that machinery rather than with the command line: the
+    /// coordinator reads these values back off a process it started. The numeric order is load
+    /// bearing, because a run over several test methods reports the worst code it saw.
+    /// </remarks>
     internal enum ExitCode
     {
         /// <summary>

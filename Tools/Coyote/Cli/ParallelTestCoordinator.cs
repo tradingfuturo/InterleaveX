@@ -385,11 +385,26 @@ namespace Microsoft.Coyote.Cli
             TestReport aggregate = new TestReport(this.Configuration);
             foreach (var worker in this.Workers)
             {
-                if (!File.Exists(worker.ReportFile))
+                bool reportExists = File.Exists(worker.ReportFile);
+
+                // A worker that never started has no exit code to judge; it is caught by the missing
+                // report, which is also how it was reported before there was a code to consult.
+                int exitCode = (int)ExitCode.Success;
+                if (worker.Process != null && worker.Process.HasExited)
                 {
-                    this.LogWriter.LogError("..... [w{0}] produced no report.", worker.Shard.Index);
+                    exitCode = worker.Process.ExitCode;
+                }
+
+                string failure = ParallelWorkerOutcome.Evaluate(worker.Shard.Index, exitCode, reportExists);
+                if (failure != null)
+                {
+                    this.LogWriter.LogError("..... [w{0}] {1}", worker.Shard.Index, failure);
                     this.DumpOutput(worker);
-                    aggregate.InternalErrors.Add($"Worker {worker.Shard.Index} produced no test report.");
+                    aggregate.InternalErrors.Add(failure);
+                }
+
+                if (!reportExists)
+                {
                     continue;
                 }
 
@@ -407,7 +422,7 @@ namespace Microsoft.Coyote.Cli
                     aggregate.InternalErrors.Add($"Worker {worker.Shard.Index} report could not be read: {ex.Message}");
                 }
 
-                if (this.LogWriter.IsVerbose(LogSeverity.Info))
+                if (failure is null && this.LogWriter.IsVerbose(LogSeverity.Info))
                 {
                     this.DumpOutput(worker);
                 }

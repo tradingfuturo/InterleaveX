@@ -138,7 +138,6 @@ namespace Microsoft.Coyote
                             // iteration boundary if the coordinator asks, or if it has gone away.
                             RegisterWorkerStopCallback(engine);
                             engine.Run();
-                            SaveWorkerReport(engine);
 
                             string directory = OutputFileManager.CreateOutputDirectory(configuration);
                             string fileName = OutputFileManager.GetResolvedFileName(
@@ -172,6 +171,11 @@ namespace Microsoft.Coyote
                             {
                                 logWriter.LogImportant("..... No coverage reports available.");
                             }
+
+                            // Saved last, once everything that can fail has run. A worker that saved
+                            // its report and then threw would otherwise leave a clean report behind
+                            // for the coordinator to merge, and the run it failed would pass.
+                            SaveWorkerReport(engine);
 
                             logWriter.LogImportant(engine.TestReport.GetText(configuration, "..."));
                             logWriter.LogImportant("... Elapsed {0} sec.", engine.Profiler.Results());
