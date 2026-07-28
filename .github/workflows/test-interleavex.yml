@@ -30,6 +30,12 @@ jobs:
       COYOTE_CLI_TELEMETRY_OPTOUT: 1
     steps:
       - uses: actions/checkout@v2
+      - name: Check build output layout
+        run: ./Scripts/check-build-layout.ps1
+        shell: pwsh
+      - name: Check the script helpers
+        run: ./Scripts/check-script-helpers.ps1
+        shell: pwsh
       - name: Setup NuGet.exe
         uses: NuGet/setup-nuget@v1
         with:
@@ -67,16 +73,25 @@ jobs:
       - name: Run InterleaveX tests
         run: ./Scripts/run-tests.ps1 -ci
         shell: pwsh
+      # Only the Windows leg packs, so it is the only one with packages to hand to the samples job.
+      # Every other artifact is named after its platform: an artifact name has to be unique within a
+      # run, and three matrix legs uploading under one name is a conflict, not a merge.
+      - name: Archive InterleaveX NuGet packages
+        if: ${{ matrix.platform == 'windows-latest' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: interleavex-nuget
+          path: ./bin/Release/nuget
       - name: Archive InterleaveX binaries
         uses: actions/upload-artifact@v4
         with:
-          name: interleavex-binaries
+          name: interleavex-binaries-${{ matrix.platform }}
           path: ./bin
       - name: Archive test results
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: interleavex-test-results
+          name: interleavex-test-results-${{ matrix.platform }}
           path: ./Tests/**/TestResults
   build-and-test-samples:
     name: Build and test InterleaveX samples
@@ -101,11 +116,13 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-      - name: Download InterleaveX binaries
+      # The samples restore InterleaveX from the local feed that NuGet.config points at, so the
+      # packages are all this job needs from the build; the CLI comes from 'dotnet tool restore'.
+      - name: Download InterleaveX NuGet packages
         uses: actions/download-artifact@v4
         with:
-          name: interleavex-binaries
-          path: ./bin
+          name: interleavex-nuget
+          path: ./bin/Release/nuget
       - name: Build InterleaveX samples
         run: |
           ./Samples/Scripts/build.ps1 -local -nuget
