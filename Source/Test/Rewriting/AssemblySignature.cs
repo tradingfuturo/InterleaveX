@@ -31,6 +31,20 @@ namespace Microsoft.Coyote.Rewriting
         internal readonly string Version;
 
         /// <summary>
+        /// The identity of the build of the binary rewriter.
+        /// </summary>
+        /// <remarks>
+        /// The version alone does not identify the rewriter: it changes only when the product is
+        /// released, so a locally rebuilt rewriter carries the same one while emitting different IL.
+        /// Without this, an assembly rewritten by the previous build would be recognized as current and
+        /// skipped, leaving the old instrumentation in place with nothing reporting it. Read from
+        /// <see cref="RewritingEngine.GetAssemblyRewriterModuleId"/>, which the rewriting cache reads
+        /// too, so that the two checks cannot come to disagree about which build produced what.
+        /// </remarks>
+        [DataMember]
+        internal readonly string ModuleId;
+
+        /// <summary>
         /// The assembly direct dependencies.
         /// </summary>
         [DataMember]
@@ -74,6 +88,7 @@ namespace Microsoft.Coyote.Rewriting
         {
             this.FullName = assembly.FullName;
             this.Version = rewriterVersion.ToString();
+            this.ModuleId = RewritingEngine.GetAssemblyRewriterModuleId();
             this.Dependencies = new List<string>(dependencies.Select(dependency => dependency.FullName));
             this.IsRewritingMemoryLocations = options.IsRewritingMemoryLocations;
             this.IsRewritingConcurrentCollections = options.IsRewritingConcurrentCollections;

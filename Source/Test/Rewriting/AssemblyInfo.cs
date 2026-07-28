@@ -47,9 +47,43 @@ namespace Microsoft.Coyote.Rewriting
         private readonly HashSet<AssemblyInfo> Dependencies;
 
         /// <summary>
+        /// The names of the assemblies that this assembly directly references.
+        /// </summary>
+        /// <remarks>
+        /// Captured while the definition is open, because <see cref="Dispose"/> runs before the
+        /// rewriting cache records the assembly.
+        /// </remarks>
+        internal readonly IReadOnlyList<string> ReferenceNames;
+
+        /// <summary>
         /// The resolver of this assembly.
         /// </summary>
-        private readonly IAssemblyResolver Resolver;
+        private readonly TrackingAssemblyResolver Resolver;
+
+        /// <summary>
+        /// The paths of every module that was resolved while visiting this assembly.
+        /// </summary>
+        /// <remarks>
+        /// What the rewriting passes emit depends on the assemblies they resolve, and those reach well
+        /// beyond the dependencies collected by <see cref="LoadDependencies"/>, which only records
+        /// sibling files that participate in the rewrite. The rewriting cache needs the set that was
+        /// actually consulted, otherwise a changed reference could alter the emitted IL while every
+        /// file the cache knows about stayed the same.
+        /// </remarks>
+        internal IEnumerable<string> ResolvedModulePaths => this.Resolver.ResolvedModulePaths;
+
+        /// <summary>
+        /// The directories that were searched while resolving the modules of this assembly.
+        /// </summary>
+        /// <remarks>
+        /// The resolved modules say what was read; these say where something else could have been read
+        /// from instead. An assembly appearing in any of them can win a resolution that previously went
+        /// elsewhere, or satisfy one that previously failed, without any file the last run read being
+        /// touched. That covers more than the configured search paths: a newly installed framework
+        /// patch adds a shared framework directory, and the rewriter's own directory can gain an
+        /// assembly without the rewriter itself being rebuilt.
+        /// </remarks>
+        internal readonly IReadOnlyList<string> SearchDirectories;
 
         /// <summary>
         /// The rewriting options.
@@ -79,7 +113,7 @@ namespace Microsoft.Coyote.Rewriting
             this.IsDisposed = false;
 
             // TODO: can we reuse it, or do we need a new one for each assembly?
-            var assemblyResolver = new DefaultAssemblyResolver();
+            var assemblyResolver = new TrackingAssemblyResolver();
 
             // Add known search directories for resolving assemblies. The directory of the assemblies
             // being rewritten is searched first, so that shared dependencies -- most importantly the
@@ -90,8 +124,11 @@ namespace Microsoft.Coyote.Rewriting
             // rewriter injecting net10 'System.Private.CoreLib'/'System.Runtime' references into a net8
             // assembly), making the rewritten assembly fail to load on the target's runtime.
             assemblyResolver.AddSearchDirectory(this.Options.AssembliesDirectory);
-            assemblyResolver.AddSearchDirectory(
-                Path.GetDirectoryName(typeof(Types.Threading.Tasks.Task).Assembly.Location));
+
+            // Explicitly configured search paths come next, ahead of the rewriter's own directory, for
+            // the same reason: they describe the target's framework, whereas the rewriter's directory
+            // describes the rewriter's. This matters when the assembly being rewritten does not sit
+            // beside its references, as when a build rewrites a staged copy of its compiler output.
             if (this.Options.DependencySearchPaths != null)
             {
                 foreach (var dependencySearchPath in this.Options.DependencySearchPaths)
@@ -100,8 +137,16 @@ namespace Microsoft.Coyote.Rewriting
                 }
             }
 
+            assemblyResolver.AddSearchDirectory(
+                Path.GetDirectoryName(typeof(Types.Threading.Tasks.Task).Assembly.Location));
+
             // Add shared framework directories discovered from the target assembly's runtime config.
             AddSharedFrameworkDirectories(assemblyResolver, path);
+
+            // Snapshotted here, where every directory has been added and none has been searched yet, so
+            // that it cannot fall behind the resolver and does not have to be read back out of it once
+            // it is disposed, which is after the cache records this assembly.
+            this.SearchDirectories = assemblyResolver.GetSearchDirectories();
 
             // Add the assembly resolution error handler.
             assemblyResolver.ResolveFailure += handler;
@@ -115,6 +160,12 @@ namespace Microsoft.Coyote.Rewriting
 
             this.Definition = AssemblyDefinition.ReadAssembly(this.FilePath, readerParameters);
             this.FullName = this.Definition.FullName;
+            this.ReferenceNames = this.Definition.Modules
+                .SelectMany(module => module.AssemblyReferences)
+                .Select(reference => reference.Name)
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(referenceName => referenceName, StringComparer.Ordinal)
+                .ToArray();
         }
 
         /// <summary>
@@ -125,33 +176,49 @@ namespace Microsoft.Coyote.Rewriting
         {
             // Add all explicitly requested assemblies.
             var assemblies = new HashSet<AssemblyInfo>();
-            foreach (string path in options.AssemblyPaths)
+            try
             {
-                if (!assemblies.Any(assembly => assembly.FilePath == path))
+                foreach (string path in options.AssemblyPaths)
                 {
-                    var name = Path.GetFileName(path);
-                    if (options.IsAssemblyIgnored(name))
+                    if (!assemblies.Any(assembly => assembly.FilePath == path))
                     {
-                        throw new InvalidOperationException($"Rewriting assembly '{name}' ({path}) that is in the ignore list.");
+                        var name = Path.GetFileName(path);
+                        if (options.IsAssemblyIgnored(name))
+                        {
+                            throw new InvalidOperationException($"Rewriting assembly '{name}' ({path}) that is in the ignore list.");
+                        }
+
+                        assemblies.Add(new AssemblyInfo(name, path, options, handler));
                     }
-
-                    assemblies.Add(new AssemblyInfo(name, path, options, handler));
                 }
-            }
 
-            // Find direct dependencies to each assembly and load them, if the corresponding option is enabled.
-            foreach (var assembly in assemblies)
+                // Find direct dependencies to each assembly and load them, if the corresponding option is enabled.
+                foreach (var assembly in assemblies)
+                {
+                    assembly.LoadDependencies(assemblies, handler);
+                }
+
+                // Validate that all assemblies are eligible for rewriting.
+                foreach (var assembly in assemblies)
+                {
+                    assembly.ValidateAssembly();
+                }
+
+                return SortAssemblies(assemblies);
+            }
+            catch
             {
-                assembly.LoadDependencies(assemblies, handler);
-            }
+                // Each of these holds its file open through Cecil until it is disposed, and the caller
+                // has no handle on them to dispose once loading did not complete. Leaving them behind
+                // would lock the very assemblies that recovering from a validation failure asks the
+                // user to rebuild.
+                foreach (var assembly in assemblies)
+                {
+                    assembly.Dispose();
+                }
 
-            // Validate that all assemblies are eligible for rewriting.
-            foreach (var assembly in assemblies)
-            {
-                assembly.ValidateAssembly();
+                throw;
             }
-
-            return SortAssemblies(assemblies);
         }
 
         /// <summary>
@@ -319,8 +386,18 @@ namespace Microsoft.Coyote.Rewriting
                 }
                 else if (signatureHash != newSignatureHash)
                 {
+                    // Rewriting is not idempotent, so an assembly that was rewritten under different
+                    // settings -- or by a different build of the rewriter -- cannot be brought up to
+                    // date in place. The original has to be produced again, which is why this names
+                    // the only way out rather than suggesting an option: nothing the rewriter is
+                    // given can recover the original from what it is being handed.
                     throw new InvalidOperationException(
-                        $"Assembly '{this.Name}' has been rewritten with a different rewriting configuration.");
+                        $"Assembly '{this.Name}' ({this.FilePath}) was rewritten with a different rewriting " +
+                        "configuration, or by a different build of the rewriter. Rewriting is not idempotent, " +
+                        "so it cannot be rewritten again in place. Rebuild the project that produces it, or " +
+                        "delete it and build again, so that an unrewritten assembly is there to rewrite. " +
+                        "Disabling incremental rewriting does not clear this, because it is the assembly " +
+                        "itself, not the cache, that records the earlier run.");
                 }
 
                 this.IsRewritten = true;

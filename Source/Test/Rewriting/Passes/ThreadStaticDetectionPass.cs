@@ -73,29 +73,41 @@ namespace Microsoft.Coyote.Rewriting
         }
 
         /// <inheritdoc/>
-        protected internal override void CompleteVisit()
+        protected internal override void CompleteVisit() =>
+            ReportDetectedFields(this.LogWriter, this.Assembly?.Name, this.DetectedFields);
+
+        /// <summary>
+        /// Reports the specified thread-static fields as found in the specified assembly.
+        /// </summary>
+        /// <remarks>
+        /// Shared with the rewriting cache, which replays this report for an assembly it skipped: the
+        /// finding holds whether or not the assembly was rewritten again, and an incremental build is
+        /// when it is most likely to be read. Keeping one implementation keeps the two identical.
+        /// </remarks>
+        internal static void ReportDetectedFields(LogWriter logWriter, string assemblyName,
+            IReadOnlyList<string> detectedFields)
         {
-            if (this.DetectedFields.Count is 0)
+            if (detectedFields.Count is 0)
             {
                 return;
             }
 
-            var names = this.DetectedFields.Take(MaxReportedFields).ToArray();
+            var names = detectedFields.Take(MaxReportedFields).ToArray();
             string list = string.Join(", ", names);
-            if (this.DetectedFields.Count > names.Length)
+            if (detectedFields.Count > names.Length)
             {
-                list += $", and {this.DetectedFields.Count - names.Length} more";
+                list += $", and {detectedFields.Count - names.Length} more";
             }
 
             // Reported as important rather than as a warning, because warnings are not shown at the
             // default verbosity and this is the only notice that the behavior below is in play.
-            this.LogWriter.LogImportant(
+            logWriter.LogImportant(
                 "..... Found {0} thread-static field(s) in '{1}': {2}. Controlled operations reuse " +
                 "threads, so an operation can observe a value that an earlier operation left in one of " +
                 "these fields. Pass '--no-thread-pooling', or call " +
                 "'Configuration.WithControlledThreadPoolingEnabled(false)', to give each operation its " +
                 "own thread instead.",
-                this.DetectedFields.Count, this.Assembly?.Name ?? "the assembly", list);
+                detectedFields.Count, assemblyName ?? "the assembly", list);
         }
     }
 }
