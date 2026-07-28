@@ -21,4 +21,5 @@
     <ProjectReference Include="..\Raft\Raft.csproj" />
     <ProjectReference Include="..\Raft.Mocking\Raft.Mocking.csproj" />
   </ItemGroup>
+  <Import Project="..\..\Common\rewrite.targets" />
 </Project>

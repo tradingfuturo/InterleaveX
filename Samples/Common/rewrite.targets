@@ -1,0 +1,115 @@
+<Project>
+  <!--
+    The build step that rewrites a sample's own output assembly.
+
+    Import this at the end of a sample project, after 'Common/build.props', and set
+    'CoyoteRewriteArgs' to any extra arguments the rewriter should be invoked with.
+
+    This is the samples' counterpart to 'Common/rewrite.targets' in the repository, and exists
+    separately because the samples resolve the rewriter in three different ways depending on how
+    they were told to consume Coyote, and because they are built as their own solutions rather than
+    as part of the product build. The staging design is the same, and for the same two reasons: an
+    assembly in 'bin' is overwritten by the uninstrumented one on every build, so rewriting it can
+    never be made incremental; and rewriting is not idempotent, so a rewriter that is handed its own
+    output skips the work and says nothing, or, once the rewriter itself is rebuilt, fails outright.
+    Rewriting a staged copy of the compiler's output means every rewrite starts from clean IL.
+  -->
+  <!--
+    Resolved in a target rather than in a property group, because 'IntermediateOutputPath' is set by
+    the SDK targets imported after this file is evaluated and would be empty here.
+
+    The rewriter is named as a command rather than as a path, because two of the three ways a sample
+    can consume Coyote reach it as a tool rather than as a file: 'interleavex' on the path when the
+    published package is used, 'dotnet interleavex' when a local tool manifest is restored, and the
+    repository's own build output when the samples are built against the sources.
+  -->
+  <Target Name="CoyotePrepareRewrite">
+    <PropertyGroup>
+      <CoyoteStageDir>$(ProjectDir)$(IntermediateOutputPath)coyote\</CoyoteStageDir>
+      <CoyoteFingerprintFile>$(ProjectDir)$(IntermediateOutputPath)coyote.rewrite.fingerprint</CoyoteFingerprintFile>
+      <CoyoteCliDir>$(MSBuildThisFileDirectory)../../bin/$(Configuration)/$(TargetFramework)</CoyoteCliDir>
+      <CoyoteRewriteCommand Condition="'$(UseNugetPackages)'=='true'">interleavex</CoyoteRewriteCommand>
+      <CoyoteRewriteCommand Condition="'$(UseLocalNugetPackages)'=='true'">dotnet interleavex</CoyoteRewriteCommand>
+      <CoyoteRewriteCommand Condition="'$(UseLocalCoyote)'=='true'">dotnet &quot;$(CoyoteCliDir)/interleavex.dll&quot;</CoyoteRewriteCommand>
+    </PropertyGroup>
+    <Error Condition="'$(CoyoteRewriteCommand)'==''"
+           Text="None of 'UseNugetPackages', 'UseLocalNugetPackages' or 'UseLocalCoyote' is set, so there is no rewriter to invoke and the sample would run uninstrumented." />
+  </Target>
+  <!--
+    The rewriter's identity, and the arguments it is invoked with, reach the up-to-date check through
+    this file rather than through the 'Inputs' below, because 'Inputs' is evaluated before any target
+    body runs. Only the sources build names a file to stamp; the two package builds are identified by
+    the package version they resolve, which is what changes when the rewriter behind them does.
+  -->
+  <Target Name="CoyoteRewriteFingerprint" DependsOnTargets="ResolveReferences;CoyotePrepareRewrite">
+    <ItemGroup>
+      <!--
+        Both assemblies, because the behaviour is split between them: the rewriting engine lives in
+        'Microsoft.Coyote.Test.dll' and the CLI that drives it in 'interleavex.dll'. Only the sources
+        build has files to stamp; the two package builds are identified by the version they resolve,
+        which is the most this can see of a rewriter it reaches as a tool. A package rebuilt without
+        its version changing is therefore invisible here, so delete the fingerprint, or disable
+        incremental rewriting, when iterating on the rewriter that way.
+      -->
+      <CoyoteCliAssembly Include="$(CoyoteCliDir)/interleavex.dll" Condition="'$(UseLocalCoyote)'=='true'" />
+      <CoyoteCliAssembly Include="$(CoyoteCliDir)/Microsoft.Coyote.Test.dll" Condition="'$(UseLocalCoyote)'=='true'" />
+      <CoyoteFingerprintLine Include="@(CoyoteCliAssembly->'%(FullPath)|%(ModifiedTime)')" />
+      <CoyoteFingerprintLine Include="$(CoyoteRewriteCommand)|$(Version)" />
+      <CoyoteFingerprintLine Include="$(CoyoteRewriteArgs)" />
+      <CoyoteFingerprintLine Include="@(ReferencePath->'%(FullPath)')" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(CoyoteFingerprintFile)" Lines="@(CoyoteFingerprintLine)"
+                      Overwrite="true" WriteOnlyWhenDifferent="true" />
+  </Target>
+  <!--
+    Hooked to 'CopyFilesToOutputDirectory', which always runs, rather than to 'CoreCompile', which
+    does not run at all when the compiler output is already up to date. 'ResolveReferences' is
+    depended on rather than assumed, because the reference list below is what the rewriter resolves
+    against and an empty one would silently change the IL it emits.
+  -->
+  <Target Name="CoyoteRewrite" BeforeTargets="CopyFilesToOutputDirectory"
+          DependsOnTargets="ResolveReferences;CoyotePrepareRewrite;CoyoteRewriteFingerprint"
+          Inputs="@(IntermediateAssembly);@(ReferencePath);$(CoyoteFingerprintFile)"
+          Outputs="$(CoyoteStageDir)$(TargetFileName)">
+    <ItemGroup>
+      <!--
+        The staging directory holds only the assembly being rewritten, so the references it needs
+        have to be searched for where the build resolved them. Taken from the copy-local set rather
+        than from '@(ReferencePath)', because that one also names the targeting pack's reference
+        assemblies, which carry no method bodies and would change what the rewriter can see.
+
+        The trailing separator is stripped because these are passed as quoted arguments, and a
+        backslash before the closing quote escapes it, swallowing the rest of the command line.
+      -->
+      <CoyoteReferenceDirRaw Include="@(ReferenceCopyLocalPaths->'%(RootDir)%(Directory)'->Distinct())"
+                             Condition="'%(Extension)'=='.dll'" />
+      <CoyoteReferenceDir Include="@(CoyoteReferenceDirRaw)">
+        <Path>$([System.IO.Path]::GetDirectoryName('%(Identity)'))</Path>
+      </CoyoteReferenceDir>
+    </ItemGroup>
+    <Error Condition="'@(CoyoteReferenceDir)'==''"
+           Text="No resolved references were found, so rewriting would run without being able to resolve them and would silently emit different IL." />
+    <!--
+      Emptied rather than written over. The rewriter copies its own runtime assemblies in beside the
+      staged assembly and preserves any it finds there of a matching assembly version, and this
+      directory is searched ahead of the rewriter's own, so what a stale copy would give a later
+      rewriter is the metadata of a runtime it is not part of. IL dumps left by a run whose options
+      have since changed accumulate here the same way.
+    -->
+    <RemoveDir Directories="$(CoyoteStageDir)" />
+    <MakeDir Directories="$(CoyoteStageDir)" />
+    <Copy SourceFiles="@(IntermediateAssembly);@(_DebugSymbolsIntermediatePath)"
+          DestinationFolder="$(CoyoteStageDir)" />
+    <Exec Command="$(CoyoteRewriteCommand) rewrite &quot;$(CoyoteStageDir)$(TargetFileName)&quot; @(CoyoteReferenceDir->'--dependency-search-path &quot;%(Path)&quot;',' ') $(CoyoteRewriteArgs)" />
+  </Target>
+  <!--
+    Runs unconditionally, after MSBuild has put the uninstrumented assembly in 'bin', to replace it
+    with the rewritten one.
+  -->
+  <Target Name="CoyoteCopyRewritten" AfterTargets="CopyFilesToOutputDirectory"
+          DependsOnTargets="CoyotePrepareRewrite;CoyoteRewrite">
+    <Copy SourceFiles="$(CoyoteStageDir)$(TargetFileName)" DestinationFolder="$(OutDir)" />
+    <Copy SourceFiles="$(CoyoteStageDir)$(TargetName).pdb" DestinationFolder="$(OutDir)"
+          Condition="Exists('$(CoyoteStageDir)$(TargetName).pdb')" />
+  </Target>
+</Project>

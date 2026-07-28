@@ -6,4 +6,5 @@
     <OutputType>Exe</OutputType>
     <OutputPath>..\bin\</OutputPath>
   </PropertyGroup>
+  <Import Project="..\Common\rewrite.targets" />
 </Project>

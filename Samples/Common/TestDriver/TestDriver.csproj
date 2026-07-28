@@ -18,13 +18,9 @@
     <!-- <ProjectReference Include="..\..\WebApps\ImageGalleryAspNet\Tests\Tests.csproj" /> -->
     <ProjectReference Include="..\..\WebApps\PetImagesAspNet\PetImages.Tests\PetImages.Tests.csproj" />
   </ItemGroup>
-  <Target Name="CoyoteRewriteNuget" Condition="'$(UseNugetPackages)'=='true'" AfterTargets="AfterBuild" >
-    <Exec Command="interleavex rewrite rewrite.coyote.json" />
-  </Target>
-  <Target Name="CoyoteRewriteLocalNuget" Condition="'$(UseLocalNugetPackages)'=='true'" AfterTargets="AfterBuild" >
-    <Exec Command="dotnet interleavex rewrite rewrite.coyote.json" />
-  </Target>
-  <Target Name="CoyoteRewriteLocal" Condition="'$(UseLocalCoyote)'=='true'" AfterTargets="AfterBuild" >
-    <Exec Command="dotnet ../../../bin/$(Configuration)/$(TargetFramework)/interleavex.dll rewrite rewrite.coyote.json" />
-  </Target>
+  <!--
+    The driver itself is not rewritten, and it no longer rewrites anything either. Each sample it
+    references rewrites its own output, which is what this project then copies, so the assemblies
+    that arrive here are already instrumented.
+  -->
 </Project>

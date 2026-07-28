@@ -21,13 +21,8 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
-  <Target Name="CoyoteRewriteNuget" Condition="'$(UseNugetPackages)'=='true'" AfterTargets="AfterBuild" >
-    <Exec Command="interleavex rewrite rewrite.coyote.json" />
-  </Target>
-  <Target Name="CoyoteRewriteLocalNuget" Condition="'$(UseLocalNugetPackages)'=='true'" AfterTargets="AfterBuild" >
-    <Exec Command="dotnet interleavex rewrite rewrite.coyote.json" />
-  </Target>
-  <Target Name="CoyoteRewriteLocal" Condition="'$(UseLocalCoyote)'=='true'" AfterTargets="AfterBuild" >
-    <Exec Command="dotnet ../../../../bin/$(Configuration)/$(TargetFramework)/interleavex.dll rewrite rewrite.coyote.json" />
-  </Target>
+  <PropertyGroup>
+    <CoyoteRewriteArgs>--rewrite-concurrent-collections false</CoyoteRewriteArgs>
+  </PropertyGroup>
+  <Import Project="..\..\..\Common\rewrite.targets" />
 </Project>

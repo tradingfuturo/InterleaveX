@@ -5,4 +5,8 @@
     <OutputPath>.\bin\</OutputPath>
     <RunAnalyzersDuringBuild>false</RunAnalyzersDuringBuild>
   </PropertyGroup>
+  <PropertyGroup>
+    <CoyoteRewriteArgs>--rewrite-concurrent-collections false</CoyoteRewriteArgs>
+  </PropertyGroup>
+  <Import Project="..\..\..\Common\rewrite.targets" />
 </Project>

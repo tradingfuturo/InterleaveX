@@ -21,4 +21,5 @@
   <ItemGroup>
     <PackageReference Include="xunit.assert" Version="2.4.2" />
   </ItemGroup>
+  <Import Project="..\..\Common\rewrite.targets" />
 </Project>

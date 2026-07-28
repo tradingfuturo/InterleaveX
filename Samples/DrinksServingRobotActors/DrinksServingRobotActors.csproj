@@ -27,4 +27,5 @@
   <ItemGroup>
     <Folder Include="Properties\" />
   </ItemGroup>
+  <Import Project="..\Common\rewrite.targets" />
 </Project>
