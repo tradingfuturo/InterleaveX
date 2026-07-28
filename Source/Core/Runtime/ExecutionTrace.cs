@@ -103,11 +103,6 @@ namespace Microsoft.Coyote.Runtime
         /// </summary>
         internal Step Pop()
         {
-            if (this.Length > 0)
-            {
-                this.Steps[this.Length - 1].Next = null;
-            }
-
             var step = this.Steps[this.Length - 1];
             this.Steps.RemoveAt(this.Length - 1);
 
@@ -148,16 +143,7 @@ namespace Microsoft.Coyote.Runtime
         /// <summary>
         /// Pushes a new step to the trace.
         /// </summary>
-        private void Push(Step step)
-        {
-            if (this.Length > 0)
-            {
-                this.Steps[this.Length - 1].Next = step;
-                step.Previous = this.Steps[this.Length - 1];
-            }
-
-            this.Steps.Add(step);
-        }
+        private void Push(Step step) => this.Steps.Add(step);
 
         /// <summary>
         /// Extends the trace with any new steps from the specified trace, or replaces the trace
@@ -315,16 +301,6 @@ namespace Microsoft.Coyote.Runtime
             internal ulong CurrentSequenceId;
 
             /// <summary>
-            /// The previous execution step.
-            /// </summary>
-            internal Step Previous;
-
-            /// <summary>
-            /// The next execution step.
-            /// </summary>
-            internal Step Next;
-
-            /// <summary>
             /// Initializes a new instance of the <see cref="Step"/> class.
             /// </summary>
             protected Step(int index, ulong current, ulong currentSeqId)
@@ -332,8 +308,6 @@ namespace Microsoft.Coyote.Runtime
                 this.Index = index;
                 this.Current = current;
                 this.CurrentSequenceId = currentSeqId;
-                this.Previous = null;
-                this.Next = null;
             }
 
             /// <inheritdoc/>

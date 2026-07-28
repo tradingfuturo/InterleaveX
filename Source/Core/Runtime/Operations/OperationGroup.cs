@@ -1,10 +1,13 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+//
+// Modifications Copyright (c) 2026 pipflow.com <https://pipflow.com>
+// Modifications are licensed under the GNU General Public License v3.0 or
+// later. See LICENSE-GPL for the full text.
 
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 
 namespace Microsoft.Coyote.Runtime
@@ -78,7 +81,24 @@ namespace Microsoft.Coyote.Runtime
         /// <summary>
         /// Determines whether all members of this group are completed.
         /// </summary>
-        internal bool IsCompleted() => this.Members.All(op => op.Status is OperationStatus.Completed);
+        /// <remarks>
+        /// Iterated directly rather than through LINQ's <c>All</c>, which takes an
+        /// <see cref="IEnumerable{T}"/> and so boxes the set's struct enumerator. The prioritization
+        /// and delay-bounding strategies call this for every group they track at every scheduling
+        /// step, and both are in the default portfolio.
+        /// </remarks>
+        internal bool IsCompleted()
+        {
+            foreach (var op in this.Members)
+            {
+                if (op.Status != OperationStatus.Completed)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
 
         /// <summary>
         /// Determines whether the specified object is equal to the current object.

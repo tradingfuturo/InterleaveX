@@ -7,7 +7,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Microsoft.Coyote.Runtime;
 
 namespace Microsoft.Coyote.Testing.Interleaving
@@ -31,7 +30,15 @@ namespace Microsoft.Coyote.Testing.Interleaving
         /// step of the execution is represented by an operation and a value
         /// representing the program state after the operation executed.
         /// </summary>
-        private readonly LinkedList<(ulong op, SchedulingPointType sp, int state)> ExecutionPath;
+        /// <remarks>
+        /// A list rather than a linked list, because one entry is appended per scheduling decision
+        /// and per nondeterministic choice, and a linked list allocates a node for each of them. At
+        /// the default fair step bound that is a hundred thousand nodes an iteration, all of it
+        /// garbage once the iteration ends. Clearing a list keeps its capacity, so the storage is
+        /// reused across iterations instead. Only sequential access is needed, by
+        /// <see cref="LearnQValues"/>.
+        /// </remarks>
+        private readonly List<(ulong Op, SchedulingPointType Sp, int State)> ExecutionPath;
 
         /// <summary>
         /// Map from values representing program states to their transition
@@ -60,6 +67,15 @@ namespace Microsoft.Coyote.Testing.Interleaving
         /// Reusable buffer holding the quality values that correspond to <see cref="CandidateOps"/>.
         /// </summary>
         private readonly List<double> CandidateQValues;
+
+        /// <summary>
+        /// Reusable buffer holding the quality values of a boolean or integer choice.
+        /// </summary>
+        /// <remarks>
+        /// Separate from <see cref="CandidateQValues"/> because that one is paired with
+        /// <see cref="CandidateOps"/>, and the two must stay the same length.
+        /// </remarks>
+        private readonly List<double> ChoiceQValues;
 
         /// <summary>
         /// The value of the learning rate.
@@ -109,11 +125,12 @@ namespace Microsoft.Coyote.Testing.Interleaving
             : base(configuration, false)
         {
             this.OperationQTable = new Dictionary<int, Dictionary<ulong, double>>();
-            this.ExecutionPath = new LinkedList<(ulong, SchedulingPointType, int)>();
+            this.ExecutionPath = new List<(ulong, SchedulingPointType, int)>();
             this.TransitionFrequencies = new Dictionary<int, ulong>();
             this.SchedulableOpsById = new Dictionary<ulong, ControlledOperation>();
             this.CandidateOps = new List<ControlledOperation>();
             this.CandidateQValues = new List<double>();
+            this.ChoiceQValues = new List<double>();
             this.LastOperation = 0;
             this.LearningRate = 0.3;
             this.Gamma = 0.7;
@@ -222,11 +239,13 @@ namespace Microsoft.Coyote.Testing.Interleaving
             double trueQValue = this.OperationQTable[state][this.TrueChoiceOpValue];
             double falseQValue = this.OperationQTable[state][this.FalseChoiceOpValue];
 
-            var qValues = new List<double>(2)
-            {
-                trueQValue,
-                falseQValue
-            };
+            // Reuses the buffer rather than allocating one per choice, matching how the operation
+            // path already works. The order the values are added in is what the sampled index is
+            // resolved through, so it must stay true then false.
+            var qValues = this.ChoiceQValues;
+            qValues.Clear();
+            qValues.Add(trueQValue);
+            qValues.Add(falseQValue);
 
             int idx = this.ChooseQValueIndexFromDistribution(qValues);
             return idx == 0 ? true : false;
@@ -238,7 +257,8 @@ namespace Microsoft.Coyote.Testing.Interleaving
         /// </summary>
         private int GetNextIntegerChoiceByPolicy(int state, int maxValue)
         {
-            var qValues = new List<double>(maxValue);
+            var qValues = this.ChoiceQValues;
+            qValues.Clear();
             for (ulong i = 0; i < (ulong)maxValue; ++i)
             {
                 qValues.Add(this.OperationQTable[state][this.MinIntegerChoiceOpValue - i]);
@@ -265,23 +285,29 @@ namespace Microsoft.Coyote.Testing.Interleaving
                 qValues[i] /= sum;
             }
 
-            sum = 0;
-
-            // First, change the shape of the distribution probability array to be cumulative.
-            // For example, instead of [0.1, 0.2, 0.3, 0.4], we get [0.1, 0.3, 0.6, 1.0].
-            var cumulative = qValues.Select(c =>
+            // Change the shape of the distribution probability array to be cumulative. For example,
+            // instead of [0.1, 0.2, 0.3, 0.4], we get [0.1, 0.3, 0.6, 1.0].
+            //
+            // Done in place, over the same buffer. This used to project through a LINQ 'Select' that
+            // closed over a running total, which allocated a closure, a delegate, an iterator and a
+            // list on every scheduling decision and every nondeterministic choice. The running total
+            // is accumulated in the same order here, so each element gets the same sum of the same
+            // terms and the sampled index is bit-for-bit identical; changing the order would perturb
+            // the floating-point result and with it every schedule this strategy explores.
+            double running = 0;
+            for (int i = 0; i < qValues.Count; ++i)
             {
-                var result = c + sum;
-                sum += c;
-                return result;
-            }).ToList();
+                double current = qValues[i];
+                qValues[i] = current + running;
+                running += current;
+            }
 
             // Generate a random double value between 0.0 to 1.0.
             var rvalue = this.RandomValueGenerator.NextDouble();
 
             // Find the first index in the cumulative array that is greater
             // or equal than the generated random value.
-            var idx = cumulative.BinarySearch(rvalue);
+            var idx = qValues.BinarySearch(rvalue);
 
             if (idx < 0)
             {
@@ -291,11 +317,11 @@ namespace Microsoft.Coyote.Testing.Interleaving
                 idx = ~idx;
             }
 
-            if (idx > cumulative.Count - 1)
+            if (idx > qValues.Count - 1)
             {
                 // Very rare case when probabilities do not sum to 1 because of
                 // double precision issues (so sum is 0.999943 and so on).
-                idx = cumulative.Count - 1;
+                idx = qValues.Count - 1;
             }
 
             return idx;
@@ -310,15 +336,12 @@ namespace Microsoft.Coyote.Testing.Interleaving
             int state = current.LastHashedProgramState;
 
             // Update the execution path with the current state.
-            this.ExecutionPath.AddLast((this.LastOperation, current.LastSchedulingPoint, state));
+            this.ExecutionPath.Add((this.LastOperation, current.LastSchedulingPoint, state));
 
-            if (!this.TransitionFrequencies.ContainsKey(state))
-            {
-                this.TransitionFrequencies.Add(state, 0);
-            }
-
-            // Increment the state transition frequency.
-            this.TransitionFrequencies[state]++;
+            // Increment the state transition frequency. A missing key reads as zero, so this is the
+            // same as adding it first, in two lookups rather than three.
+            this.TransitionFrequencies.TryGetValue(state, out ulong frequency);
+            this.TransitionFrequencies[state] = frequency + 1;
 
             return state;
         }
@@ -395,12 +418,10 @@ namespace Microsoft.Coyote.Testing.Interleaving
         /// </summary>
         private void LearnQValues()
         {
-            int idx = 0;
-            var node = this.ExecutionPath.First;
-            while (node?.Next != null)
+            for (int idx = 0; idx + 1 < this.ExecutionPath.Count; ++idx)
             {
-                var (_, _, state) = node.Value;
-                var (nextOp, nextSp, nextState) = node.Next.Value;
+                var (_, _, state) = this.ExecutionPath[idx];
+                var (nextOp, nextSp, nextState) = this.ExecutionPath[idx + 1];
 
                 // Compute the max Q value.
                 double maxQ = double.MinValue;
@@ -433,9 +454,6 @@ namespace Microsoft.Coyote.Testing.Interleaving
                 // Q = [(1-a) * Q]  +  [a * (rt + (g * maxQ))]
                 currOpQValues[nextOp] = ((1 - this.LearningRate) * currOpQValues[nextOp]) +
                     (this.LearningRate * (reward + (this.Gamma * maxQ)));
-
-                node = node.Next;
-                idx++;
             }
         }
 
