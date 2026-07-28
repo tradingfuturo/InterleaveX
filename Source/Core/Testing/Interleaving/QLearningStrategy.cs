@@ -125,6 +125,12 @@ namespace Microsoft.Coyote.Testing.Interleaving
             this.Epochs = 0;
         }
 
+        /// <summary>
+        /// This strategy keys its Q-table on the program state, so it is the one strategy that
+        /// needs the runtime to compute it.
+        /// </summary>
+        internal override bool RequiresImplicitProgramStateHashing => true;
+
         /// <inheritdoc/>
         internal override bool InitializeNextIteration(uint iteration)
         {

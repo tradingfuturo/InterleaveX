@@ -137,8 +137,17 @@ namespace Microsoft.Coyote.BugFinding.Tests
             ["race/fair-delay-bounding/none/all"] = "8a6eeb4bce2e16dd",
             ["race/q-learning/none/all"] = "b11f031116b10217",
             ["race/dfs/none/all"] = "a349ebc20a23f5cd",
-            ["race/portfolio-fair/none/all"] = "9adcf77e3040b2c4",
-            ["race/portfolio-unfair/none/all"] = "179f5ba3a21dbb4c",
+
+            // The portfolio entries below carry a lower visited-state count than they did before
+            // implicit program-state hashing was gated on the active strategy. Only the iterations
+            // running q-learning now compute the state, so only those contribute to the count. The
+            // traces are untouched, which is why the corresponding GoldenTraceDigests entries did
+            // not move, and TestGatingChangesOnlyTheVisitedStateCount asserts that no other
+            // statistic moved either. The 'nondet' portfolio entries are absent from this list
+            // because that program's state space is small enough that the q-learning iterations
+            // alone already reach every state the full rotation reached.
+            ["race/portfolio-fair/none/all"] = "cee97aeb3df6828a",
+            ["race/portfolio-unfair/none/all"] = "003266bccebe50d2",
             ["nondet/random/none/all"] = "5d69593080bde4e8",
             ["nondet/probabilistic/none/all"] = "59e18f552e96309c",
             ["nondet/prioritization/none/all"] = "9a0818d8825b4611",
@@ -157,8 +166,8 @@ namespace Microsoft.Coyote.BugFinding.Tests
             ["readwrite/fair-delay-bounding/none/all"] = "664231a306fadf2f",
             ["readwrite/q-learning/none/all"] = "d0e7e61355c2a4ed",
             ["readwrite/dfs/none/all"] = "47e73d423ab1b80d",
-            ["readwrite/portfolio-fair/none/all"] = "aaefcc03fa49618a",
-            ["readwrite/portfolio-unfair/none/all"] = "af935d8ed29ae84a",
+            ["readwrite/portfolio-fair/none/all"] = "9196f2cc34367ebe",
+            ["readwrite/portfolio-unfair/none/all"] = "fa7eae0c266d4afe",
             ["readwrite/random/cycle/all"] = "7125ecb210116a70",
             ["readwrite/fair-prioritization/cycle/all"] = "88a9e8e1b439c00d",
             ["readwrite/random/partial-order/all"] = "e0b286ae74f4f511",

@@ -107,6 +107,16 @@ namespace Microsoft.Coyote.Runtime
         internal bool IsIterationFair => this.Strategy.IsFair;
 
         /// <summary>
+        /// True if the program state must be computed implicitly during the current iteration.
+        /// </summary>
+        /// <remarks>
+        /// Cached per iteration rather than derived per scheduling step, because the strategy it
+        /// depends on only changes when the portfolio rotates. The runtime reads this on every
+        /// scheduling point and on every nondeterministic choice, so it has to be a field read.
+        /// </remarks>
+        internal bool IsImplicitProgramStateHashingEnabled { get; private set; }
+
+        /// <summary>
         /// Checks if the scheduler is replaying the schedule trace.
         /// </summary>
         internal bool IsReplaying { get; private set; }
@@ -169,7 +179,6 @@ namespace Microsoft.Coyote.Runtime
                     this.Portfolio.AddLast(new PrioritizationInterleavingStrategy(configuration, 10, isFair));
                     this.Portfolio.AddLast(new DelayBoundingInterleavingStrategy(configuration, 10, isFair));
                     this.Portfolio.AddLast(new QLearningInterleavingStrategy(configuration));
-                    configuration.IsImplicitProgramStateHashingEnabled = true;
                 }
                 else if (this.SchedulingPolicy is SchedulingPolicy.Fuzzing)
                 {
@@ -242,6 +251,10 @@ namespace Microsoft.Coyote.Runtime
                     interleavingStrategy.TracePrefix = prefixTrace;
                 }
             }
+
+            // Seed this here as well as per iteration, so that a runtime created without the
+            // testing engine driving iterations still observes the correct policy.
+            this.RefreshImplicitProgramStateHashing();
         }
 
         /// <summary>
@@ -289,9 +302,27 @@ namespace Microsoft.Coyote.Runtime
                 reducer.InitializeNextIteration(iteration);
             }
 
+            // Must follow the rotation above, so that it reflects the strategy this iteration will
+            // actually run under rather than the previous one.
+            this.RefreshImplicitProgramStateHashing();
+
             this.Strategy.LogWriter = logWriter;
             return this.Strategy.InitializeNextIteration(iteration);
         }
+
+        /// <summary>
+        /// Recomputes whether the program state must be computed implicitly during this iteration.
+        /// </summary>
+        /// <remarks>
+        /// The configuration switch is the user asking for the state to be computed, and holds for
+        /// every iteration. The strategy requirement is the runtime asking on its own behalf, and
+        /// only holds for the iterations that run a strategy which reads the result. Under the
+        /// default portfolio that is one iteration in five.
+        /// </remarks>
+        private void RefreshImplicitProgramStateHashing() =>
+            this.IsImplicitProgramStateHashingEnabled =
+                this.Configuration.IsImplicitProgramStateHashingEnabled ||
+                this.Strategy.RequiresImplicitProgramStateHashing;
 
         /// <summary>
         /// Returns the next controlled operation to schedule.

@@ -2259,7 +2259,12 @@ namespace Microsoft.Coyote.Runtime
             {
                 int hash = 19;
                 bool isStateHashed = false;
-                if (this.Configuration.IsImplicitProgramStateHashingEnabled)
+
+                // Asking the scheduler rather than the configuration, because the answer depends on
+                // the strategy running this iteration as well as on what the user asked for. Under
+                // the default portfolio only q-learning reads the result, so the other four
+                // iterations out of five skip the walk below entirely.
+                if (this.Scheduler.IsImplicitProgramStateHashingEnabled)
                 {
                     isStateHashed = true;
 

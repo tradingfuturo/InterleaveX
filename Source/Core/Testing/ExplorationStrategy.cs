@@ -138,6 +138,18 @@ namespace Microsoft.Coyote.Testing
         internal readonly bool IsFair;
 
         /// <summary>
+        /// True if this strategy consumes the implicitly computed program state, else false.
+        /// </summary>
+        /// <remarks>
+        /// Computing that state walks every registered operation and every specification monitor at
+        /// each scheduling step, so it is only worth doing for a strategy that reads the result.
+        /// Overriding this to true is what asks the runtime to compute it; see
+        /// <see cref="Configuration.IsImplicitProgramStateHashingEnabled"/> for the independent
+        /// user-facing switch, which stays in force regardless of the strategy.
+        /// </remarks>
+        internal virtual bool RequiresImplicitProgramStateHashing => false;
+
+        /// <summary>
         /// A random value generator that can be used by the strategy.
         /// </summary>
         protected internal IRandomValueGenerator RandomValueGenerator { get; internal set; }
