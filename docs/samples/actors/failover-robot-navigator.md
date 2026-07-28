@@ -275,7 +275,7 @@ Starting TestingProcessScheduler in process 26236
 ```
 
 Notice that a log file is produced
-`.bin\net8.0\Output\DrinksServingRobot.exe\CoyoteOutput\DrinksServingRobot_0_1.txt`. This log can be
+`./Samples/bin/net8.0/Output/DrinksServingRobot.exe/CoyoteOutput/DrinksServingRobot_0_1.txt`. This log can be
 pretty big, it contains the test iteration that failed, and towards the end of this file you will
 see something like this:
 

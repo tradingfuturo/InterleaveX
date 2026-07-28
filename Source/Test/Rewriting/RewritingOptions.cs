@@ -371,10 +371,10 @@ namespace Microsoft.Coyote.Rewriting
         /// {
         ///     // The directory with the assemblies to rewrite. This path is relative
         ///     // to this configuration file.
-        ///     "AssembliesPath": "./bin/net8.0",
+        ///     "AssembliesPath": "./bin/$(Configuration)/$(TargetFramework)",
         ///     // The output directory where rewritten assemblies are placed. This path
         ///     // is relative to this configuration file.
-        ///     "OutputPath": "./bin/net8.0/RewrittenBinaries",
+        ///     "OutputPath": "./bin/$(Configuration)/$(TargetFramework)/RewrittenBinaries",
         ///     // The assemblies to rewrite. The paths are relative to 'AssembliesPath'.
         ///     "Assemblies": [
         ///         "Example.exe"

@@ -189,6 +189,6 @@ steps:
   displayName: 'Publish NuGet packages'
   inputs:
     command: push
-    packagesToPush: 'bin\nuget\*.nupkg'
+    packagesToPush: 'bin\Release\nuget\*.nupkg'
     nuGetFeedType: external
     publishFeedCredentials: 'CoyoteNugetPublish'
