@@ -16,11 +16,14 @@ concurrency defects across our codebase.
 PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
 
 ### v1.8.0 (InterleaveX)
-- Exploration allocates far less per scheduling step. Measured with
-  `Tools/SchedulerBench` at 100 iterations, allocation falls 45% on the `deep`
-  workload, which isolates per-step cost, and 67% on `wide`, which isolates cost
-  that scales with the number of operations created. Four sources, all on paths
-  that run at every step. `OperationGroup.IsCompleted` used LINQ `All`, which
+- Exploration is faster and allocates far less per scheduling step. Measured with
+  `Tools/SchedulerBench` at 100 iterations on an otherwise idle machine, against
+  the three changes below combined: the `deep` workload, which isolates per-step
+  cost, runs 16.9% faster and allocates 45.2% less; `wide`, which isolates cost
+  that scales with the number of operations created, runs 14.2% faster and
+  allocates 67.2% less. Step counts are identical in both, so the comparison is
+  of the same work. The allocation reductions come from four sources, all on
+  paths that run at every step. `OperationGroup.IsCompleted` used LINQ `All`, which
   takes an `IEnumerable` and so boxes the set's struct enumerator; the
   prioritization and delay-bounding strategies evaluate it for every group they
   track at every step, so a test with two hundred operations boxed two hundred
