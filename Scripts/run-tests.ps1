@@ -22,6 +22,20 @@ param(
 
 Import-Module $PSScriptRoot/common.psm1 -Force
 
+# Checked here as well as in CI: a reference to the product output that forgets the configuration
+# resolves to whichever build happened to run last, and the resulting failure surfaces somewhere
+# else entirely.
+Write-Comment -text "Checking the build output layout." -color "blue"
+& $PSScriptRoot/check-build-layout.ps1
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+& $PSScriptRoot/check-script-helpers.ps1
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 $all_frameworks = (Get-Variable "framework").Attributes.ValidValues
 $targets = [ordered]@{
     "runtime" = "Tests.Runtime"
@@ -52,12 +66,27 @@ $ilverify = "dotnet ilverify"
 
 # Run all enabled tests.
 Write-Comment -text "Running the Coyote tests." -color "blue"
+
+# A target that contributes no test run has to fail the script. Neither way of contributing nothing
+# reports itself: an unbuilt configuration is only a non-terminating Get-ChildItem error, and a
+# '-framework' that names one nobody built is filtered out in silence. Both used to reach the final
+# 'Done' with exit code 0, so an explicit selection could run nothing and still pass.
+$unbuilt_targets = @()
+$empty_targets = @()
+
 foreach ($kvp in $targets.GetEnumerator()) {
     if (($test -ne "all") -and ($test -ne $($kvp.Name))) {
         continue
     }
 
-    $frameworks = Get-ChildItem -Path "$PSScriptRoot/../Tests/$($kvp.Value)/bin/$configuration" | `
+    $output_dir = "$PSScriptRoot/../Tests/$($kvp.Value)/bin/$configuration"
+    if (-not (Test-Path $output_dir)) {
+        $unbuilt_targets += $($kvp.Value)
+        continue
+    }
+
+    $ran_for_target = 0
+    $frameworks = Get-ChildItem -Path $output_dir | `
         Where-Object Name -CIn $all_frameworks | Select-Object -expand Name
     foreach ($f in $frameworks) {
         if ((-not $ci.IsPresent) -and ($f -ne $framework)) {
@@ -84,7 +113,29 @@ foreach ($kvp in $targets.GetEnumerator()) {
 
         Invoke-DotnetTest -dotnet $dotnet -project $($kvp.Name) -target $target `
             -filter $filter -logger $logger -framework $f -verbosity $v -configuration $configuration
+        $ran_for_target = $ran_for_target + 1
     }
+
+    if ($ran_for_target -eq 0) {
+        $empty_targets += $($kvp.Value)
+    }
+}
+
+if ($unbuilt_targets.Count -gt 0) {
+    Write-Error "no '$configuration' build found for: $($unbuilt_targets -join ', ')."
+    Write-Error "Build that configuration first, for example: ./Scripts/build.ps1 -configuration $configuration"
+    exit 1
+}
+
+if ($empty_targets.Count -gt 0) {
+    Write-Error "no tests ran for: $($empty_targets -join ', ')."
+    if ($ci.IsPresent) {
+        Write-Error "The '$configuration' build produced none of the target frameworks."
+    } else {
+        Write-Error "The '$configuration' build has no '$framework' output. Build it, or pass a -framework that was built."
+    }
+
+    exit 1
 }
 
 if ($cli.IsPresent -and $IsWindows) {
@@ -111,7 +162,7 @@ if ($cli.IsPresent -and $IsWindows) {
     }
 
     Write-Comment -text "Running the command-line acceptance tests."
-    $bench = "$PSScriptRoot/../Tools/SchedulerBench/bin/Release/net10.0/SchedulerBench.dll"
+    $bench = "$PSScriptRoot/../Tools/SchedulerBench/bin/$configuration/net10.0/SchedulerBench.dll"
     if (Test-Path $bench) {
         # Fails the run, after cleaning up the temporary tool install.
         function Assert-Failed($reason, $output) {

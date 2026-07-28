@@ -89,6 +89,51 @@ function Invoke-ToolCommand([String]$tool, [String]$cmd, [String]$error_msg) {
     }
 }
 
+# Returns whether the specified candidate path is inside the specified root directory. The separator
+# is appended before comparing, so that a sibling whose name merely starts with the root's name is
+# not mistaken for something inside it. A directory is not under itself.
+function Test-PathIsUnder([String]$root, [String]$candidate) {
+    $separator = [IO.Path]::DirectorySeparatorChar
+    $root = [IO.Path]::GetFullPath($root).TrimEnd($separator) + $separator
+    $candidate = [IO.Path]::GetFullPath($candidate).TrimEnd($separator) + $separator
+    if ($candidate -eq $root) {
+        return $false
+    }
+
+    return $candidate.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+}
+
+# Returns the tool and argument prefix that run the benchmark runner out of the specified directory.
+# The runner is an 'Exe' project, so its apphost is named 'BenchmarkRunner.exe' on Windows and has no
+# extension elsewhere; running the assembly through the dotnet host is the one form that works
+# everywhere, and is what the runner's own post-build steps do for the CLI.
+function Get-BenchmarkRunnerCommand([String]$directory) {
+    $assembly = Join-Path $directory "BenchmarkRunner.dll"
+    return @{ Tool = "dotnet"; Prefix = "`"$assembly`""; Assembly = $assembly }
+}
+
+# Returns whether a benchmark run actually produced measurements in the specified directory.
+#
+# The directory itself proves nothing: the runner creates it while parsing its arguments, before a
+# single benchmark executes, so it is there after a filter that matched nothing, after a failed
+# benchmark build, and after any exception. BenchmarkDotNet writes a report per benchmark into a
+# 'results' subdirectory, and that only appears once measurements exist.
+function Test-BenchmarksProduced([String]$directory) {
+    $results = Join-Path $directory "results"
+    if (-not (Test-Path $results)) {
+        return $false
+    }
+
+    return $null -ne (Get-ChildItem -Path $results -Filter "*-report.csv" -File -ErrorAction SilentlyContinue |
+        Select-Object -First 1)
+}
+
+# Returns the directory to use for scratch files, on any platform. $ENV:TEMP is unset off Windows,
+# where it would yield a relative path inside whatever the working directory happens to be.
+function Get-TempDirectory() {
+    return [IO.Path]::GetTempPath()
+}
+
 function FindProgram([String]$name) {
     $result = $null
     $path = $ENV:PATH.split([System.IO.Path]::PathSeparator) | ForEach-Object {

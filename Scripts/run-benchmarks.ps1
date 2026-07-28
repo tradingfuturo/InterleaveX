@@ -8,7 +8,9 @@
 param(
     [string]$store = "",
     [string]$key = "",
-    [string]$local = ""
+    [string]$local = "",
+    [ValidateSet("Debug", "Release")]
+    [string]$configuration = "Release"
 )
 
 Import-Module $PSScriptRoot/common.psm1 -Force
@@ -23,10 +25,14 @@ if ($store -ne "") {
     $env:AZURE_STORAGE_PRIMARY_KEY = $key
 }
 
-if ($env:AZURE_COSMOSDB_ENDPOINT -ne "")
+# Both are required: the uploader needs the endpoint and the key, and silently does nothing if either
+# is missing. Comparing against the empty string is not the test to make -- an unset variable is
+# $null, and $null -ne "" is true, so this used to ask for an upload it could never perform.
+if ((-not [string]::IsNullOrEmpty($env:AZURE_COSMOSDB_ENDPOINT)) -and
+    (-not [string]::IsNullOrEmpty($env:AZURE_STORAGE_PRIMARY_KEY)))
 {
     Write-Host "Results will be saved to $ENV:AZURE_COSMOSDB_ENDPOINT"
-    $cosmos = "-cosmos"
+    $cosmos = " -cosmos"
 }
 
 if ($local -eq ""){
@@ -34,11 +40,11 @@ if ($local -eq ""){
 }
 
 $current_dir = (Get-Item -Path "./").FullName
-$benchmarks_dir = "$PSScriptRoot/../Tools/BenchmarkRunner/bin/Release/net8.0"
-$benchmark_runner = "BenchmarkRunner.exe"
+$benchmarks_dir = "$PSScriptRoot/../Tools/BenchmarkRunner/bin/$configuration/net8.0"
 $artifacts_dir = "$current_dir/benchmark_$commit"
 
-if (-Not (Test-Path -Path "$benchmarks_dir")) {
+$runner = Get-BenchmarkRunnerCommand $benchmarks_dir
+if (-Not (Test-Path -Path $runner.Assembly)) {
     throw "Please build the InterleaveX project first"
 }
 
@@ -55,7 +61,16 @@ if (Test-Path -Path $artifacts_dir -PathType Container) {
 
 Write-Comment -prefix "." -text "Running the InterleaveX performance benchmarks, saving to $artifacts_dir" -color "yellow"
 
-Invoke-Expression "$benchmarks_dir/$benchmark_runner -outdir $artifacts_dir -commit $commit $cosmos"
+Invoke-ToolCommand -tool $runner.Tool `
+    -cmd "$($runner.Prefix) -outdir `"$artifacts_dir`" -commit $commit$cosmos" `
+    -error_msg "The benchmarks failed"
+
+# The runner creates its output directory while parsing arguments, before benchmarking, so the
+# directory alone does not mean anything ran.
+if (-not (Test-BenchmarksProduced $artifacts_dir)) {
+    Write-Comment -prefix "." -text "The benchmarks produced no results ($artifacts_dir)." -color "red"
+    exit 1
+}
 
 Write-Comment -prefix "." -text "Done" -color "green"
 
