@@ -83,8 +83,8 @@ $Allowed = @(
         Why  = "scratch directory for the temporary CLI tool install, not build output"
     },
     @{
-        File = "Tools/BenchmarkRunner/BenchmarkRunner.csproj"
-        Text = '<_InterleaveXCliDir Condition="!Exists(''$(_InterleaveXCliDir)/interleavex.dll'')">$(MSBuildThisFileDirectory)../../bin/$(TargetFramework)</_InterleaveXCliDir>'
+        File = "Common/rewrite.targets"
+        Text = '<CoyoteCliDir Condition="!Exists(''$(CoyoteCliDir)/interleavex.dll'')">$(MSBuildThisFileDirectory)../bin/$(TargetFramework)</CoyoteCliDir>'
         Why  = "fallback that lets run-benchmark-history.ps1 measure commits older than the layout split"
     }
 )

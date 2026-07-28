@@ -14,8 +14,14 @@
   <Import Project="..\..\Common\key.props" />
   <ItemGroup>
     <ProjectReference Include="..\..\Source\Test\Test.csproj" />
+    <!-- Build order only: the rewrite step below runs the CLI, which has to exist by then. This
+         used to be guaranteed by BenchmarkRunner, which is where the rewrite step lived. -->
+    <ProjectReference Include="..\..\Tools\Coyote\Coyote.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.12.1" />
   </ItemGroup>
+  <Import Project="..\..\Common\rewrite.targets" />
 </Project>

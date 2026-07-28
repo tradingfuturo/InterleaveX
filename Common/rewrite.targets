@@ -1,0 +1,203 @@
+<Project>
+  <!--
+    The build step that rewrites a project's own output assembly.
+
+    Import this after the SDK props, and set 'CoyoteRewriteArgs' to whatever extra arguments the
+    rewriter should be invoked with. The importing project also needs a build-order reference on
+    'Tools/Coyote/Coyote.csproj' with 'ReferenceOutputAssembly' false, so that the CLI exists by the
+    time the targets below run.
+
+    Rewriting runs over a staged copy of the compiler's output rather than over the assembly in
+    'bin', for two reasons.
+
+    The first is that rewriting 'bin' cannot be made incremental. MSBuild copies the intermediate
+    assembly into 'bin' on every build, skipping only files whose size and timestamp both match, and
+    a rewritten assembly matches neither. So 'bin' is overwritten with the uninstrumented assembly on
+    every build, and a rewrite target that skipped its work would leave it that way.
+
+    The second is that the rewriter must never read its own output. Rewriting is not idempotent, and
+    an already-rewritten assembly is skipped rather than rewritten again, so rewriting the
+    intermediate assembly in place would leave the previous instrumentation in it and nothing would
+    say so. Staging keeps 'obj' as the compiler left it, so every rewrite starts from clean IL.
+  -->
+  <!--
+    These are resolved in a target rather than in a property group, because 'IntermediateOutputPath'
+    is set by the SDK targets that are imported after this file is evaluated, and would be empty
+    here. Every target below depends on this one, so the paths are in place before their 'Inputs' and
+    'Outputs' are compared. They are absolute because the rewriter is invoked with them and the
+    working directory of an 'Exec' is not something to depend on.
+
+    Resolving the CLI directory here also handles the case where the CLI has not been built yet when
+    the project is loaded, which would make both probes miss it. 'run-benchmark-history.ps1' restores
+    these projects over every commit it measures, so the rewrite step has to find the CLI in the
+    layout of the commit being built as well as in today's. The fallback is the pre-'Separate debug
+    and release build output' shape, which is what the fork's first 34 commits emit. The probe is on
+    the managed assembly: it is there in both layouts on every platform, while the apphost is
+    Windows-only. The separators are forward slashes throughout: MSBuild accepts them on Windows,
+    while a backslash is an ordinary filename character everywhere else, so 'Exists' would be false
+    on every non-Windows machine and the fallback would always be taken.
+  -->
+  <Target Name="CoyotePrepareRewrite">
+    <PropertyGroup>
+      <CoyoteStageDir>$(ProjectDir)$(IntermediateOutputPath)coyote\</CoyoteStageDir>
+      <CoyoteFingerprintFile>$(ProjectDir)$(IntermediateOutputPath)coyote.rewrite.fingerprint</CoyoteFingerprintFile>
+      <CoyoteCliDir>$(MSBuildThisFileDirectory)../bin/$(Configuration)/$(TargetFramework)</CoyoteCliDir>
+      <CoyoteCliDir Condition="!Exists('$(CoyoteCliDir)/interleavex.dll')">$(MSBuildThisFileDirectory)../bin/$(TargetFramework)</CoyoteCliDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <!--
+        Both assemblies, because the behaviour is split between them: the rewriting engine lives in
+        'Microsoft.Coyote.Test.dll', while the CLI that decides what to ask of it (the options, their
+        defaults, how a configuration file is read) lives in 'interleavex.dll'. Stamping only one of
+        them leaves a change to the other invisible to the up-to-date check below, so the staged output
+        of the previous rewriter survives a rebuild of the new one.
+      -->
+      <CoyoteCliAssembly Include="$(CoyoteCliDir)/Microsoft.Coyote.Test.dll" />
+      <CoyoteCliAssembly Include="$(CoyoteCliDir)/interleavex.dll" />
+      <!--
+        The set the rewriter is pointed at. A project that needs one of the assemblies it copies in
+        rewritten as well names it in 'CoyoteRewriteDependency', by file name. That assembly is
+        rewritten here, in this project's output, and not in the project that produces it: it is
+        rewritten because this project's tests need it to be, while its own project may well be a
+        test project that has to keep running against the original.
+      -->
+      <CoyoteRewriteAssembly Include="$(TargetFileName)" />
+      <CoyoteRewriteAssembly Include="@(CoyoteRewriteDependency)" />
+    </ItemGroup>
+    <PropertyGroup>
+      <!--
+        The dependency names as a delimited property rather than an item list, because the condition
+        that selects them below batches over the copy-local set, and an item list referenced from
+        that condition would be batched over as well.
+      -->
+      <CoyoteRewriteDependencyNames>;@(CoyoteRewriteDependency->'%(Filename)');</CoyoteRewriteDependencyNames>
+    </PropertyGroup>
+  </Target>
+  <!--
+    The rewriter's own identity, and the arguments it is invoked with, reach the up-to-date check
+    through this file rather than through the 'Inputs' below, because they are resolved inside a
+    target and 'Inputs' is evaluated before any target body runs. Writing it only when it differs
+    keeps the timestamp still unless something that affects the output actually changed.
+  -->
+  <Target Name="CoyoteRewriteFingerprint" DependsOnTargets="ResolveReferences;CoyotePrepareRewrite">
+    <ItemGroup>
+      <CoyoteFingerprintLine Include="@(CoyoteCliAssembly->'%(FullPath)|%(ModifiedTime)')" />
+      <CoyoteFingerprintLine Include="$(CoyoteRewriteArgs)" />
+      <CoyoteFingerprintLine Include="@(CoyoteRewriteAssembly)" />
+      <CoyoteFingerprintLine Include="@(ReferencePath->'%(FullPath)')" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(CoyoteFingerprintFile)" Lines="@(CoyoteFingerprintLine)"
+                      Overwrite="true" WriteOnlyWhenDifferent="true" />
+  </Target>
+  <!--
+    Hooked only to 'CopyFilesToOutputDirectory', which always runs, rather than to 'CoreCompile',
+    which does not run at all when the compiler output is already up to date. 'ResolveReferences' is
+    depended on rather than assumed, because the reference list below is what the rewriter resolves
+    against and an empty one would silently change the IL it emits.
+  -->
+  <Target Name="CoyoteRewrite" BeforeTargets="CopyFilesToOutputDirectory"
+          DependsOnTargets="ResolveReferences;CoyotePrepareRewrite;CoyoteRewriteFingerprint"
+          Inputs="@(IntermediateAssembly);@(ReferencePath);$(CoyoteFingerprintFile)"
+          Outputs="$(CoyoteStageDir)$(TargetFileName)">
+    <ItemGroup>
+      <!--
+        The staging directory holds only the assembly being rewritten, so the references it needs have
+        to be searched for where the build resolved them.
+
+        Taken from the copy-local set rather than from '@(ReferencePath)', because that one also names
+        the targeting pack's reference assemblies. Those carry no method bodies, and putting their
+        directory ahead of the real framework would change what the rewriter resolves and therefore
+        the IL it emits. The copy-local set is the implementation assemblies, which is exactly what
+        ends up beside the assembly at run time.
+
+        The trailing separator is stripped because these are passed as quoted arguments, and a
+        backslash before the closing quote escapes it, swallowing the rest of the command line.
+      -->
+      <CoyoteReferenceDirRaw Include="@(ReferenceCopyLocalPaths->'%(RootDir)%(Directory)'->Distinct())"
+                             Condition="'%(Extension)'=='.dll'" />
+      <CoyoteReferenceDir Include="@(CoyoteReferenceDirRaw)">
+        <Path>$([System.IO.Path]::GetDirectoryName('%(Identity)'))</Path>
+      </CoyoteReferenceDir>
+      <!--
+        The copy-local files that back '@(CoyoteRewriteDependency)', matched on file name because
+        that is all the importing project can reasonably name. Symbols are staged alongside, since
+        whether they are there decides whether the rewriter reads and rewrites them.
+      -->
+      <CoyoteStagedDependency Include="@(ReferenceCopyLocalPaths)"
+                              Condition="('%(Extension)'=='.dll' Or '%(Extension)'=='.pdb') And
+                                         $(CoyoteRewriteDependencyNames.Contains(';%(Filename);'))" />
+    </ItemGroup>
+    <Error Condition="'@(CoyoteReferenceDir)'==''"
+           Text="No resolved references were found, so rewriting would run without being able to resolve them and would silently emit different IL." />
+    <!--
+      A dependency named but not found in the copy-local set would simply not be rewritten, and the
+      only symptom would be a test running against uninstrumented code, so it is an error instead.
+      Counted on the assemblies alone, because symbols are staged with them but need not exist.
+    -->
+    <Error Condition="@(CoyoteRewriteDependency->Count()) != @(CoyoteStagedDependency->WithMetadataValue('Extension', '.dll')->Count())"
+           Text="Not every assembly named in 'CoyoteRewriteDependency' (@(CoyoteRewriteDependency, ', ')) was found among the files this project copies to its output, so rewriting would leave one of them uninstrumented." />
+    <!--
+      Emptied rather than written over, because everything in here is placed by the step below and
+      nothing removes what a previous one left. Two things accumulate otherwise, and both are silent.
+
+      The rewriter copies its own runtime assemblies in beside the staged assembly, and preserves any
+      it finds already there whose assembly version matches; within a fork that keeps one version
+      across many builds, that means the first build's copies are what every later build resolves
+      against, and this directory is searched before the rewriter's own. So a rewriter would read the
+      metadata of a runtime it is not part of.
+
+      The IL dumps accumulate the same way. Turning a dump option off, or removing the symbols that
+      one is derived from, would otherwise leave the last run's artifact here to be copied into the
+      output on every build after, where the scripts that compare them cannot tell it from a current
+      one.
+    -->
+    <RemoveDir Directories="$(CoyoteStageDir)" />
+    <MakeDir Directories="$(CoyoteStageDir)" />
+    <Copy SourceFiles="@(IntermediateAssembly);@(_DebugSymbolsIntermediatePath);@(CoyoteStagedDependency)"
+          DestinationFolder="$(CoyoteStageDir)" />
+    <!--
+      Named through a generated configuration file rather than as an argument, because the rewriter
+      takes a single path and the assemblies staged here have to be rewritten in one invocation: they
+      reference one another, and rewriting them separately would resolve an already-rewritten
+      assembly and emit different IL. Written into the staging directory so that 'AssembliesPath'
+      needs no path at all, which keeps the JSON free of separators to escape.
+    -->
+    <PropertyGroup>
+      <CoyoteRewriteAssemblyList>@(CoyoteRewriteAssembly->'&quot;%(Identity)&quot;', ', ')</CoyoteRewriteAssemblyList>
+    </PropertyGroup>
+    <ItemGroup>
+      <CoyoteRewriteConfigLine Include="{" />
+      <CoyoteRewriteConfigLine Include="&quot;AssembliesPath&quot;: &quot;.&quot;," />
+      <CoyoteRewriteConfigLine Include="&quot;Assemblies&quot;: [ $(CoyoteRewriteAssemblyList) ]" />
+      <CoyoteRewriteConfigLine Include="}" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(CoyoteStageDir)rewrite.coyote.json" Lines="@(CoyoteRewriteConfigLine)"
+                      Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <Exec Condition="'$(OS)'=='Windows_NT'"
+          Command="&quot;$(CoyoteCliDir)/interleavex.exe&quot; rewrite &quot;$(CoyoteStageDir)rewrite.coyote.json&quot; @(CoyoteReferenceDir->'--dependency-search-path &quot;%(Path)&quot;',' ') $(CoyoteRewriteArgs)" />
+    <Exec Condition="'$(OS)'!='Windows_NT'"
+          Command="dotnet &quot;$(CoyoteCliDir)/interleavex.dll&quot; rewrite &quot;$(CoyoteStageDir)rewrite.coyote.json&quot; @(CoyoteReferenceDir->'--dependency-search-path &quot;%(Path)&quot;',' ') $(CoyoteRewriteArgs)" />
+  </Target>
+  <!--
+    Runs unconditionally, after MSBuild has put the uninstrumented assembly in 'bin', to replace it
+    with the rewritten one. It copies about a megabyte; the rewrite it follows costs seconds.
+  -->
+  <Target Name="CoyoteCopyRewritten" AfterTargets="CopyFilesToOutputDirectory"
+          DependsOnTargets="CoyotePrepareRewrite;CoyoteRewrite">
+    <ItemGroup>
+      <!-- The IL dumps follow the assembly, so that they stay where the scripts that collect and
+           compare them look, rather than moving into the staging directory. Only the configurations
+           that ask for a dump produce one, so each copy is conditioned on the file being there. -->
+      <CoyoteDumpArtifact Include="@(CoyoteRewriteAssembly->'$(CoyoteStageDir)%(Filename).il.json');
+                                   @(CoyoteRewriteAssembly->'$(CoyoteStageDir)%(Filename).rw.json');
+                                   @(CoyoteRewriteAssembly->'$(CoyoteStageDir)%(Filename).diff.json')" />
+      <CoyoteRewrittenFile Include="@(CoyoteRewriteAssembly->'$(CoyoteStageDir)%(Identity)')" />
+      <CoyoteRewrittenSymbol Include="@(CoyoteRewriteAssembly->'$(CoyoteStageDir)%(Filename).pdb')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(CoyoteRewrittenFile)" DestinationFolder="$(OutDir)" />
+    <Copy SourceFiles="@(CoyoteRewrittenSymbol)" DestinationFolder="$(OutDir)"
+          Condition="Exists('%(FullPath)')" />
+    <Copy SourceFiles="@(CoyoteDumpArtifact)" DestinationFolder="$(OutDir)"
+          Condition="Exists('%(FullPath)')" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

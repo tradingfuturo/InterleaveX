@@ -37,10 +37,13 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
-  <Target Name="CoyoteRewriteWin" AfterTargets="AfterBuild" Condition="'$(OS)'=='Windows_NT'">
-    <Exec Command="..\..\bin\$(Configuration)\$(TargetFramework)\interleavex.exe rewrite rewrite.coyote.json --dump-il-diff" />
-  </Target>
-  <Target Name="CoyoteRewriteUnix" AfterTargets="AfterBuild" Condition="'$(OS)'!='Windows_NT'">
-    <Exec Command="dotnet ../../bin/$(Configuration)/$(TargetFramework)/interleavex.dll rewrite rewrite.coyote.json --dump-il-diff" />
-  </Target>
+  <PropertyGroup>
+    <CoyoteRewriteArgs>--dump-il-diff</CoyoteRewriteArgs>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The helpers are rewritten here rather than in their own project, because the tests below
+         load them from this output and there is nothing else that consumes them. -->
+    <CoyoteRewriteDependency Include="Microsoft.Coyote.Tests.Rewriting.Helpers.dll" />
+  </ItemGroup>
+  <Import Project="..\..\Common\rewrite.targets" />
 </Project>

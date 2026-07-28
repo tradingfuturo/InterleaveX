@@ -26,25 +26,12 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
   </ItemGroup>
   <!--
-    Resolved when the target runs rather than at evaluation, because the CLI this project references
-    has not been built yet when the project is loaded, and both probes would miss it.
+    Rewriting 'Tests.Performance.dll' happens in the project that produces it, so that it can run over
+    a staged copy of the compiler's output and be skipped when nothing changed. Rewriting it here, in
+    the copy that lands in this project's output directory, could not be: MSBuild refreshes that copy
+    on every build, so the rewrite had to run every time to put the instrumentation back.
 
-    'run-benchmark-history.ps1' restores this project over every commit it measures, so the rewrite
-    step has to find the CLI in the layout of the commit being built as well as in today's. The
-    fallback is the pre-'Separate debug and release build output' shape, which is what the fork's
-    first 34 commits emit. The probe is on the managed assembly: it is there in both layouts on every
-    platform, while the apphost is Windows-only.
+    That project takes a build-order reference on the CLI, which is what this project's own reference
+    to it used to provide.
   -->
-  <Target Name="ResolveInterleaveXCli">
-    <PropertyGroup>
-      <_InterleaveXCliDir>$(MSBuildThisFileDirectory)../../bin/$(Configuration)/$(TargetFramework)</_InterleaveXCliDir>
-      <_InterleaveXCliDir Condition="!Exists('$(_InterleaveXCliDir)/interleavex.dll')">$(MSBuildThisFileDirectory)../../bin/$(TargetFramework)</_InterleaveXCliDir>
-    </PropertyGroup>
-  </Target>
-  <Target Name="CoyoteRewriteWin" AfterTargets="AfterBuild" DependsOnTargets="ResolveInterleaveXCli" Condition="'$(OS)'=='Windows_NT'">
-    <Exec Command="&quot;$(_InterleaveXCliDir)/interleavex.exe&quot; rewrite $(OutputPath)Tests.Performance.dll" />
-  </Target>
-  <Target Name="CoyoteRewriteUnix" AfterTargets="AfterBuild" DependsOnTargets="ResolveInterleaveXCli" Condition="'$(OS)'!='Windows_NT'">
-    <Exec Command="dotnet &quot;$(_InterleaveXCliDir)/interleavex.dll&quot; rewrite $(OutputPath)Tests.Performance.dll" />
-  </Target>
 </Project>

@@ -22,10 +22,5 @@
   </ItemGroup>
   <!-- The harness must rewrite itself, else the injected call-site prologue that the
        measured optimizations target is never exercised by the workloads below. -->
-  <Target Name="CoyoteRewriteWin" AfterTargets="AfterBuild" Condition="'$(OS)'=='Windows_NT'">
-    <Exec Command="..\..\bin\$(Configuration)\$(TargetFramework)\interleavex.exe rewrite $(OutputPath)$(AssemblyName).dll" />
-  </Target>
-  <Target Name="CoyoteRewriteUnix" AfterTargets="AfterBuild" Condition="'$(OS)'!='Windows_NT'">
-    <Exec Command="dotnet ../../bin/$(Configuration)/$(TargetFramework)/interleavex.dll rewrite $(OutputPath)$(AssemblyName).dll" />
-  </Target>
+  <Import Project="..\..\Common\rewrite.targets" />
 </Project>
