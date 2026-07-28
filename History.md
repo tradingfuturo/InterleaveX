@@ -16,6 +16,41 @@ concurrency defects across our codebase.
 PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
 
 ### v1.8.0 (InterleaveX)
+- The build output layout check no longer reports its own examples. It excuses a
+  line by quoting it verbatim, so its own table of exceptions, its description
+  and the message it prints on failure all read as stale references the moment
+  the file itself was tracked — fourteen of them, in the checker that exists to
+  find them. It now skips itself, and reports any exception that has stopped
+  matching a line, which is the drift the text matching was there to catch.
+  `check-script-helpers.ps1` asserts that every file it exempts is still tracked.
+- Benchmark history reaches the fork point again. The rewrite step of
+  `BenchmarkRunner.csproj` runs the CLI out of the configuration-specific build
+  output, and that project is restored over every commit measured, so the 34
+  commits older than "Separate debug and release build output" — where the CLI
+  emitted to a directory that did not name a configuration — failed to build
+  instead of being measured. The step now resolves the CLI when it runs and
+  accepts either layout, which is what makes those commits comparable at all.
+- A failed restore is no longer reported as a successful run.
+  `run-benchmark-history.ps1` checks out each commit in turn and puts the
+  repository back in a `finally` block, but neither the reset nor the checkout
+  was checked. A locked file or a checkout that could not proceed left the caller
+  detached on whichever commit was last measured, while the script printed its
+  results path in green and exited 0. Both are checked now, the recovery command
+  is printed, and the run fails.
+- An unmeasurable commit range is caught before the first build rather than at
+  the end of the run. The range came from a `git log` whose exit code was never
+  read: a fork point that no longer exists left an empty history that read as
+  zero work and reported success, and a fork point on another branch does not
+  fail `git log` at all — it silently yields everything reachable from HEAD,
+  reaching back past the rebrand where the restored sources cannot build. The
+  fork point is now required to exist and to be an ancestor of HEAD, and an
+  empty range is an error.
+- The NuGet packages are built in `Release` only, and `build.ps1` says so instead
+  of producing packages nothing can restore. Packing emits into a
+  configuration-specific directory while the `local` feed names exactly one, and
+  package source mapping routes `InterleaveX*` to that feed alone, so a Debug
+  pack left the samples unable to find any package at all — the same failure the
+  feed path was corrected for below, arriving by a different route.
 - A failing benchmark run now fails the script. Both benchmark scripts ignored
   the runner's exit code, and the history script's only check was that the
   output directory existed — which proves nothing, because the runner creates

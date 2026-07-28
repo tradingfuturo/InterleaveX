@@ -144,6 +144,31 @@ foreach ($project in $referenced) {
 
 Assert-That ($referenced.Count -gt 0) "Benchmark snapshot: found no benchmark project references to check"
 
+# --- Every layout exemption still names a file ------------------------------------------------
+#
+# check-build-layout.ps1 excuses individual lines by file and text, and skips itself outright because
+# every path it contains is an example. Both kinds go stale silently when a file is renamed: the
+# exemption stays in the table, matches nothing, and the checker keeps passing. The text half is
+# caught by the checker itself, which reports an exemption that matched nothing; this catches the
+# half that is about the file. 'git ls-files' is used rather than the file system because CI checks
+# out shallow, and because an exemption for an untracked file could never fire in the first place.
+
+$exemptions = @(& "$PSScriptRoot/check-build-layout.ps1" -listExemptions)
+Assert-That ($LASTEXITCODE -eq 0) "Layout exemptions: could not list the exemptions"
+Assert-That ($exemptions.Count -gt 0) "Layout exemptions: found none to check"
+
+Push-Location $RootDir
+try {
+    foreach ($exemption in $exemptions) {
+        & git ls-files --error-unmatch -- $exemption 2>$null | Out-Null
+        Assert-That ($LASTEXITCODE -eq 0) `
+            "Layout exemptions: '$exemption' is exempted by check-build-layout.ps1 but is not a tracked file"
+    }
+}
+finally {
+    Pop-Location
+}
+
 # --- Result -----------------------------------------------------------------------------------
 
 if ($failures.Count -eq 0) {

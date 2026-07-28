@@ -19,8 +19,15 @@ The range stops at the fork point. Restoring current benchmark sources over an o
 cannot work across the Coyote to InterleaveX rebrand, because the projects, assemblies and CLI they
 reference were renamed there, so only the fork's own history can be measured this way.
 
+Inside the fork the restored sources have to tolerate the layouts of the commits they are restored
+over, not just today's. The one place that bites is the rewrite step of BenchmarkRunner.csproj, which
+runs the CLI out of the build output: it probes for both the current and the pre-'Separate debug and
+release build output' locations, which is what makes the commits before that change measurable.
+
 This script rewrites the working tree. It refuses to start unless the tree is clean, and it restores
-the branch or commit it started from when it finishes, including after a failure.
+the branch or commit it started from when it finishes, including after a failure. A restore that
+fails is an error, even when the benchmarks themselves succeeded: the alternative is reporting
+success while leaving the repository on a commit the caller never asked for.
 #>
 
 param(
@@ -80,6 +87,45 @@ if ($dirty) {
 $startingRef = (& git rev-parse --abbrev-ref HEAD).Trim()
 if ($startingRef -eq "HEAD") {
     $startingRef = (& git rev-parse HEAD).Trim()
+}
+
+# Work out the range before anything is created or checked out, so that a range that cannot be
+# measured costs nothing. Both failures here are silent otherwise: a fork point that no longer exists
+# makes 'git log' fail while leaving an empty history that reads as zero work, and a fork point on
+# another branch does not fail 'git log' at all -- it yields everything reachable from HEAD but not
+# from the fork point's parent, which walks straight back past the rebrand.
+& git rev-parse --verify --quiet "$ForkPoint^{commit}" | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Comment -prefix "." -text "The fork point '$ForkPoint' is not a commit in this repository." -color "red"
+    Write-Comment -prefix "." -text "Update `$ForkPoint, or fetch the full history if this is a shallow clone." -color "red"
+    exit 1
+}
+
+& git rev-parse --verify --quiet "$ForkPoint^" | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Comment -prefix "." -text "The fork point '$ForkPoint' has no parent, so the range '$ForkPoint^..HEAD' cannot be resolved." -color "red"
+    Write-Comment -prefix "." -text "Fetch the full history if this is a shallow clone." -color "red"
+    exit 1
+}
+
+& git merge-base --is-ancestor $ForkPoint HEAD
+if ($LASTEXITCODE -ne 0) {
+    Write-Comment -prefix "." -text "The fork point '$ForkPoint' is not an ancestor of HEAD." -color "red"
+    Write-Comment -prefix "." -text "The range would reach back past the rebrand, where the restored sources cannot build." -color "red"
+    Write-Comment -prefix "." -text "Check out a branch descended from the fork point, or update `$ForkPoint." -color "red"
+    exit 1
+}
+
+$history = & git log --first-parent --pretty=oneline "$ForkPoint^..HEAD"
+if ($LASTEXITCODE -ne 0) {
+    Write-Comment -prefix "." -text "Failed to list the commits in '$ForkPoint^..HEAD'." -color "red"
+    exit 1
+}
+
+$history = @($history)
+if ($history.Count -eq 0) {
+    Write-Comment -prefix "." -text "No commits to measure in '$ForkPoint^..HEAD'." -color "red"
+    exit 1
 }
 
 # Copy the benchmark sources somewhere unique, so that a run cannot pick up what an interrupted
@@ -182,7 +228,6 @@ try {
         }
     }
 
-    $history = & git log --first-parent --pretty=oneline "$ForkPoint^..HEAD"
     Write-Comment -prefix "." -text "Benchmarking $($history.Count) commit(s) back to the fork point." -color "yellow"
 
     foreach ($line in $history) {
@@ -201,9 +246,35 @@ try {
 finally {
     Set-Location -Path $RootDir
     Write-Comment -prefix "." -text "Restoring $startingRef" -color "yellow"
+
+    # Checked rather than assumed. These are the two commands that put the repository back, and a
+    # locked file or a checkout that cannot proceed leaves the caller detached on whichever commit
+    # was being measured -- which looks exactly like a successful run unless it is said out loud.
+    $restored = $true
     & git reset --hard | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Comment -prefix "." -text "Failed to reset the working tree." -color "red"
+        $restored = $false
+    }
+
     & git checkout $startingRef | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Comment -prefix "." -text "Failed to check out '$startingRef'." -color "red"
+        $restored = $false
+    }
+
     if (Test-Path $source) {
         Remove-Item $source -Recurse -Force
     }
+
+    if (-not $restored) {
+        Write-Comment -prefix "." -text "The repository was left on the commit that was being measured." -color "red"
+        Write-Comment -prefix "." -text "Recover with: git reset --hard; git checkout $startingRef" -color "red"
+        Write-Comment -prefix "." -text "Any results already produced are still in $outdir" -color "yellow"
+        exit 1
+    }
 }
+
+# Said rather than inferred: PowerShell exits 0 when a script simply runs off the end, whatever the
+# last native command set $LASTEXITCODE to.
+exit 0

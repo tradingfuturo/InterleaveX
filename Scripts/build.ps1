@@ -26,6 +26,17 @@ if ($host.Version.Major -lt 7)
     exit 1
 }
 
+# Packages emit into 'bin/$(Configuration)/nuget', but the 'local' feed in NuGet.config names one
+# directory and cannot vary by configuration, and package source mapping routes InterleaveX* to that
+# feed alone. Packing anything but Release therefore produces packages nothing can restore, which
+# surfaces later as a missing package rather than as a wrong configuration.
+if ($nuget.IsPresent -and ($configuration -ne "Release")) {
+    Write-Error "The NuGet packages can only be built in the 'Release' configuration."
+    Write-Error "The 'local' feed in NuGet.config is 'bin/Release/nuget', so '$configuration' packages could not be restored from it."
+    Write-Error "Re-run with -configuration Release, or without -nuget."
+    exit 1
+}
+
 # Check that the expected .NET SDK is installed.
 $dotnet = "dotnet"
 $dotnet_sdk_path = FindDotNetSdkPath -dotnet $dotnet

@@ -25,10 +25,26 @@
     <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.10.1" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
   </ItemGroup>
-  <Target Name="CoyoteRewriteWin" AfterTargets="AfterBuild" Condition="'$(OS)'=='Windows_NT'">
-    <Exec Command="..\..\bin\$(Configuration)\$(TargetFramework)\interleavex.exe rewrite $(OutputPath)Tests.Performance.dll" />
+  <!--
+    Resolved when the target runs rather than at evaluation, because the CLI this project references
+    has not been built yet when the project is loaded, and both probes would miss it.
+
+    'run-benchmark-history.ps1' restores this project over every commit it measures, so the rewrite
+    step has to find the CLI in the layout of the commit being built as well as in today's. The
+    fallback is the pre-'Separate debug and release build output' shape, which is what the fork's
+    first 34 commits emit. The probe is on the managed assembly: it is there in both layouts on every
+    platform, while the apphost is Windows-only.
+  -->
+  <Target Name="ResolveInterleaveXCli">
+    <PropertyGroup>
+      <_InterleaveXCliDir>$(MSBuildThisFileDirectory)../../bin/$(Configuration)/$(TargetFramework)</_InterleaveXCliDir>
+      <_InterleaveXCliDir Condition="!Exists('$(_InterleaveXCliDir)/interleavex.dll')">$(MSBuildThisFileDirectory)../../bin/$(TargetFramework)</_InterleaveXCliDir>
+    </PropertyGroup>
   </Target>
-  <Target Name="CoyoteRewriteUnix" AfterTargets="AfterBuild" Condition="'$(OS)'!='Windows_NT'">
-    <Exec Command="dotnet ../../bin/$(Configuration)/$(TargetFramework)/interleavex.dll rewrite $(OutputPath)Tests.Performance.dll" />
+  <Target Name="CoyoteRewriteWin" AfterTargets="AfterBuild" DependsOnTargets="ResolveInterleaveXCli" Condition="'$(OS)'=='Windows_NT'">
+    <Exec Command="&quot;$(_InterleaveXCliDir)/interleavex.exe&quot; rewrite $(OutputPath)Tests.Performance.dll" />
+  </Target>
+  <Target Name="CoyoteRewriteUnix" AfterTargets="AfterBuild" DependsOnTargets="ResolveInterleaveXCli" Condition="'$(OS)'!='Windows_NT'">
+    <Exec Command="dotnet &quot;$(_InterleaveXCliDir)/interleavex.dll&quot; rewrite $(OutputPath)Tests.Performance.dll" />
   </Target>
 </Project>

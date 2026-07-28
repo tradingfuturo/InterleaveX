@@ -23,7 +23,10 @@ the working directory at the repository root, so it cannot be resolved lexically
 
 param(
     # Prints every file that was scanned, rather than only the failures.
-    [switch]$verbose
+    [switch]$verbose,
+    # Prints the files this script exempts from the scan, and exits. Used by check-script-helpers.ps1
+    # to confirm every exemption still names a file that exists.
+    [switch]$listExemptions
 )
 
 $ErrorActionPreference = "Stop"
@@ -78,6 +81,11 @@ $Allowed = @(
         File = "Scripts/run-tests.ps1"
         Text = '$temp_path = "bin/temp"'
         Why  = "scratch directory for the temporary CLI tool install, not build output"
+    },
+    @{
+        File = "Tools/BenchmarkRunner/BenchmarkRunner.csproj"
+        Text = '<_InterleaveXCliDir Condition="!Exists(''$(_InterleaveXCliDir)/interleavex.dll'')">$(MSBuildThisFileDirectory)../../bin/$(TargetFramework)</_InterleaveXCliDir>'
+        Why  = "fallback that lets run-benchmark-history.ps1 measure commits older than the layout split"
     }
 )
 
@@ -91,6 +99,11 @@ $SkipDirectories = @("bin", "obj", "packages", "Scripts/Notebooks")
 # references to the build output.
 $SkipFiles = @("Scripts/check-build-layout.ps1")
 
+if ($listExemptions.IsPresent) {
+    @($SkipFiles + ($Allowed | ForEach-Object { $_.File })) | Sort-Object -Unique
+    exit 0
+}
+
 # Resolved lexically against the file that contains the reference.
 $PathScanned = @(".csproj", ".props", ".targets", ".ps1", ".psm1", ".cmd", ".bat", ".json", ".config", ".sln", ".yml", ".yaml")
 
@@ -102,6 +115,7 @@ $DocScanned = @(".md", ".cs")
 $QualifiedSegments = @('$(Configuration)', "Debug", "Release", '$configuration', '$(configuration)')
 
 $findings = New-Object System.Collections.ArrayList
+$usedExemptions = New-Object System.Collections.Generic.HashSet[string]
 $scanned = 0
 
 function Add-Finding($file, $lineNumber, $text, $reason) {
@@ -117,6 +131,7 @@ function Test-Allowed($file, $line) {
     $trimmed = $line.Trim()
     foreach ($entry in $Allowed) {
         if (($entry.File -eq $file) -and ($entry.Text -eq $trimmed)) {
+            [void]$usedExemptions.Add("$($entry.File)|$($entry.Text)")
             return $true
         }
     }
@@ -335,19 +350,40 @@ foreach ($file in $tracked) {
     }
 }
 
-if ($findings.Count -eq 0) {
+# An exception that matched nothing is not excusing anything: the line it names has since been
+# reworded, qualified or deleted. Left in place it stops being a record of a decision and becomes a
+# standing permit for whatever stale path lands on that text next.
+$unused = @($Allowed | Where-Object { -not $usedExemptions.Contains("$($_.File)|$($_.Text)") })
+
+if (($findings.Count -eq 0) -and ($unused.Count -eq 0)) {
     Write-Host ". Checked $scanned files; the build output layout is consistent." -ForegroundColor green
     exit 0
 }
 
-Write-Host ". Checked $scanned files and found $($findings.Count) stale reference(s) to the product build output." -ForegroundColor red
-Write-Host "  Product output is 'bin/<Configuration>/<TFM>' and packages are 'bin/<Configuration>/nuget'." -ForegroundColor red
-foreach ($finding in ($findings | Sort-Object File, Line)) {
+if ($findings.Count -gt 0) {
+    Write-Host ". Checked $scanned files and found $($findings.Count) stale reference(s) to the product build output." -ForegroundColor red
+    Write-Host "  Product output is 'bin/<Configuration>/<TFM>' and packages are 'bin/<Configuration>/nuget'." -ForegroundColor red
+    foreach ($finding in ($findings | Sort-Object File, Line)) {
+        Write-Host ""
+        Write-Host "  $($finding.File):$($finding.Line)" -ForegroundColor yellow
+        Write-Host "    $($finding.Text)"
+        Write-Host "    $($finding.Reason)"
+    }
+
     Write-Host ""
-    Write-Host "  $($finding.File):$($finding.Line)" -ForegroundColor yellow
-    Write-Host "    $($finding.Text)"
-    Write-Host "    $($finding.Reason)"
 }
 
-Write-Host ""
+if ($unused.Count -gt 0) {
+    Write-Host ". $($unused.Count) exception(s) no longer match anything." -ForegroundColor red
+    Write-Host "  Remove the entry, or correct its text to the line it is meant to excuse." -ForegroundColor red
+    foreach ($entry in ($unused | Sort-Object File, Text)) {
+        Write-Host ""
+        Write-Host "  $($entry.File)" -ForegroundColor yellow
+        Write-Host "    $($entry.Text)"
+        Write-Host "    $($entry.Why)"
+    }
+
+    Write-Host ""
+}
+
 exit 1
