@@ -45,6 +45,12 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
                 uint.Parse(spinCountValue, CultureInfo.InvariantCulture);
             bool header = Array.IndexOf(args, "--no-header") < 0;
 
+            // Restores the pre-gating behaviour, where every iteration computed the program state
+            // whether or not its strategy read it. Both settings are reachable from one binary, so
+            // the cost of that walk can be measured without comparing two builds and attributing
+            // whatever else differs between them to this one change.
+            bool forceHashing = Array.IndexOf(args, "--force-hashing") >= 0;
+
             if (workload is not "deep" and not "wide")
             {
                 Console.Error.WriteLine($"Unknown workload '{workload}'. Expected 'deep' or 'wide'.");
@@ -62,9 +68,13 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
             string spinLabel = spinCount.HasValue ?
                 spinCount.Value.ToString(CultureInfo.InvariantCulture) : "default";
 
+            // Recorded per row for the same reason as the spin count: so merged CSVs stay
+            // unambiguous without relying on the label.
+            string hashingLabel = forceHashing ? "forced" : "gated";
+
             if (header)
             {
-                Console.WriteLine("label,workload,strategy,spin,iterations,run,elapsed_ms,cpu_ms,allocated_bytes,paths,steps,bugs");
+                Console.WriteLine("label,workload,strategy,spin,hashing,iterations,run,elapsed_ms,cpu_ms,allocated_bytes,paths,steps,bugs");
             }
 
             // The first few runs are dominated by JIT and are discarded. Without this the
@@ -77,7 +87,7 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
 
             for (int run = 0; run < warmup + repeat; run++)
             {
-                RunResult result = RunOnce(workload, strategy, iterations, seed, spinCount);
+                RunResult result = RunOnce(workload, strategy, iterations, seed, spinCount, forceHashing);
                 if (result.Bugs > 0)
                 {
                     Console.Error.WriteLine(
@@ -96,7 +106,7 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
                 }
 
                 Console.WriteLine(
-                    $"{label},{workload},{strategy},{spinLabel},{iterations},{(isWarmup ? "warmup" : run.ToString())}," +
+                    $"{label},{workload},{strategy},{spinLabel},{hashingLabel},{iterations},{(isWarmup ? "warmup" : run.ToString())}," +
                     $"{result.ElapsedMs:F1},{result.CpuMs:F1},{result.AllocatedBytes}," +
                     $"{result.Paths},{result.Steps},{result.Bugs}");
             }
@@ -114,7 +124,7 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
                 (double)(allocatedSamples[allocatedSamples.Count - 1] - allocatedSamples[0]) / medianAllocated * 100 : 0;
 
             Console.WriteLine(
-                $"{label},{workload},{strategy},{spinLabel},{iterations},MEDIAN,{medianElapsed:F1},{medianCpu:F1}," +
+                $"{label},{workload},{strategy},{spinLabel},{hashingLabel},{iterations},MEDIAN,{medianElapsed:F1},{medianCpu:F1}," +
                 $"{medianAllocated},steps={steps},cpuSpread={cpuSpread:F1}%,allocSpread={allocSpread:F3}%");
             return 0;
         }
@@ -123,7 +133,7 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
         /// Runs the specified workload once for the given number of testing iterations.
         /// </summary>
         private static RunResult RunOnce(string workload, string strategy, uint iterations, uint seed,
-            uint? spinCount)
+            uint? spinCount, bool forceHashing)
         {
             Configuration configuration = Configuration.Create()
                 .WithTestingIterations(iterations)
@@ -133,10 +143,15 @@ namespace Microsoft.Coyote.Benchmarking.Scheduler
                 configuration = configuration.WithHandoffSpinCount(spinCount.Value);
             }
 
+            if (forceHashing)
+            {
+                configuration.IsImplicitProgramStateHashingEnabled = true;
+            }
+
             if (strategy is "random")
             {
-                // Sets PortfolioMode.None, which in turn leaves implicit program state
-                // hashing disabled. The default configuration takes the opposite path.
+                // Sets PortfolioMode.None, so a single strategy runs every iteration instead of
+                // the default five-strategy rotation.
                 configuration = configuration.WithRandomStrategy();
             }
 
