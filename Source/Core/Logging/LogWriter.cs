@@ -247,26 +247,69 @@ namespace Microsoft.Coyote.Logging
         /// <summary>
         /// Logs the specified debug message.
         /// </summary>
-        internal void LogDebug(string format, object arg0) =>
-            this.WriteLine(LogSeverity.Debug, format, arg0);
+        /// <remarks>
+        /// Generic in its arguments so that nothing is boxed unless the message is actually going
+        /// to be written. The <see cref="object"/>-typed overloads box at the call site, before the
+        /// callee gets to check the verbosity level, which on the scheduling hot path meant several
+        /// allocations per step on every run -- and debug logging is off by default. Overload
+        /// resolution prefers these, because binding a value type to a type parameter is an
+        /// identity conversion while binding it to <see cref="object"/> is a boxing conversion.
+        /// </remarks>
+        internal void LogDebug<T0>(string format, T0 arg0)
+        {
+            if (IsDebugVerbosityEnabled(this.Configuration.VerbosityLevel))
+            {
+                this.WriteLine(LogSeverity.Debug, format, arg0);
+            }
+        }
+
+        /// <inheritdoc cref="LogDebug{T0}(string, T0)"/>
+        internal void LogDebug<T0, T1>(string format, T0 arg0, T1 arg1)
+        {
+            if (IsDebugVerbosityEnabled(this.Configuration.VerbosityLevel))
+            {
+                this.WriteLine(LogSeverity.Debug, format, arg0, arg1);
+            }
+        }
+
+        /// <inheritdoc cref="LogDebug{T0}(string, T0)"/>
+        internal void LogDebug<T0, T1, T2>(string format, T0 arg0, T1 arg1, T2 arg2)
+        {
+            if (IsDebugVerbosityEnabled(this.Configuration.VerbosityLevel))
+            {
+                this.WriteLine(LogSeverity.Debug, format, arg0, arg1, arg2);
+            }
+        }
 
         /// <summary>
         /// Logs the specified debug message.
         /// </summary>
-        internal void LogDebug(string format, object arg0, object arg1) =>
-            this.WriteLine(LogSeverity.Debug, format, arg0, arg1);
+        /// <remarks>
+        /// Four arguments would otherwise bind to the <c>params object[]</c> overload, which
+        /// allocates the array as well as boxing each element.
+        /// </remarks>
+        internal void LogDebug<T0, T1, T2, T3>(string format, T0 arg0, T1 arg1, T2 arg2, T3 arg3)
+        {
+            if (IsDebugVerbosityEnabled(this.Configuration.VerbosityLevel))
+            {
+                this.WriteLine(LogSeverity.Debug, format, arg0, arg1, arg2, arg3);
+            }
+        }
 
         /// <summary>
         /// Logs the specified debug message.
         /// </summary>
-        internal void LogDebug(string format, object arg0, object arg1, object arg2) =>
-            this.WriteLine(LogSeverity.Debug, format, arg0, arg1, arg2);
-
-        /// <summary>
-        /// Logs the specified debug message.
-        /// </summary>
-        internal void LogDebug(string format, params object[] args) =>
-            this.WriteLine(LogSeverity.Debug, format, args);
+        /// <remarks>
+        /// Only reached with five or more arguments, since the generic overloads above are a better
+        /// match below that. Callers on the hot path should prefer those.
+        /// </remarks>
+        internal void LogDebug(string format, params object[] args)
+        {
+            if (IsDebugVerbosityEnabled(this.Configuration.VerbosityLevel))
+            {
+                this.WriteLine(LogSeverity.Debug, format, args);
+            }
+        }
 
         /// <summary>
         /// Logs the debug message produced by the specified function.
