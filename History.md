@@ -42,6 +42,12 @@ PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
   'bin/out' also claimed 'bin/output-assets' and left everything under it out of
   the mirror entirely. The test is now by path segment, and under the file
   system's own case rules rather than ordinal.
+- A run asked to explore from a new seed each time now writes that seed down. It
+  was left for the runtime to derive from a fresh guid, which explored just as
+  widely but put the value only inside the strategy description — so the nightly
+  job's instructions for reproducing a failure pointed at a sentence that run
+  never printed. The seed is drawn once per test and reported in the same words
+  in both modes, which is the sentence those instructions name.
 - The cache of which directories fold case is keyed ordinally. Folding case in
   that key filed `Foo` and `foo` together, and where a case-sensitive Windows
   parent holds both, each carries its own flag and whichever was probed first
