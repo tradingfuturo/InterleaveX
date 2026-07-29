@@ -128,6 +128,9 @@ jobs:
           Write-Host '    $env:COYOTE_TEST_SEED = "<number>"'
           Write-Host "    ./Scripts/run-tests.ps1 -test <target> -filter <TestName>"
           Write-Host ""
-          Write-Host "A seed reproduces the whole run it came from, so re-dispatching this workflow"
-          Write-Host "with that seed re-explores the same schedules on both platforms."
+          Write-Host "That seed reproduces the test that reported it, not the run it came from: this"
+          Write-Host "run drew a separate seed for every test, so no single one describes the rest."
+          Write-Host "Re-dispatching this workflow with it re-explores the failing test's schedule on"
+          Write-Host "both platforms, and gives every other unpinned test that same seed rather than"
+          Write-Host "the one it drew here."
         shell: pwsh

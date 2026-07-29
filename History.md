@@ -71,6 +71,13 @@ PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
   job's instructions for reproducing a failure pointed at a sentence that run
   never printed. The seed is drawn once per test and reported in the same words
   in both modes, which is the sentence those instructions name.
+- The nightly job says which run a reported seed reproduces. It said a seed
+  reproduced the whole run it came from, which is true of neither mode: the
+  fuzzing run draws a seed per test, so no one value describes the rest, and
+  re-dispatching with it hands every other unpinned test that value instead of
+  the one it drew. So the seed reproduces the test that reported it, the
+  instructions now say so, and a test asserts the per-test draw the wording
+  rests on.
 - The cache of which directories fold case is keyed ordinally. Folding case in
   that key filed `Foo` and `foo` together, and where a case-sensitive Windows
   parent holds both, each carries its own flag and whichever was probed first
