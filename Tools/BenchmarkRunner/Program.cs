@@ -39,6 +39,8 @@ namespace Microsoft.Coyote.Benchmarking
         {
             new BenchmarkTest("MathBenchmark", typeof(PerformanceTests.MathBenchmark)),
             new BenchmarkTest("MemoryBenchmark", typeof(PerformanceTests.MemoryBenchmark)),
+            new BenchmarkTest("RewritingFingerprintBenchmark",
+                typeof(PerformanceTests.RewritingFingerprintBenchmark)),
             new BenchmarkTest("CreationThroughputBenchmark", typeof(StateMachineTests.CreationThroughputBenchmark)),
             new BenchmarkTest("ExchangeEventLatencyBenchmark", typeof(StateMachineTests.ExchangeEventLatencyBenchmark)),
             new BenchmarkTest("SendEventThroughputBenchmark", typeof(StateMachineTests.SendEventThroughputBenchmark)),
