@@ -43,7 +43,7 @@ namespace Microsoft.Coyote.Rewriting
         /// The layout of the manifest. Bump this whenever the recorded state changes meaning, so that
         /// a manifest written by an older build is discarded rather than misread.
         /// </summary>
-        private const int CurrentSchemaVersion = 4;
+        private const int CurrentSchemaVersion = 5;
 
         /// <summary>
         /// The rewriting options of the current run.
@@ -91,6 +91,16 @@ namespace Microsoft.Coyote.Rewriting
         private readonly HashSet<string> RecordedSearchDirectories;
 
         /// <summary>
+        /// The shared framework directories whose installed versions decided what this run searched.
+        /// </summary>
+        /// <remarks>
+        /// The parents of the version directories, not the versions themselves. Which version wins is
+        /// a roll-forward over whatever is installed, so a newer one appearing beside the chosen one
+        /// changes the answer while leaving every recorded file and directory untouched.
+        /// </remarks>
+        private readonly HashSet<string> RecordedFrameworkInventories;
+
+        /// <summary>
         /// The complete set of assemblies loaded for this run, including discovered dependencies.
         /// </summary>
         private HashSet<string> ExpectedRewriteInputs;
@@ -132,6 +142,7 @@ namespace Microsoft.Coyote.Rewriting
             this.RecordedEntries = new List<CacheEntry>();
             this.RecordedModules = new Dictionary<string, CacheFile>(this.Validator.PathComparer);
             this.RecordedSearchDirectories = new HashSet<string>(this.Validator.PathComparer);
+            this.RecordedFrameworkInventories = new HashSet<string>(this.Validator.PathComparer);
             this.IsDisabled = options.IsIncrementalRewritingDisabled;
         }
 
@@ -249,6 +260,27 @@ namespace Microsoft.Coyote.Rewriting
             this.ExpectedRewriteInputs = new HashSet<string>(
                 assemblies.Select(assembly => RewritingCacheValidator.NormalizeFile(assembly.FilePath)),
                 this.Validator.PathComparer);
+        }
+
+        /// <summary>
+        /// Records shared framework directories whose installed versions this run depended on.
+        /// </summary>
+        /// <remarks>
+        /// Separate from <see cref="RecordAssembly"/> because resolution can reach a framework no
+        /// assembly asked for: the fallback that probes every installed shared framework runs when
+        /// the ordinary search has already failed, and what it finds is not attributable to the
+        /// runtime configuration of any one assembly.
+        /// </remarks>
+        internal void RecordFrameworkInventories(IEnumerable<string> paths)
+        {
+            foreach (string path in paths ?? Enumerable.Empty<string>())
+            {
+                if (!string.IsNullOrEmpty(path))
+                {
+                    this.RecordedFrameworkInventories.Add(
+                        RewritingCacheValidator.NormalizeDirectory(path));
+                }
+            }
         }
 
         /// <summary>
@@ -387,6 +419,8 @@ namespace Microsoft.Coyote.Rewriting
                     this.RecordedSearchDirectories.Add(searchDirectory);
                 }
 
+                this.RecordFrameworkInventories(assembly.FrameworkInventoryRoots);
+
                 foreach (var module in modules)
                 {
                     this.RecordedModules.Add(module.Key, module.Value);
@@ -447,9 +481,22 @@ namespace Microsoft.Coyote.Rewriting
                     ResolvedModules = this.RecordedModules.Values
                         .Where(file => !recordedByEntries.Contains(file.Path))
                         .OrderBy(file => file.Path, StringComparer.Ordinal).ToList(),
+                    // Every directory resolution is offered, hashed, including the shared frameworks.
+                    // A name and a length cannot see a replacement that keeps both, and the
+                    // assemblies that were offered but never read are exactly the ones no entry
+                    // records a hash for -- which is the case this exists to notice.
+                    //
+                    // TODO: measure what this costs. It reads several hundred assemblies out of each
+                    // framework directory, on the path that checks the manifest as well as the one
+                    // that writes it, and the cheap form below is still implemented. Trading it back
+                    // means weakening what a skipped rewrite is allowed to miss, so it wants a
+                    // measurement first rather than an estimate.
                     DependencySearchDirectories = this.RecordedSearchDirectories
                         .OrderBy(path => path, StringComparer.Ordinal)
                         .Select(path => this.Validator.CaptureDirectory(path, true)).ToList(),
+                    FrameworkInventories = this.RecordedFrameworkInventories
+                        .OrderBy(path => path, StringComparer.Ordinal)
+                        .Select(path => this.Validator.CaptureDirectoryNames(path)).ToList(),
                     Entries = this.RecordedEntries.OrderBy(e => e.Name, StringComparer.Ordinal).ToList()
                 };
 

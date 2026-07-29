@@ -45,7 +45,28 @@ namespace Microsoft.Coyote.Rewriting
 
         public List<CacheDirectory> DependencySearchDirectories { get; set; }
 
+        public List<CacheDirectoryListing> FrameworkInventories { get; set; }
+
         public List<CacheEntry> Entries { get; set; }
+    }
+
+    /// <summary>
+    /// The versions a shared framework directory offered, by name.
+    /// </summary>
+    /// <remarks>
+    /// Kept apart from <see cref="CacheDirectory"/> rather than folded into it as a third form,
+    /// because the two answer different questions. A <see cref="CacheDirectory"/> says what a
+    /// directory offered a resolver that searched it; this says which directories a roll-forward
+    /// chose between before any of them was searched, and its content is deliberately no more than
+    /// the names -- the winner's files are recorded by the other type.
+    /// </remarks>
+    internal sealed class CacheDirectoryListing
+    {
+        public string Path { get; set; }
+
+        public bool Exists { get; set; }
+
+        public string NamesHash { get; set; }
     }
 
     /// <summary>

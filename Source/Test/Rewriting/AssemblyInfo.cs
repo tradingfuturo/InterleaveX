@@ -87,9 +87,34 @@ namespace Microsoft.Coyote.Rewriting
         internal readonly IReadOnlyList<string> SearchDirectories;
 
         /// <summary>
+        /// The directories holding every installed version of each shared framework this assembly
+        /// asked for.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="SearchDirectories"/> holds the one version directory that
+        /// <see cref="ResolveFrameworkDirectory"/> picked, which says nothing about the versions it
+        /// picked between. Installing a newer patch of the same major adds a directory beside the
+        /// chosen one and changes what a fresh run would resolve against, while every directory and
+        /// every file the last run touched stays exactly as it was. So the parent is recorded too,
+        /// by the names it offers rather than by their content: what matters here is which candidates
+        /// exist, and the winner's content is already covered as a search directory.
+        /// </remarks>
+        internal readonly IReadOnlyList<string> FrameworkInventoryRoots;
+
+        /// <summary>
         /// The rewriting options.
         /// </summary>
         private readonly RewritingOptions Options;
+
+        /// <summary>
+        /// The file system this assembly is read through.
+        /// </summary>
+        private readonly IFileSystem FileSystem;
+
+        /// <summary>
+        /// Reads the environment this assembly resolves its frameworks against.
+        /// </summary>
+        private readonly Func<string, string> GetEnvironmentVariable;
 
         /// <summary>
         /// True if the assembly has been rewritten, else false.
@@ -104,12 +129,15 @@ namespace Microsoft.Coyote.Rewriting
         /// <summary>
         /// Initializes a new instance of the <see cref="AssemblyInfo"/> class.
         /// </summary>
-        private AssemblyInfo(string name, string path, RewritingOptions options, AssemblyResolveEventHandler handler)
+        private AssemblyInfo(string name, string path, RewritingOptions options, AssemblyResolveEventHandler handler,
+            IFileSystem fileSystem, Func<string, string> getEnvironmentVariable)
         {
             this.Name = name;
             this.FilePath = path;
             this.Dependencies = new HashSet<AssemblyInfo>();
             this.Options = options;
+            this.FileSystem = fileSystem;
+            this.GetEnvironmentVariable = getEnvironmentVariable;
             this.IsRewritten = false;
             this.IsDisposed = false;
 
@@ -142,7 +170,8 @@ namespace Microsoft.Coyote.Rewriting
                 Path.GetDirectoryName(typeof(Types.Threading.Tasks.Task).Assembly.Location));
 
             // Add shared framework directories discovered from the target assembly's runtime config.
-            AddSharedFrameworkDirectories(assemblyResolver, path);
+            this.FrameworkInventoryRoots = AddSharedFrameworkDirectories(assemblyResolver, path,
+                fileSystem, getEnvironmentVariable);
 
             // Snapshotted here, where every directory has been added and none has been searched yet, so
             // that it cannot fall behind the resolver and does not have to be read back out of it once
@@ -173,7 +202,8 @@ namespace Microsoft.Coyote.Rewriting
         /// Loads and returns the topological sorted list of unique assemblies to rewrite.
         /// </summary>
         internal static IEnumerable<AssemblyInfo> LoadAssembliesToRewrite(RewritingOptions options,
-            AssemblyResolveEventHandler handler)
+            AssemblyResolveEventHandler handler, IFileSystem fileSystem,
+            Func<string, string> getEnvironmentVariable)
         {
             // Add all explicitly requested assemblies.
             var assemblies = new HashSet<AssemblyInfo>();
@@ -189,7 +219,8 @@ namespace Microsoft.Coyote.Rewriting
                             throw new InvalidOperationException($"Rewriting assembly '{name}' ({path}) that is in the ignore list.");
                         }
 
-                        assemblies.Add(new AssemblyInfo(name, path, options, handler));
+                        assemblies.Add(new AssemblyInfo(name, path, options, handler, fileSystem,
+                            getEnvironmentVariable));
                     }
                 }
 
@@ -359,7 +390,8 @@ namespace Microsoft.Coyote.Rewriting
         /// <summary>
         /// Checks if the symbol file for the specified assembly is available.
         /// </summary>
-        internal bool IsSymbolFileAvailable() => File.Exists(Path.ChangeExtension(this.FilePath, "pdb"));
+        internal bool IsSymbolFileAvailable() =>
+            this.FileSystem.FileExists(Path.ChangeExtension(this.FilePath, "pdb"));
 
         /// <summary>
         /// Returns the first found custom attribute with the specified type, if such an attribute
@@ -428,13 +460,14 @@ namespace Microsoft.Coyote.Rewriting
                 {
                     var fileName = reference.Name + ".dll";
                     var path = Path.Combine(assemblyDir, fileName);
-                    if (File.Exists(path) && !this.Options.IsAssemblyIgnored(fileName))
+                    if (this.FileSystem.FileExists(path) && !this.Options.IsAssemblyIgnored(fileName))
                     {
                         AssemblyInfo dependency = assemblies.FirstOrDefault(assembly => assembly.FilePath == path);
                         if (dependency is null && this.Options.IsRewritingDependencies)
                         {
                             var name = Path.GetFileName(path);
-                            dependency = new AssemblyInfo(name, path, this.Options, handler);
+                            dependency = new AssemblyInfo(name, path, this.Options, handler, this.FileSystem,
+                                this.GetEnvironmentVariable);
                             stack.Push(dependency);
                             assemblies.Add(dependency);
                         }
@@ -488,12 +521,6 @@ namespace Microsoft.Coyote.Rewriting
         }
 
         /// <summary>
-        /// Returns the root directory of the .NET installation, or null if it cannot be determined.
-        /// </summary>
-        internal static string GetDotnetRoot() =>
-            GetDotnetRoot(HostFileSystem.Instance, Environment.GetEnvironmentVariable);
-
-        /// <summary>
         /// Returns the root directory of the .NET installation according to the specified file system
         /// and environment, or null if it cannot be determined.
         /// </summary>
@@ -530,20 +557,21 @@ namespace Microsoft.Coyote.Rewriting
         /// Reads the target assembly's .runtimeconfig.json to extract the list of
         /// shared framework dependencies (name + minimum version).
         /// </summary>
-        private static List<(string Name, string Version)> GetFrameworksFromRuntimeConfig(string assemblyPath)
+        private static List<(string Name, string Version)> GetFrameworksFromRuntimeConfig(string assemblyPath,
+            IFileSystem fileSystem)
         {
             var frameworks = new List<(string, string)>();
 
             // Look for the .runtimeconfig.json next to the assembly.
             string configPath = Path.ChangeExtension(assemblyPath, ".runtimeconfig.json");
-            if (!File.Exists(configPath))
+            if (!fileSystem.FileExists(configPath))
             {
                 return frameworks;
             }
 
             try
             {
-                string json = File.ReadAllText(configPath);
+                string json = fileSystem.ReadAllText(configPath);
                 using var doc = JsonDocument.Parse(json);
                 var runtimeOptions = doc.RootElement.GetProperty("runtimeOptions");
 
@@ -576,10 +604,11 @@ namespace Microsoft.Coyote.Rewriting
         /// Finds the best matching installed shared framework directory for the given
         /// framework name and minimum version, using major-version roll-forward semantics.
         /// </summary>
-        private static string ResolveFrameworkDirectory(string dotnetRoot, string frameworkName, string minimumVersion)
+        private static string ResolveFrameworkDirectory(string dotnetRoot, string frameworkName,
+            string minimumVersion, IFileSystem fileSystem)
         {
             string frameworkBase = Path.Combine(dotnetRoot, "shared", frameworkName);
-            if (!Directory.Exists(frameworkBase))
+            if (!fileSystem.DirectoryExists(frameworkBase))
             {
                 return null;
             }
@@ -592,7 +621,7 @@ namespace Microsoft.Coyote.Rewriting
             string bestMatch = null;
             Version bestVersion = null;
 
-            foreach (string dir in Directory.GetDirectories(frameworkBase))
+            foreach (string dir in fileSystem.GetDirectories(frameworkBase, "*", false))
             {
                 string versionStr = Path.GetFileName(dir);
                 // Strip pre-release suffixes (e.g. "8.0.0-preview.1").
@@ -618,23 +647,37 @@ namespace Microsoft.Coyote.Rewriting
         /// Discovers shared framework directories from the target assembly's runtime
         /// configuration and adds them as search directories to the assembly resolver.
         /// </summary>
-        private static void AddSharedFrameworkDirectories(DefaultAssemblyResolver resolver, string assemblyPath)
+        /// <returns>
+        /// The parent directory of each framework that was asked for, whether or not a version of it
+        /// was found. Returned rather than only the winners because these describe the candidates
+        /// resolution chose between, which is what <see cref="FrameworkInventoryRoots"/> records.
+        /// </returns>
+        private static IReadOnlyList<string> AddSharedFrameworkDirectories(DefaultAssemblyResolver resolver,
+            string assemblyPath, IFileSystem fileSystem, Func<string, string> getEnvironmentVariable)
         {
-            string dotnetRoot = GetDotnetRoot();
+            var inventoryRoots = new List<string>();
+            string dotnetRoot = GetDotnetRoot(fileSystem, getEnvironmentVariable);
             if (dotnetRoot is null)
             {
-                return;
+                return inventoryRoots;
             }
 
-            var frameworks = GetFrameworksFromRuntimeConfig(assemblyPath);
+            var frameworks = GetFrameworksFromRuntimeConfig(assemblyPath, fileSystem);
             foreach (var (name, version) in frameworks)
             {
-                string frameworkDir = ResolveFrameworkDirectory(dotnetRoot, name, version);
+                // Recorded before the resolution below and whether or not it succeeds: a framework
+                // that is asked for and not installed today is one whose arrival tomorrow changes
+                // what resolves, so the empty answer is worth as much as a found one.
+                inventoryRoots.Add(Path.Combine(dotnetRoot, "shared", name));
+
+                string frameworkDir = ResolveFrameworkDirectory(dotnetRoot, name, version, fileSystem);
                 if (frameworkDir != null)
                 {
                     resolver.AddSearchDirectory(frameworkDir);
                 }
             }
+
+            return inventoryRoots;
         }
 
         /// <summary>

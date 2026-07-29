@@ -192,7 +192,7 @@ namespace Microsoft.Coyote.Rewriting
 
             if (manifest.RequestedInputs is null || manifest.RewriteInputs is null ||
                 manifest.Entries is null || manifest.ResolvedModules is null ||
-                manifest.DependencySearchDirectories is null)
+                manifest.DependencySearchDirectories is null || manifest.FrameworkInventories is null)
             {
                 reason = "it is incomplete";
                 return false;
@@ -360,6 +360,29 @@ namespace Microsoft.Coyote.Rewriting
                     !this.IsDirectoryCurrent(directory))
                 {
                     reason = $"the assemblies offered by the '{directory?.Path}' search directory changed or are invalid";
+                    return false;
+                }
+            }
+
+            var inventoryPaths = new HashSet<string>(this.PathComparer);
+            foreach (var inventory in manifest.FrameworkInventories)
+            {
+                string inventoryPath;
+                try
+                {
+                    inventoryPath = NormalizeDirectory(inventory?.Path);
+                }
+                catch (Exception)
+                {
+                    inventoryPath = null;
+                }
+
+                if (string.IsNullOrEmpty(inventoryPath) || !inventoryPaths.Add(inventoryPath) ||
+                    (inventory.Exists && !IsFingerprint(inventory.NamesHash)) ||
+                    (!inventory.Exists && inventory.NamesHash != null) ||
+                    !this.IsInventoryCurrent(inventory))
+                {
+                    reason = $"the framework versions installed in '{inventory?.Path}' changed or are invalid";
                     return false;
                 }
             }
@@ -581,6 +604,63 @@ namespace Microsoft.Coyote.Rewriting
             {
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Checks whether the same framework versions are installed as when this was recorded.
+        /// </summary>
+        internal bool IsInventoryCurrent(CacheDirectoryListing inventory)
+        {
+            try
+            {
+                var current = this.CaptureDirectoryNames(inventory.Path);
+                return current.Exists == inventory.Exists &&
+                    string.Equals(current.NamesHash, inventory.NamesHash, StringComparison.Ordinal);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Captures which versions a shared framework directory currently offers, by name.
+        /// </summary>
+        /// <remarks>
+        /// Names only, and not recursive. What this answers is which candidates the roll-forward that
+        /// picks a framework directory would choose between, and that is decided by the names of the
+        /// directories alone -- the content of the one it settles on is already recorded, as an
+        /// ordinary search directory. Installing a newer patch of the same major adds a name here and
+        /// changes nothing else anywhere, which is precisely the case that used to go unnoticed.
+        ///
+        /// So this reads no files, which is what makes it affordable to take over every framework a
+        /// run asks for, on every check as well as on every write.
+        /// </remarks>
+        internal CacheDirectoryListing CaptureDirectoryNames(string path)
+        {
+            var inventory = new CacheDirectoryListing()
+            {
+                Path = NormalizeDirectory(path),
+                Exists = this.FileSystem.DirectoryExists(path)
+            };
+
+            if (inventory.Exists)
+            {
+                var names = this.FileSystem.GetDirectories(path, "*", false)
+                    .Select(directory => Path.GetFileName(
+                        directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)))
+                    .OrderBy(name => name, StringComparer.Ordinal);
+
+                var builder = new StringBuilder();
+                foreach (string name in names)
+                {
+                    builder.Append(name).Append('\n');
+                }
+
+                inventory.NamesHash = ComputeFingerprint(Encoding.UTF8.GetBytes(builder.ToString()));
+            }
+
+            return inventory;
         }
 
         /// <summary>

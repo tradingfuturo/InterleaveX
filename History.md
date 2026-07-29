@@ -32,10 +32,12 @@ PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
   leaves out exactly the assemblies that were *not* read. One that failed to
   resolve, replaced by a different assembly of the same length, changed nothing
   the run looked at, and the whole rewrite was skipped although resolution would
-  now succeed and produce different IL. The input directory and the configured
-  search paths are now hashed. The shared frameworks keep the cheap form, since
-  reading several hundred assemblies on both the check and the write path would
-  cost more than the rewrite being skipped, but gain the write time.
+  now succeed and produce different IL. Every directory resolution is offered is
+  now hashed — the input directory, the configured search paths and the shared
+  frameworks alike. Reading several hundred assemblies out of each framework
+  directory on both the check and the write path was weighed against the rewrite
+  it lets us skip, and correctness won: a name and a length cannot see a
+  replacement that keeps both, which is the case this exists for.
 - The copy into the output directory no longer skips input subtrees whose names
   merely begin like the output's. It avoids copying the output into itself by
   testing whether a directory's path starts with the output's, so an output of
@@ -78,6 +80,15 @@ PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
   the one it drew. So the seed reproduces the test that reported it, the
   instructions now say so, and a test asserts the per-test draw the wording
   rests on.
+- The rewriter probes the .NET installation the run was given rather than the
+  one the machine has. Resolution falls back to searching the shared frameworks
+  when an assembly names none of its own, and that fallback read the root
+  straight off the process — ignoring the environment handed to the engine for
+  exactly this, whose whole purpose is that a caller describing a different
+  installation gets a different answer. What is read out of the root stays on
+  real paths, deliberately: Mono.Cecil reads the candidate through its own
+  resolver, so a file system reporting one the disk does not hold would answer a
+  question nothing asks.
 - The cache of which directories fold case is keyed ordinally. Folding case in
   that key filed `Foo` and `foo` together, and where a case-sensitive Windows
   parent holds both, each carries its own flag and whichever was probed first

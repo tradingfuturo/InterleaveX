@@ -101,6 +101,21 @@ namespace Microsoft.Coyote.Rewriting
         private List<string> CachedFrameworkDirectories;
 
         /// <summary>
+        /// The shared framework directories the fallback resolution enumerated.
+        /// </summary>
+        /// <remarks>
+        /// The fallback probes every installed shared framework, which is a candidate space no
+        /// assembly's runtime configuration describes and which nothing else would record. An
+        /// assembly appearing in any of them satisfies a reference that resolution previously gave up
+        /// on, so what is recorded is which directories exist rather than which one answered.
+        ///
+        /// Gathered on the engine rather than handed to the cache as it is discovered, because the
+        /// fallback first runs while the assemblies are still being loaded, which is before the run
+        /// has a closure for the cache to attribute anything to.
+        /// </remarks>
+        private readonly HashSet<string> FallbackFrameworkRoots;
+
+        /// <summary>
         /// The file system this run reads and writes, other than through Mono.Cecil.
         /// </summary>
         private readonly IFileSystem FileSystem;
@@ -146,6 +161,7 @@ namespace Microsoft.Coyote.Rewriting
             this.Configuration = configuration;
             this.Passes = new LinkedList<Pass>();
             this.ResolveWarnings = new HashSet<string>();
+            this.FallbackFrameworkRoots = new HashSet<string>(StringComparer.Ordinal);
             this.LogWriter = logWriter;
             this.Profiler = profiler;
             this.FileSystem = fileSystem;
@@ -241,8 +257,8 @@ namespace Microsoft.Coyote.Rewriting
                 }
 
                 // Get the set of assemblies to rewrite.
-                var assemblies = AssemblyInfo.LoadAssembliesToRewrite(
-                    this.Options, this.OnResolveAssemblyFailure).ToList();
+                var assemblies = AssemblyInfo.LoadAssembliesToRewrite(this.Options,
+                    this.OnResolveAssemblyFailure, this.FileSystem, this.GetEnvironmentVariable).ToList();
                 cache.RegisterRewriteInputs(assemblies);
                 this.InitializePasses(assemblies);
                 foreach (var assembly in assemblies)
@@ -251,6 +267,10 @@ namespace Microsoft.Coyote.Rewriting
                     this.RewriteAssembly(assembly, outputPath, cache);
                     this.TrackAssemblyProducts(outputPath);
                 }
+
+                // After the passes, because the fallback resolution that fills this runs throughout
+                // them and not only while the assemblies are being loaded.
+                cache.RecordFrameworkInventories(this.FallbackFrameworkRoots);
 
                 // Only once every assembly has been dealt with: a manifest describing a partially
                 // rewritten directory would report assemblies as up to date that were never reached.
@@ -810,20 +830,33 @@ namespace Microsoft.Coyote.Rewriting
         /// This is a fallback for when the primary .runtimeconfig.json-based discovery did not
         /// add the right directories (e.g. when rewriting a class library without its own config).
         /// </summary>
+        /// <remarks>
+        /// Which installation to probe is asked of the environment this run was given, so a caller
+        /// describing a different one gets a different answer. What is then read out of it stays on
+        /// real paths, and deliberately: Mono.Cecil reads the candidate through its own resolver, so
+        /// a file system that reported a candidate the disk does not hold would be answering a
+        /// question nothing downstream asks.
+        /// </remarks>
         private AssemblyDefinition TryResolveFromSharedFrameworks(AssemblyNameReference reference)
         {
             if (this.CachedFrameworkDirectories is null)
             {
                 this.CachedFrameworkDirectories = new List<string>();
-                string dotnetRoot = AssemblyInfo.GetDotnetRoot();
+                string dotnetRoot = AssemblyInfo.GetDotnetRoot(this.FileSystem, this.GetEnvironmentVariable);
                 if (dotnetRoot != null)
                 {
                     string sharedDir = Path.Combine(dotnetRoot, "shared");
-                    if (Directory.Exists(sharedDir))
+                    if (this.FileSystem.DirectoryExists(sharedDir))
                     {
-                        foreach (string frameworkDir in Directory.GetDirectories(sharedDir))
+                        // Both levels are recorded, because both decide what is probed below: the
+                        // names under 'shared' are the frameworks on offer, and the names under each
+                        // of those are the versions of it. Neither is described by the runtime
+                        // configuration of any assembly, so nothing else would notice one arriving.
+                        this.FallbackFrameworkRoots.Add(sharedDir);
+                        foreach (string frameworkDir in this.FileSystem.GetDirectories(sharedDir, "*", false))
                         {
-                            foreach (string versionDir in Directory.GetDirectories(frameworkDir))
+                            this.FallbackFrameworkRoots.Add(frameworkDir);
+                            foreach (string versionDir in this.FileSystem.GetDirectories(frameworkDir, "*", false))
                             {
                                 this.CachedFrameworkDirectories.Add(versionDir);
                             }
@@ -836,7 +869,7 @@ namespace Microsoft.Coyote.Rewriting
             foreach (string dir in this.CachedFrameworkDirectories)
             {
                 string candidate = Path.Combine(dir, fileName);
-                if (File.Exists(candidate))
+                if (this.FileSystem.FileExists(candidate))
                 {
                     try
                     {
