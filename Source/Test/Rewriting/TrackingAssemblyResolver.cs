@@ -5,6 +5,7 @@
 
 using System;
 using System.Collections.Generic;
+using Microsoft.Coyote.IO;
 using Mono.Cecil;
 
 namespace Microsoft.Coyote.Rewriting
@@ -28,15 +29,63 @@ namespace Microsoft.Coyote.Rewriting
         private readonly HashSet<string> ResolvedPaths;
 
         /// <summary>
+        /// What each file looked like when it was read.
+        /// </summary>
+        private readonly Dictionary<string, IFileEntry> Stamps;
+
+        /// <summary>
+        /// The file system the stamps are taken from.
+        /// </summary>
+        private readonly IFileSystem FileSystem;
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="TrackingAssemblyResolver"/> class.
         /// </summary>
-        internal TrackingAssemblyResolver()
+        internal TrackingAssemblyResolver(IFileSystem fileSystem)
         {
+            this.FileSystem = fileSystem;
+
             // Ordinal, because this set only keeps one resolver from recording one file twice, and the
             // rewriting cache does the comparison that decides identity, against the file system the
             // files actually sit on. Two spellings surviving to there cost a hash, not an answer.
             this.ResolvedPaths = new HashSet<string>(StringComparer.Ordinal);
+            this.Stamps = new Dictionary<string, IFileEntry>(StringComparer.Ordinal);
         }
+
+        /// <summary>
+        /// Records what the specified file looks like now, if it has not been recorded already.
+        /// </summary>
+        /// <remarks>
+        /// The first stamp wins, because what this answers is "as it was when this run first read it",
+        /// and a later read of the same file is a read of whatever the first one already described.
+        ///
+        /// A file system that refuses to describe the file leaves it unstamped rather than failing the
+        /// resolution, which would turn a transient error into a rewriting failure. Nothing is lost by
+        /// it: the same file is opened again when the cache fingerprints it, and a refusal there is
+        /// already what stops a manifest from being written.
+        /// </remarks>
+        internal void Stamp(string path)
+        {
+            if (string.IsNullOrEmpty(path) || this.Stamps.ContainsKey(path))
+            {
+                return;
+            }
+
+            try
+            {
+                this.Stamps.Add(path, this.FileSystem.GetFile(path));
+            }
+            catch (Exception)
+            {
+                // Deliberately unstamped. See the remarks above.
+            }
+        }
+
+        /// <summary>
+        /// Returns what the specified file looked like when it was read.
+        /// </summary>
+        internal bool TryGetResolutionStamp(string path, out IFileEntry stamp) =>
+            this.Stamps.TryGetValue(path, out stamp);
 
         /// <summary>
         /// The paths of the modules that were resolved.
@@ -65,6 +114,11 @@ namespace Microsoft.Coyote.Rewriting
                 if (!string.IsNullOrEmpty(module.FileName))
                 {
                     this.ResolvedPaths.Add(module.FileName);
+
+                    // Stamped here rather than where the cache records it, because here is where the
+                    // file was read. What the cache fingerprints later describes whatever is on disk
+                    // by then, which is the same file only if nothing replaced it in between.
+                    this.Stamp(module.FileName);
                 }
             }
 

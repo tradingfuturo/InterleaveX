@@ -255,7 +255,7 @@ namespace Microsoft.Coyote.Rewriting
         /// <summary>
         /// Registers the exact closure that this run must record before a manifest may be written.
         /// </summary>
-        internal void RegisterRewriteInputs(IEnumerable<AssemblyInfo> assemblies)
+        internal void RegisterRewriteInputs(IEnumerable<IRewrittenAssembly> assemblies)
         {
             this.ExpectedRewriteInputs = new HashSet<string>(
                 assemblies.Select(assembly => RewritingCacheValidator.NormalizeFile(assembly.FilePath)),
@@ -348,16 +348,31 @@ namespace Microsoft.Coyote.Rewriting
         /// already rewritten too: recording what is actually on disk, rather than what a rewrite would
         /// have produced, is what lets the cache settle instead of missing on every run.
         /// </remarks>
-        internal void RecordAssembly(AssemblyInfo assembly, string outputPath, IEnumerable<string> threadStaticFields)
+        internal void RecordAssembly(IRewrittenAssembly assembly, string outputPath,
+            IEnumerable<string> threadStaticFields)
         {
             try
             {
+                // What this run wrote for this assembly. These are the files that are *supposed* to
+                // differ from what was read -- rewriting in place makes the input its own output --
+                // so they are the ones the check below has to leave alone.
+                var producedPaths = new HashSet<string>(this.Validator.OutputPathComparer)
+                {
+                    RewritingCacheValidator.NormalizeFile(outputPath),
+                    RewritingCacheValidator.NormalizeFile(Path.ChangeExtension(outputPath, "pdb"))
+                };
+
                 var capturedFiles = new Dictionary<string, CacheFile>(this.Validator.PathComparer);
                 CacheFile Capture(string path)
                 {
                     string normalizedPath = RewritingCacheValidator.NormalizeFile(path);
                     if (!capturedFiles.TryGetValue(normalizedPath, out CacheFile captured))
                     {
+                        if (!producedPaths.Contains(normalizedPath))
+                        {
+                            this.VerifyUnchangedSinceItWasRead(assembly, path, normalizedPath);
+                        }
+
                         captured = this.Validator.CaptureFile(normalizedPath, true);
                         capturedFiles.Add(normalizedPath, captured);
                     }
@@ -431,6 +446,45 @@ namespace Microsoft.Coyote.Rewriting
                 this.HasRecordingFailure = true;
                 this.LogWriter.LogDebug("..... Unable to record '{0}' in the rewriting cache: {1}",
                     assembly.Name, ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Throws if the specified file is no longer what it was when this run read it.
+        /// </summary>
+        /// <remarks>
+        /// Rewriting reads its input and its dependencies, and only once it is over does the cache
+        /// fingerprint them. Anything replaced in that interval is fingerprinted as its new self while
+        /// the output beside it was built from the old one, and the manifest that results is perfectly
+        /// self-consistent -- so every run after it skips, forever, against output that was never
+        /// produced from what the manifest describes. Nothing else in this class can notice that,
+        /// because every file it knows about does match what is on disk.
+        ///
+        /// Metadata rather than content, matching how the stamp was taken. A replacement preserving
+        /// both length and write time defeats it, which is the same residue the mirror carries and is
+        /// caught the same way: <see cref="RewritingCacheValidator.CaptureFile"/> hashes the file
+        /// immediately afterwards, so the manifest still describes the bytes that are there now.
+        ///
+        /// A file that was never stamped is not judged. Those are the ones this run produced, and the
+        /// probes -- a sibling of a reference, a symbol file beside an input -- that are read by
+        /// asking whether they exist rather than by opening them.
+        /// </remarks>
+        private void VerifyUnchangedSinceItWasRead(IRewrittenAssembly assembly, string path,
+            string normalizedPath)
+        {
+            if (!assembly.TryGetResolutionStamp(path, out IFileEntry stamp) &&
+                !assembly.TryGetResolutionStamp(normalizedPath, out stamp))
+            {
+                return;
+            }
+
+            var current = this.FileSystem.GetFile(normalizedPath);
+            if (current.Exists != stamp.Exists ||
+                (current.Exists && (current.Length != stamp.Length ||
+                    current.LastWriteTimeUtc != stamp.LastWriteTimeUtc)))
+            {
+                throw new IOException(
+                    $"The file '{normalizedPath}' changed after '{assembly.Name}' read it.");
             }
         }
 

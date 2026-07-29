@@ -20,7 +20,7 @@ namespace Microsoft.Coyote.Rewriting
     /// <summary>
     /// Contains information for an assembly that is being rewritten.
     /// </summary>
-    internal sealed class AssemblyInfo : IDisposable
+    internal sealed class AssemblyInfo : IRewrittenAssembly, IDisposable
     {
         /// <summary>
         /// The full name of the assembly.
@@ -72,6 +72,33 @@ namespace Microsoft.Coyote.Rewriting
         /// file the cache knows about stayed the same.
         /// </remarks>
         internal IEnumerable<string> ResolvedModulePaths => this.Resolver.ResolvedModulePaths;
+
+        /// <inheritdoc/>
+        /// <remarks>
+        /// Answered from the resolver, which stamped each file as it read it. Remains answerable after
+        /// <see cref="Dispose"/>, because the cache records an assembly only once its output is in its
+        /// final place, which is after the definition is closed.
+        /// </remarks>
+        public bool TryGetResolutionStamp(string path, out IFileEntry stamp) =>
+            this.Resolver.TryGetResolutionStamp(path, out stamp);
+
+        /// <inheritdoc/>
+        string IRewrittenAssembly.Name => this.Name;
+
+        /// <inheritdoc/>
+        string IRewrittenAssembly.FilePath => this.FilePath;
+
+        /// <inheritdoc/>
+        IReadOnlyList<string> IRewrittenAssembly.ReferenceNames => this.ReferenceNames;
+
+        /// <inheritdoc/>
+        IReadOnlyList<string> IRewrittenAssembly.SearchDirectories => this.SearchDirectories;
+
+        /// <inheritdoc/>
+        IEnumerable<string> IRewrittenAssembly.ResolvedModulePaths => this.ResolvedModulePaths;
+
+        /// <inheritdoc/>
+        IReadOnlyList<string> IRewrittenAssembly.FrameworkInventoryRoots => this.FrameworkInventoryRoots;
 
         /// <summary>
         /// The directories that were searched while resolving the modules of this assembly.
@@ -142,7 +169,16 @@ namespace Microsoft.Coyote.Rewriting
             this.IsDisposed = false;
 
             // TODO: can we reuse it, or do we need a new one for each assembly?
-            var assemblyResolver = new TrackingAssemblyResolver();
+            var assemblyResolver = new TrackingAssemblyResolver(fileSystem);
+
+            // Stamped before anything below reads them, which is the whole point of doing it here: the
+            // rewriting cache fingerprints these once rewriting is over, and a stamp taken now is what
+            // lets it tell "unchanged since it was read" from "changed underneath us and re-read as
+            // something else". Absence is stamped as faithfully as content, so a symbol file appearing
+            // while a pass runs is drift too.
+            assemblyResolver.Stamp(this.FilePath);
+            assemblyResolver.Stamp(Path.ChangeExtension(this.FilePath, "pdb"));
+            assemblyResolver.Stamp(Path.ChangeExtension(this.FilePath, ".runtimeconfig.json"));
 
             // Add known search directories for resolving assemblies. The directory of the assemblies
             // being rewritten is searched first, so that shared dependencies -- most importantly the
