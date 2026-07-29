@@ -692,7 +692,7 @@ namespace Microsoft.Coyote.Rewriting
                 // from the listing itself rather than from a call per file. This runs over the shared
                 // framework directories, which hold several hundred assemblies each, and it runs both
                 // when the manifest is checked and when it is written.
-                var entries = this.FileSystem.GetFileEntries(path, "*.dll");
+                var entries = this.GetResolvableEntries(path);
                 var files = new List<KeyValuePair<string, string>>(entries.Count);
                 foreach (var entry in entries)
                 {
@@ -710,7 +710,7 @@ namespace Microsoft.Coyote.Rewriting
                     builder.Append(file.Key).Append('|').Append(file.Value).Append('\n');
                 }
 
-                var after = this.FileSystem.GetFileEntries(path, "*.dll");
+                var after = this.GetResolvableEntries(path);
                 if (!HaveSameEntries(entries, after))
                 {
                     throw new IOException($"The directory '{path}' changed while it was being fingerprinted.");
@@ -725,6 +725,41 @@ namespace Microsoft.Coyote.Rewriting
             }
 
             return directory;
+        }
+
+        /// <summary>
+        /// The file extensions an assembly resolver will accept as a candidate for a reference.
+        /// </summary>
+        /// <remarks>
+        /// Mono.Cecil probes '.exe' and '.dll' for an ordinary reference, and '.winmd' and '.dll' for
+        /// a Windows Runtime one. Recording only the assemblies meant an executable appearing in a
+        /// searched directory changed nothing here while changing what resolution answers -- and it
+        /// does not merely satisfy a reference that used to fail: '.exe' is probed *before* '.dll',
+        /// so a new one takes a resolution that currently goes to an assembly beside it.
+        /// </remarks>
+        private static readonly string[] ResolvableExtensions = new[] { ".dll", ".exe", ".winmd" };
+
+        /// <summary>
+        /// Returns the files in the specified directory that could satisfy a reference.
+        /// </summary>
+        /// <remarks>
+        /// Listed once and filtered here rather than asked for one pattern at a time: the listing is
+        /// the expensive half, and this runs twice per directory per capture to notice a directory
+        /// changing underneath it.
+        /// </remarks>
+        private IReadOnlyList<IFileEntry> GetResolvableEntries(string path)
+        {
+            var entries = new List<IFileEntry>();
+            foreach (var entry in this.FileSystem.GetFileEntries(path, "*"))
+            {
+                if (ResolvableExtensions.Contains(Path.GetExtension(entry.Path),
+                    StringComparer.OrdinalIgnoreCase))
+                {
+                    entries.Add(entry);
+                }
+            }
+
+            return entries;
         }
 
         private static bool HaveSameEntries(IReadOnlyList<IFileEntry> left, IReadOnlyList<IFileEntry> right)
