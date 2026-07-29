@@ -60,10 +60,7 @@ namespace Microsoft.Coyote.Rewriting
             this.PreviousMirroredFiles = new HashSet<string>(this.PathComparer);
             this.PreviousProducedFiles = new HashSet<string>(this.PathComparer);
 
-            if (!this.TryLoadCurrentManifest())
-            {
-                this.TryMigrateVersion3Cache();
-            }
+            this.TryLoadCurrentManifest();
         }
 
         internal void RemoveStaleMirroredFiles(IEnumerable<string> currentMirroredFiles)
@@ -193,71 +190,6 @@ namespace Microsoft.Coyote.Rewriting
             }
 
             return true;
-        }
-
-        private void TryMigrateVersion3Cache()
-        {
-            string cachePath = Path.Combine(this.OutputDirectory, RewritingCache.ManifestFileName);
-            if (!this.FileSystem.FileExists(cachePath))
-            {
-                return;
-            }
-
-            try
-            {
-                var manifest = JsonSerializer.Deserialize<CacheManifest>(this.FileSystem.ReadAllText(cachePath));
-                if (manifest?.SchemaVersion != 3 ||
-                    !this.PathComparer.Equals(
-                        RewritingCacheValidator.NormalizeDirectory(manifest.AssembliesDirectory),
-                        this.AssembliesDirectory) ||
-                    !this.PathComparer.Equals(
-                        RewritingCacheValidator.NormalizeDirectory(manifest.OutputDirectory),
-                        this.OutputDirectory))
-                {
-                    return;
-                }
-
-                foreach (var entry in manifest.Entries ?? Enumerable.Empty<CacheEntry>())
-                {
-                    this.ImportSourcePath(entry?.Input?.Path);
-                    this.ImportSourcePath(entry?.Symbols?.Path);
-                    this.ImportSourcePath(entry?.RuntimeConfig?.Path);
-                    this.ImportOutputPath(entry?.Output?.Path);
-                    this.ImportOutputPath(entry?.OutputSymbols?.Path);
-                    foreach (var artifact in entry?.Artifacts ?? Enumerable.Empty<CacheFile>())
-                    {
-                        this.ImportOutputPath(artifact?.Path);
-                    }
-                }
-
-                foreach (var module in manifest.ResolvedModules ?? Enumerable.Empty<CacheFile>())
-                {
-                    this.ImportSourcePath(module?.Path);
-                }
-            }
-            catch (Exception ex)
-            {
-                this.LogWriter.LogDebug("..... Unable to migrate output ownership from the old cache: {0}",
-                    ex.Message);
-                this.PreviousMirroredFiles.Clear();
-                this.PreviousProducedFiles.Clear();
-            }
-        }
-
-        private void ImportSourcePath(string path)
-        {
-            if (TryGetRelativePath(this.AssembliesDirectory, path, this.PathComparison, out string relative))
-            {
-                this.PreviousMirroredFiles.Add(relative);
-            }
-        }
-
-        private void ImportOutputPath(string path)
-        {
-            if (this.TryGetRelativeOutputPath(path, out string relative))
-            {
-                this.PreviousProducedFiles.Add(relative);
-            }
         }
 
         private void DeleteOwnedFiles(IEnumerable<string> relativePaths)
