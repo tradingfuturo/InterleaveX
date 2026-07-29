@@ -42,6 +42,11 @@ PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
   'bin/out' also claimed 'bin/output-assets' and left everything under it out of
   the mirror entirely. The test is now by path segment, and under the file
   system's own case rules rather than ordinal.
+- The nightly fuzzing job no longer reports a failed build as a bug found by
+  fuzzing. Both post-failure steps ran on 'failure()', which is true after a
+  failed checkout, SDK install or build as well, so a tree that did not compile
+  was announced as a schedule the deterministic seeds do not visit, complete with
+  instructions for reproducing it from a seed that no run ever printed.
 - Every test that builds its own testing engine is seeded like the rest. The
   per-test seed is applied where the base class builds the engine, which covers
   no test that builds one itself; one such test ran a real engine from a fresh

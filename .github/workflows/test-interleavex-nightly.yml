@@ -1,0 +1,133 @@
+# Copyright (c) 2026 pipflow.com <https://pipflow.com>
+#
+# This file is part of InterleaveX and is licensed under the GNU General
+# Public License v3.0 or later. See LICENSE-GPL for the full text.
+
+# Explores the schedules that the ordinary CI run no longer reaches.
+#
+# Every test derives its starting seed from its own name, so a test explores the same schedules on
+# every run and a failure can be reproduced by running it again. That is what makes the suite usable
+# as a regression gate, and it is paid for here: the suite used to draw a fresh seed on every run, so
+# a bug that needed one interleaving in fifty was found eventually, by somebody's pull request, on a
+# run nobody could repeat. This job is where that exploration went.
+#
+# So a failure here is the point rather than a problem, and it is not the same kind of event as a
+# failure on the main workflow. It says a real bug exists on a schedule the deterministic seeds do
+# not visit. Each failing test writes the seed it explored from into its own output, and that output
+# is attached to the run below, which is what turns a nightly failure back into a test you can run
+# on your own machine.
+name: InterleaveX Nightly
+
+on:
+  schedule:
+    # 05:00 UTC, which is outside working hours in every timezone this is developed in, so a nightly
+    # run is never competing with CI for runners.
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: 'Seed to explore from: "random" for fresh dice, or the unsigned integer printed by a failing nightly test to reproduce it.'
+        required: false
+        default: 'random'
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.platform }}, run ${{ matrix.attempt }})
+    strategy:
+      # Every leg is an independent sample, so one of them finding a bug is exactly when the others
+      # are most worth finishing: they say whether it is one schedule or many, and on which platforms.
+      fail-fast: false
+      matrix:
+        platform: [ windows-latest, ubuntu-latest ]
+        attempt: [ 1, 2, 3 ]
+    runs-on: ${{ matrix.platform }}
+    env:
+      COYOTE_CLI_TELEMETRY_OPTOUT: 1
+      # The whole reason this workflow exists. 'random' restores the behaviour the suite had before
+      # seeds were derived from test names: a fresh seed per test, per run. A dispatch can pin an
+      # integer instead, to re-explore a schedule a previous night failed on.
+      COYOTE_TEST_SEED: ${{ github.event.inputs.seed || 'random' }}
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup NuGet.exe
+        uses: NuGet/setup-nuget@v1
+        with:
+          nuget-version: '6.x'
+      - name: Setup .NET 10.0 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Setup .NET 9.0 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      - name: Setup .NET 8.0 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      # Tests run under '--blame-crash', which needs this to turn a test host that died into a dump
+      # naming the schedule that killed it. That matters more here than anywhere else: a crash found
+      # by fuzzing is the one failure that cannot be reproduced by reading the assertion.
+      - name: Setup debugging tools
+        if: ${{ matrix.platform == 'windows-latest' }}
+        run: |
+          Invoke-WebRequest -Uri https://download.sysinternals.com/files/Procdump.zip -OutFile Procdump.zip
+          7z x .\Procdump.zip -oexternal && rm Procdump.zip
+          echo "PROCDUMP_PATH=$pwd\external" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+        shell: pwsh
+      - name: Report what this run is exploring
+        run: |
+          Write-Host "COYOTE_TEST_SEED = $Env:COYOTE_TEST_SEED"
+          if ($Env:COYOTE_TEST_SEED -eq 'random') {
+            Write-Host "Each test explores from a seed of its own, different from every other run."
+          } else {
+            Write-Host "Every test that names no seed of its own explores from $Env:COYOTE_TEST_SEED."
+          }
+        shell: pwsh
+      # Without '-ci', which additionally builds .NET Framework 4.6.2 and .NET 6.0. This job tests
+      # one framework, so building the other two is time spent on assemblies nothing here runs.
+      - name: Build InterleaveX projects
+        run: ./Scripts/build.ps1
+        shell: pwsh
+      # Also without '-ci', which would run every framework that was built and triple the time each
+      # leg takes. What is explored is the schedule space, which is very nearly the same on all of
+      # them, so the budget buys independent runs instead of the same run three times over.
+      - name: Run InterleaveX tests
+        id: tests
+        run: ./Scripts/run-tests.ps1
+        shell: pwsh
+      # The seed each test explored from is written to that test's own output, which xunit attaches
+      # to the result only when the test fails -- which is precisely the case this exists for. Named
+      # per leg because an artifact name has to be unique within a run.
+      #
+      # Both steps below are conditioned on the test step's own outcome, not on 'failure()' alone,
+      # which is true after a failed checkout, SDK install or build as well. A build that did not
+      # compile would otherwise be announced as a schedule that fuzzing found, complete with
+      # instructions for reproducing it from a seed, and would try to attach results no run wrote.
+      #
+      # 'failure()' is kept alongside it because an 'if' holding no status function has 'success()'
+      # applied to it, which is false for every step after a failing one -- so the outcome test on
+      # its own would never run these at all.
+      - name: Archive test results
+        if: ${{ failure() && steps.tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: interleavex-nightly-results-${{ matrix.platform }}-${{ matrix.attempt }}
+          path: ./Tests/**/TestResults
+          if-no-files-found: warn
+      - name: Explain how to reproduce a failure
+        if: ${{ failure() && steps.tests.outcome == 'failure' }}
+        run: |
+          Write-Host "A test failed while exploring schedules the deterministic seeds do not visit."
+          Write-Host ""
+          Write-Host "The failing test's output names the seed it explored from, as:"
+          Write-Host "    ... Using random generator seed <number>."
+          Write-Host "It is in the attached 'interleavex-nightly-results-${{ matrix.platform }}-${{ matrix.attempt }}' artifact."
+          Write-Host ""
+          Write-Host "To reproduce it locally, run that one test with the seed it reported:"
+          Write-Host '    $env:COYOTE_TEST_SEED = "<number>"'
+          Write-Host "    ./Scripts/run-tests.ps1 -test <target> -filter <TestName>"
+          Write-Host ""
+          Write-Host "A seed reproduces the whole run it came from, so re-dispatching this workflow"
+          Write-Host "with that seed re-explores the same schedules on both platforms."
+        shell: pwsh
