@@ -132,5 +132,53 @@ namespace Microsoft.Coyote.Runtime.Tests
             var configuration = Configuration.Create().WithRandomGeneratorSeed(Pinned);
             Assert.Equal(Pinned, this.WithDefaultRandomSeed(configuration).RandomGeneratorSeed.Value);
         }
+
+        [Fact(Timeout = 5000)]
+        public void TestEachTestDrawsItsOwnSeedWhenTheRunAsksForRandom()
+        {
+            // What the nightly job's instructions for reproducing a failure rest on. Under 'random'
+            // the seed is drawn per test, so the one a failing test reports describes that test and
+            // nothing else; re-dispatching with it gives every other unpinned test that value
+            // instead of the one it drew. The instructions said a seed reproduced the whole run,
+            // which is true of neither mode: under 'random' no single seed describes the run, and
+            // under a fixed one the value is the same everywhere rather than recovered from it.
+            //
+            // Two instances rather than two calls, because xunit builds one per test method and it
+            // is across those that the seeds have to differ. 'TestARandomSeedIsDrawnOnceForTheWholeTest'
+            // above covers the other half: within one instance the draw happens once.
+            uint first = new SeedProbe().Seed;
+            uint second = new SeedProbe().Seed;
+
+            if (IsRandomSeedRequested)
+            {
+                Assert.NotEqual(first, second);
+            }
+            else
+            {
+                // Both probes are the same class and neither is running as a test, so both fall back
+                // to the class name. A fixed seed names one value for everything; a derived one
+                // derives the same value from the same identity. Either way the run is repeatable,
+                // which is what the deterministic mode is for.
+                Assert.Equal(first, second);
+            }
+        }
+
+        /// <summary>
+        /// A test that is not one, built only to be asked what seed it would explore from.
+        /// </summary>
+        /// <remarks>
+        /// Private and nested so that xunit does not collect it, and constructed without an output
+        /// helper because the identity it would find there is exactly what must not vary between the
+        /// two instances above: with none, both fall back to this class's name.
+        /// </remarks>
+        private sealed class SeedProbe : BaseRuntimeTest
+        {
+            internal SeedProbe()
+                : base(null)
+            {
+            }
+
+            internal uint Seed => this.GetDefaultRandomSeed();
+        }
     }
 }
