@@ -21,6 +21,14 @@ PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
   test, which sends whoever is reading it somewhere the failure is not. The two
   cases were already told apart to report them; that distinction now reaches the
   advice as well.
+- The script helper checks no longer depend on what happens to be built. One of
+  them drives `run-tests.ps1` to prove that a run with nothing to do fails, and it
+  did so against this repository — where before the build there is nothing at all,
+  which is a different case than the one it asserted, and after a Windows CI build
+  there is `net462`, at which point asking for `net462` does not test nothing but
+  runs the whole Tools suite and passes. It now runs against a copy of the scripts
+  laid beside a fake tree, which fixes the answer, checks both ways of contributing
+  no test run, and cannot run a test whatever happens.
 - Exploration is faster and allocates far less per scheduling step. Measured with
   `Tools/SchedulerBench` at 100 iterations on an otherwise idle machine, against
   the three changes below combined: the `deep` workload, which isolates per-step
