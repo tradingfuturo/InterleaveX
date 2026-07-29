@@ -42,6 +42,15 @@ PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
   'bin/out' also claimed 'bin/output-assets' and left everything under it out of
   the mirror entirely. The test is now by path segment, and under the file
   system's own case rules rather than ordinal.
+- Every test that builds its own testing engine is seeded like the rest. The
+  per-test seed is applied where the base class builds the engine, which covers
+  no test that builds one itself; one such test ran a real engine from a fresh
+  seed on every run, so a failure it found could not be reproduced. The methods
+  that build their own engine are now frozen in a list per assembly, and a new
+  one fails. Because a test can only read the assemblies beside it — a test
+  project's output holds its own and nothing of its siblings — a project that
+  froze nothing was checked by nothing. A semantic build analyzer now requires
+  the guard, and a centralized IL test verifies the compiled assemblies too.
 - A run asked to explore from a new seed each time now writes that seed down. It
   was left for the runtime to derive from a fresh guid, which explored just as
   widely but put the value only inside the strategy description — so the nightly

@@ -1,0 +1,10 @@
+<Project>
+  <ItemGroup>
+    <ProjectReference Include="$(MSBuildThisFileDirectory)..\Tools\TestConventionAnalyzer\TestConventionAnalyzer.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false">
+      <SetConfiguration>Configuration=$(Configuration)</SetConfiguration>
+      <AdditionalProperties>Configuration=$(Configuration)</AdditionalProperties>
+    </ProjectReference>
+  </ItemGroup>
+</Project>

@@ -162,9 +162,14 @@ namespace Microsoft.Coyote.BugFinding.Tests
             var iterationsThatHashed = new HashSet<uint>();
             uint current = 0;
 
-            var configuration = CreateConfiguration()
+            // Seeded like every other test in the suite. 'CreateConfiguration' deliberately avoids
+            // the base class helper, which is also where the default seed is applied, so without
+            // this the one test here that runs a real engine would explore from a fresh seed on
+            // every run and a failure could not be reproduced -- the very thing the per-test seeds
+            // exist to guarantee.
+            var configuration = this.WithDefaultRandomSeed(CreateConfiguration()
                 .WithTestingIterations(Iterations)
-                .WithTestIterationsRunToCompletion();
+                .WithTestIterationsRunToCompletion());
 
             var logWriter = new LogWriter(configuration);
             using var engine = new TestingEngine(configuration, () =>
