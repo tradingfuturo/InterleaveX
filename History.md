@@ -16,6 +16,48 @@ concurrency defects across our codebase.
 PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
 
 ### v1.8.0 (InterleaveX)
+- Whether the output directory folds case is read from that directory rather than
+  inferred from one above it. Windows keeps case sensitivity per directory, so an
+  insensitive parent can hold a sensitive child, and the probe flipped the case of
+  a directory's own name and asked its parent to resolve it — a question about the
+  parent's entries, never about the directory the answer is used for. The answer
+  picks the comparer that decides whether a rewritten output is recognised as
+  protected before the original is copied over it, and the wrong one there leaves
+  an uninstrumented output that nothing downstream detects. The flag is now read
+  directly on Windows; everywhere else case folding belongs to the mounted file
+  system, which the enclosing directory does answer for, and the probe remains.
+- A directory offered to resolution is identified by what is in it, not only by
+  how big it is. Each assembly was recorded by name and length, on the reasoning
+  that anything both offered and read is already recorded with its hash — which
+  leaves out exactly the assemblies that were *not* read. One that failed to
+  resolve, replaced by a different assembly of the same length, changed nothing
+  the run looked at, and the whole rewrite was skipped although resolution would
+  now succeed and produce different IL. The input directory and the configured
+  search paths are now hashed. The shared frameworks keep the cheap form, since
+  reading several hundred assemblies on both the check and the write path would
+  cost more than the rewrite being skipped, but gain the write time.
+- The copy into the output directory no longer skips input subtrees whose names
+  merely begin like the output's. It avoids copying the output into itself by
+  testing whether a directory's path starts with the output's, so an output of
+  'bin/out' also claimed 'bin/output-assets' and left everything under it out of
+  the mirror entirely. The test is now by path segment, and under the file
+  system's own case rules rather than ordinal.
+- The cache of which directories fold case is keyed ordinally. Folding case in
+  that key filed `Foo` and `foo` together, and where a case-sensitive Windows
+  parent holds both, each carries its own flag and whichever was probed first
+  answered for the other — picking the comparer that decides whether a rewritten
+  output is recognised before the original is copied over it. Two probes for one
+  directory is the cost, and it is the cheaper mistake.
+- The copy into the output directory refuses to read a file something else is
+  writing, rather than comparing whatever bytes are there at the moment. It skips
+  a copy when the destination already holds what copying would put there, decided
+  on content — and a file caught half way through being written can hold exactly
+  the bytes already in the output, at which point equal is the answer that leaves
+  the stale ones in place. Reading and comparing want opposite things here and
+  each must not have the other's: a hash taken mid-write matches nothing, which is
+  read as "changed" and costs a rewrite, while the same read on the comparison
+  path costs an uninstrumented output that nothing downstream detects. Which of
+  the two a read asks for is now part of asking for it.
 - `run-tests.ps1` tells you to build first only when something was never built.
   The advice was printed after any failing run, including an ordinary failing
   test, which sends whoever is reading it somewhere the failure is not. The two

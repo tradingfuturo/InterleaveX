@@ -7,8 +7,6 @@ using System.IO;
 using System.Linq;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
-using System.Security.Cryptography;
-using System.Text;
 
 namespace Microsoft.Coyote.Rewriting
 {
@@ -105,22 +103,11 @@ namespace Microsoft.Coyote.Rewriting
             using var stream = new MemoryStream();
             var serializer = new DataContractJsonSerializer(typeof(AssemblySignature));
             serializer.WriteObject(stream, this);
-            var data = stream.GetBuffer();
 
-            // Compute the SHA256 hash.
-            using (SHA256 sha256Hash = SHA256.Create())
-            {
-                data = sha256Hash.ComputeHash(data);
-            }
-
-            // Format each byte of the hashed data as a hexadecimal string.
-            var sb = new StringBuilder();
-            foreach (var b in data)
-            {
-                sb.Append(b.ToString("x2"));
-            }
-
-            return sb.ToString();
+            // This identity is embedded in rewritten assemblies, so retain its established
+            // cryptographic algorithm independently of the faster fingerprints used by the
+            // incremental cache's large-file hot path.
+            return RewritingCacheValidator.ComputeSha256(stream.GetBuffer());
         }
     }
 }

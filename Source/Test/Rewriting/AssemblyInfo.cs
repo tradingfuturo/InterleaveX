@@ -11,6 +11,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
+using Microsoft.Coyote.IO;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 
@@ -489,12 +490,24 @@ namespace Microsoft.Coyote.Rewriting
         /// <summary>
         /// Returns the root directory of the .NET installation, or null if it cannot be determined.
         /// </summary>
-        internal static string GetDotnetRoot()
+        internal static string GetDotnetRoot() =>
+            GetDotnetRoot(HostFileSystem.Instance, Environment.GetEnvironmentVariable);
+
+        /// <summary>
+        /// Returns the root directory of the .NET installation according to the specified file system
+        /// and environment, or null if it cannot be determined.
+        /// </summary>
+        /// <remarks>
+        /// Both are supplied rather than read directly because this answer used to be cached in a
+        /// static for the lifetime of the process, which made it whatever the first caller resolved.
+        /// A test that describes a different installation has to be able to get a different answer.
+        /// </remarks>
+        internal static string GetDotnetRoot(IFileSystem fileSystem, Func<string, string> getEnvironmentVariable)
         {
             // Check the DOTNET_ROOT environment variable first.
-            string dotnetRoot = Environment.GetEnvironmentVariable(
+            string dotnetRoot = getEnvironmentVariable(
                 Environment.Is64BitProcess ? "DOTNET_ROOT" : "DOTNET_ROOT(x86)");
-            if (!string.IsNullOrEmpty(dotnetRoot) && Directory.Exists(dotnetRoot))
+            if (!string.IsNullOrEmpty(dotnetRoot) && fileSystem.DirectoryExists(dotnetRoot))
             {
                 return dotnetRoot;
             }
@@ -505,7 +518,7 @@ namespace Microsoft.Coyote.Rewriting
             // Navigate up 3 levels: version -> framework name -> shared -> dotnet root.
             string runtimeDir = System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory();
             string candidate = Path.GetFullPath(Path.Combine(runtimeDir, "..", "..", ".."));
-            if (Directory.Exists(Path.Combine(candidate, "shared")))
+            if (fileSystem.DirectoryExists(Path.Combine(candidate, "shared")))
             {
                 return candidate;
             }

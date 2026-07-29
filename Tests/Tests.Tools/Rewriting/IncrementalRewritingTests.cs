@@ -5,9 +5,12 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.RegularExpressions;
+using Microsoft.Coyote.IO;
 using Microsoft.Coyote.Logging;
 using Microsoft.Coyote.Rewriting;
 using Xunit;
@@ -120,6 +123,39 @@ namespace Microsoft.Coyote.Tools.Tests
         }
 
         [Fact(Timeout = 60000)]
+        public void TestDeletedMirroredFileIsRemovedButUnownedOutputSurvives()
+        {
+            using var workspace = Workspace.Create();
+            string ownedName = "mirrored.txt";
+            string ownedInput = Path.Combine(workspace.InputDirectory, ownedName);
+            string ownedOutput = Path.Combine(workspace.OutputDirectory, ownedName);
+            string unownedOutput = Path.Combine(workspace.OutputDirectory, "custom.txt");
+            File.WriteAllText(ownedInput, "mirrored");
+            workspace.Rewrite();
+            File.WriteAllText(unownedOutput, "custom");
+
+            File.Delete(ownedInput);
+            workspace.Rewrite();
+
+            Assert.False(File.Exists(ownedOutput));
+            Assert.Equal("custom", File.ReadAllText(unownedOutput));
+        }
+
+        [Fact(Timeout = 60000)]
+        public void TestDisablingDiffGenerationRemovesTheOwnedArtifact()
+        {
+            using var workspace = Workspace.Create();
+            workspace.Rewrite(options => options.IsDiffingAssemblyContents = true);
+            string diffPath = Path.ChangeExtension(workspace.OutputAssemblyPath, ".diff.json");
+            Assert.True(File.Exists(diffPath), "File not found: " + diffPath);
+
+            Assert.Contains(RewroteMessage, workspace.Rewrite(
+                options => options.IsDiffingAssemblyContents = false));
+
+            Assert.False(File.Exists(diffPath));
+        }
+
+        [Fact(Timeout = 60000)]
         public void TestChangedConfigurationIsRewritten()
         {
             using var workspace = Workspace.Create();
@@ -203,7 +239,22 @@ namespace Microsoft.Coyote.Tools.Tests
 
             string runtimeConfig = Path.ChangeExtension(workspace.InputAssemblyPath, ".runtimeconfig.json");
             Assert.True(File.Exists(runtimeConfig), "File not found: " + runtimeConfig);
-            File.WriteAllText(runtimeConfig, File.ReadAllText(runtimeConfig).Replace("8.0.0", "8.0.1"));
+
+            // The version named here is the one this assembly was built against, so it cannot be
+            // written out literally: a version substituted for itself leaves the file byte for byte
+            // as it was, the cache is right to report it unchanged, and the test fails while looking
+            // like the cache missed something. Bumping whatever is there keeps this about the cache
+            // on every framework rather than on the one whose version the test happened to name.
+            string original = File.ReadAllText(runtimeConfig);
+            string changed = Regex.Replace(original, "(\"version\":\\s*\")(\\d+)\\.(\\d+)\\.(\\d+)(\")",
+                match => string.Concat(match.Groups[1].Value, match.Groups[2].Value, ".",
+                    match.Groups[3].Value, ".",
+                    (int.Parse(match.Groups[4].Value, CultureInfo.InvariantCulture) + 1)
+                        .ToString(CultureInfo.InvariantCulture),
+                    match.Groups[5].Value));
+            Assert.NotEqual(original, changed);
+
+            File.WriteAllText(runtimeConfig, changed);
             Assert.Contains(RewroteMessage, workspace.Rewrite());
         }
 
@@ -212,8 +263,8 @@ namespace Microsoft.Coyote.Tools.Tests
         {
             // An input directory that was rewritten in place holds debug artifacts under the same
             // names as the ones this output directory produces, and the copy that mirrors the input
-            // would otherwise put those over them. They are compared by length alone, so a stale one
-            // of the right size would then be taken for the real thing on every run after.
+            // would otherwise put those over them. Their content fingerprints also prevent a stale
+            // equal-length artifact from being taken for the real thing on every run after.
             using var workspace = Workspace.Create();
             workspace.Rewrite(options => options.IsDiffingAssemblyContents = true);
 
@@ -255,19 +306,86 @@ namespace Microsoft.Coyote.Tools.Tests
         }
 
         [Fact(Timeout = 60000)]
-        public void TestPathComparerMatchesTheFileSystem()
+        public void TestInputChangedAfterValidationIsNotProtectedFromRewriting()
+        {
+            using var workspace = Workspace.Create();
+            workspace.Rewrite();
+            string runtimeConfig = Path.ChangeExtension(
+                workspace.InputAssemblyPath, ".runtimeconfig.json");
+            bool mutated = false;
+            var fileSystem = new CallbackFileSystem(HostFileSystem.Instance,
+                (directory, searchPattern) =>
+                {
+                    if (!mutated &&
+                        string.Equals(directory, workspace.InputDirectory,
+                            StringComparison.OrdinalIgnoreCase) &&
+                        searchPattern == "*")
+                    {
+                        byte[] contents = File.ReadAllBytes(runtimeConfig);
+                        int whitespace = Array.IndexOf(contents, (byte)' ');
+                        Assert.True(whitespace >= 0, "The staged runtime configuration has no space to replace.");
+                        contents[whitespace] = (byte)'\t';
+                        File.WriteAllBytes(runtimeConfig, contents);
+                        mutated = true;
+                    }
+                });
+
+            string log = workspace.Rewrite(fileSystem);
+
+            Assert.True(mutated);
+            Assert.Contains(RewroteMessage, log);
+            Assert.NotEqual(
+                new FileInfo(workspace.InputAssemblyPath).Length,
+                new FileInfo(workspace.OutputAssemblyPath).Length);
+        }
+
+        [Fact(Timeout = 60000)]
+        public void TestFileDisappearingFromMirrorInventoryIsRetried()
+        {
+            using var workspace = Workspace.Create();
+            workspace.Rewrite();
+            string transientInput = Path.Combine(workspace.InputDirectory, "transient.txt");
+            string transientOutput = Path.Combine(workspace.OutputDirectory, "transient.txt");
+            File.WriteAllText(transientInput, "short lived");
+            bool removed = false;
+            var fileSystem = new CallbackFileSystem(HostFileSystem.Instance, beforeCopyFile:
+                (source, _, __) =>
+                {
+                    if (!removed &&
+                        string.Equals(source, transientInput, StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.Delete(transientInput);
+                        removed = true;
+                    }
+                });
+
+            string log = workspace.Rewrite(fileSystem);
+
+            Assert.True(removed);
+            Assert.Contains(UpToDateMessage, log);
+            Assert.False(File.Exists(transientOutput));
+        }
+
+        [Fact(Timeout = 60000)]
+        public void TestCaseSensitivityProbeMatchesTheFileSystem()
         {
             // Whether two spellings name one file is a property of the file system rather than of the
-            // platform: macOS ships case-insensitive but can be formatted otherwise. So the comparer is
-            // checked against what this file system actually does, asked here independently.
+            // platform: macOS ships case-insensitive but can be formatted otherwise. So the probe is
+            // checked against what this file system actually does, asked here independently. This is
+            // the one question an injected file system cannot be asked, which is why it is asked of
+            // the real one -- and of the very member production consults, rather than of a second
+            // spelling of the same rule kept alive for this test.
             using var workspace = Workspace.Create();
             string directory = Path.Combine(workspace.InputDirectory, "CasedDirectory");
             Directory.CreateDirectory(directory);
-            bool isCaseInsensitive = Directory.Exists(
-                Path.Combine(workspace.InputDirectory, "caseddirectory"));
 
-            Assert.Equal(isCaseInsensitive,
-                RewritingCache.GetPathComparer(workspace.InputDirectory).Equals(directory, directory.ToLowerInvariant()));
+            // Only the leaf is respelled, and the same directory is then given to both halves, so the
+            // file system and the probe are asked about one path rather than about two that happen to
+            // differ in the same way.
+            string recased = Path.Combine(workspace.InputDirectory, "CASEDDIRECTORY");
+            bool isCaseInsensitive = Directory.Exists(recased);
+
+            Assert.Equal(isCaseInsensitive, HostFileSystem.Instance.IsCaseInsensitive(directory));
         }
 
         [Fact(Timeout = 60000)]
@@ -361,25 +479,61 @@ namespace Microsoft.Coyote.Tools.Tests
                 workspace.InputDirectory = Path.Combine(workspace.RootDirectory, "input");
                 workspace.OutputDirectory = Path.Combine(workspace.RootDirectory, "output");
                 Directory.CreateDirectory(workspace.InputDirectory);
-                foreach (string file in Directory.GetFiles(source, "*"))
+                foreach (string name in GetStagedFileNames(source, includeSymbols))
                 {
-                    string name = Path.GetFileName(file);
-                    if (!includeSymbols && string.Equals(name, Path.ChangeExtension(TargetAssemblyName, "pdb"),
-                        StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    File.Copy(file, Path.Combine(workspace.InputDirectory, name), true);
+                    File.Copy(Path.Combine(source, name), Path.Combine(workspace.InputDirectory, name), true);
                 }
 
                 return workspace;
             }
 
             /// <summary>
+            /// Returns the names of the files to stage for a rewriting run.
+            /// </summary>
+            /// <remarks>
+            /// This used to copy the entire build output, which is seven megabytes across forty nine
+            /// files, and every test here stages a fresh one. Most of that is the test host, the
+            /// xunit runner and the test platform: none of it is read while rewriting one assembly,
+            /// and none of it is what any test here is about.
+            ///
+            /// What is staged instead is what rewriting actually reaches for -- the assembly itself,
+            /// the files beside it that are named after it, and the assemblies it references that
+            /// exist here to be found. The references that are not here are the framework ones, and
+            /// they stay missing on purpose: resolution finds those through the shared framework
+            /// directories, and <see cref="AddInputCopyOfReferencedAssembly"/> depends on there
+            /// still being a referenced assembly absent from this directory.
+            /// </remarks>
+            private static IEnumerable<string> GetStagedFileNames(string source, bool includeSymbols)
+            {
+                var names = new List<string>()
+                {
+                    TargetAssemblyName,
+                    Path.ChangeExtension(TargetAssemblyName, "runtimeconfig.json"),
+                    Path.ChangeExtension(TargetAssemblyName, "deps.json")
+                };
+
+                if (includeSymbols)
+                {
+                    names.Add(Path.ChangeExtension(TargetAssemblyName, "pdb"));
+                }
+
+                foreach (var reference in Assembly.GetExecutingAssembly().GetReferencedAssemblies())
+                {
+                    names.Add(reference.Name + ".dll");
+                    names.Add(reference.Name + ".pdb");
+                }
+
+                return names.Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Where(name => File.Exists(Path.Combine(source, name)));
+            }
+
+            /// <summary>
             /// Rewrites the staged assembly and returns everything the run logged.
             /// </summary>
             internal string Rewrite(Action<RewritingOptions> configure = null)
+                => this.Rewrite(HostFileSystem.Instance, configure);
+
+            internal string Rewrite(IFileSystem fileSystem, Action<RewritingOptions> configure = null)
             {
                 var options = RewritingOptions.Create();
                 options.AssembliesDirectory = this.InputDirectory;
@@ -389,7 +543,8 @@ namespace Microsoft.Coyote.Tools.Tests
 
                 var configuration = Configuration.Create().WithVerbosityEnabled(VerbosityLevel.Info);
                 using var logWriter = new MemoryLogWriter(configuration);
-                RewritingEngine.Run(options, configuration, logWriter, new Profiler());
+                RewritingEngine.Run(options, configuration, logWriter, new Profiler(),
+                    fileSystem, Environment.GetEnvironmentVariable);
                 return logWriter.GetObservedMessages();
             }
 
@@ -447,6 +602,73 @@ namespace Microsoft.Coyote.Tools.Tests
                     // A leftover temporary directory is not worth failing a test over.
                 }
             }
+        }
+
+        /// <summary>
+        /// Delegates to the host file system and exposes the start of mirroring to one regression.
+        /// </summary>
+        private sealed class CallbackFileSystem : IFileSystem
+        {
+            private readonly IFileSystem Inner;
+            private readonly Action<string, string> BeforeGetFiles;
+            private readonly Action<string, string, bool> BeforeCopyFile;
+
+            internal CallbackFileSystem(IFileSystem inner,
+                Action<string, string> beforeGetFiles = null,
+                Action<string, string, bool> beforeCopyFile = null)
+            {
+                this.Inner = inner;
+                this.BeforeGetFiles = beforeGetFiles;
+                this.BeforeCopyFile = beforeCopyFile;
+            }
+
+            public bool FileExists(string path) => this.Inner.FileExists(path);
+
+            public bool DirectoryExists(string path) => this.Inner.DirectoryExists(path);
+
+            public IFileEntry GetFile(string path) => this.Inner.GetFile(path);
+
+            public string ReadAllText(string path) => this.Inner.ReadAllText(path);
+
+            public void WriteAllText(string path, string contents) =>
+                this.Inner.WriteAllText(path, contents);
+
+            public Stream OpenRead(string path, FileReadSharing sharing) =>
+                this.Inner.OpenRead(path, sharing);
+
+            public void CopyFile(string sourcePath, string targetPath, bool overwrite)
+            {
+                this.BeforeCopyFile?.Invoke(sourcePath, targetPath, overwrite);
+                this.Inner.CopyFile(sourcePath, targetPath, overwrite);
+            }
+
+            public void MoveFile(string sourcePath, string targetPath) =>
+                this.Inner.MoveFile(sourcePath, targetPath);
+
+            public void ReplaceFile(string sourcePath, string targetPath, string backupPath) =>
+                this.Inner.ReplaceFile(sourcePath, targetPath, backupPath);
+
+            public void DeleteFile(string path) => this.Inner.DeleteFile(path);
+
+            public void CreateDirectory(string path) => this.Inner.CreateDirectory(path);
+
+            public void DeleteDirectory(string path, bool recursive) =>
+                this.Inner.DeleteDirectory(path, recursive);
+
+            public string[] GetFiles(string directory, string searchPattern)
+            {
+                this.BeforeGetFiles?.Invoke(directory, searchPattern);
+                return this.Inner.GetFiles(directory, searchPattern);
+            }
+
+            public IReadOnlyList<IFileEntry> GetFileEntries(string directory, string searchPattern) =>
+                this.Inner.GetFileEntries(directory, searchPattern);
+
+            public string[] GetDirectories(string directory, string searchPattern, bool recursive) =>
+                this.Inner.GetDirectories(directory, searchPattern, recursive);
+
+            public bool IsCaseInsensitive(string directory) =>
+                this.Inner.IsCaseInsensitive(directory);
         }
     }
 }

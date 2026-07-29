@@ -16,6 +16,7 @@ using Microsoft.ApplicationInsights;
 using Microsoft.ApplicationInsights.Channel;
 using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.ApplicationInsights.Extensibility;
+using Microsoft.Coyote.IO;
 using Microsoft.Coyote.Logging;
 using Microsoft.Coyote.Runtime;
 using Mono.Cecil;
@@ -100,9 +101,34 @@ namespace Microsoft.Coyote.Rewriting
         private List<string> CachedFrameworkDirectories;
 
         /// <summary>
+        /// The file system this run reads and writes, other than through Mono.Cecil.
+        /// </summary>
+        private readonly IFileSystem FileSystem;
+
+        /// <summary>
+        /// Reads an environment variable.
+        /// </summary>
+        private readonly Func<string, string> GetEnvironmentVariable;
+
+        /// <summary>
+        /// Copies the input directory into the output one, leaving up-to-date outputs alone.
+        /// </summary>
+        private readonly RewritingOutputMirror Mirror;
+
+        /// <summary>
+        /// Ownership of files in a separate output directory, else null for in-place rewriting.
+        /// </summary>
+        private RewritingOutputLedger OutputLedger;
+
+        private HashSet<string> MirroredOutputFiles;
+
+        private HashSet<string> ProducedOutputFiles;
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="RewritingEngine"/> class.
         /// </summary>
-        private RewritingEngine(RewritingOptions options, Configuration configuration, LogWriter logWriter, Profiler profiler)
+        private RewritingEngine(RewritingOptions options, Configuration configuration, LogWriter logWriter,
+            Profiler profiler, IFileSystem fileSystem, Func<string, string> getEnvironmentVariable)
         {
             this.Options = options.Sanitize();
             this.Configuration = configuration;
@@ -110,14 +136,30 @@ namespace Microsoft.Coyote.Rewriting
             this.ResolveWarnings = new HashSet<string>();
             this.LogWriter = logWriter;
             this.Profiler = profiler;
+            this.FileSystem = fileSystem;
+            this.GetEnvironmentVariable = getEnvironmentVariable;
+            this.Mirror = new RewritingOutputMirror(fileSystem, logWriter);
         }
 
         /// <summary>
         /// Runs the engine using the specified rewriting options.
         /// </summary>
-        internal static void Run(RewritingOptions options, Configuration configuration, LogWriter logWriter, Profiler profiler)
+        internal static void Run(RewritingOptions options, Configuration configuration, LogWriter logWriter, Profiler profiler) =>
+            Run(options, configuration, logWriter, profiler, HostFileSystem.Instance, Environment.GetEnvironmentVariable);
+
+        /// <summary>
+        /// Runs the engine over the specified file system and environment.
+        /// </summary>
+        /// <remarks>
+        /// Reading and writing the assemblies themselves stays on real paths whatever is passed here:
+        /// Mono.Cecil reaches the disk through its own resolver, and a module read from a stream has
+        /// no file name for the cache to record. What this reaches is everything around that.
+        /// </remarks>
+        internal static void Run(RewritingOptions options, Configuration configuration, LogWriter logWriter,
+            Profiler profiler, IFileSystem fileSystem, Func<string, string> getEnvironmentVariable)
         {
-            var engine = new RewritingEngine(options, configuration, logWriter, profiler);
+            var engine = new RewritingEngine(options, configuration, logWriter, profiler,
+                fileSystem, getEnvironmentVariable);
             engine.Run();
         }
 
@@ -132,8 +174,25 @@ namespace Microsoft.Coyote.Rewriting
             // rewritten outputs alone, and the copy below would otherwise overwrite them with the
             // original assemblies; and loading the assemblies is itself a large part of the cost that
             // an up-to-date run exists to avoid.
-            var cache = new RewritingCache(this.Options, this.Configuration, this.LogWriter);
+            var cache = new RewritingCache(this.Options, this.Configuration, this.LogWriter,
+                this.FileSystem);
+            if (!this.Options.IsReplacingAssemblies())
+            {
+                this.OutputLedger = new RewritingOutputLedger(this.FileSystem, this.LogWriter,
+                    this.Options.AssembliesDirectory, this.Options.OutputDirectory);
+                var comparer = this.FileSystem.IsCaseInsensitive(this.Options.OutputDirectory) ?
+                    StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+                this.MirroredOutputFiles = new HashSet<string>(comparer);
+                this.ProducedOutputFiles = new HashSet<string>(comparer);
+            }
+
             bool isUpToDate = cache.TryGetUpToDateRun(out HashSet<string> protectedOutputPaths);
+            if (!isUpToDate)
+            {
+                // A failed or obsolete manifest must not survive output mutation. If this run fails
+                // halfway through, the next one must not be able to accept evidence from before it.
+                cache.Invalidate();
+            }
 
             // Create the output directory and copy any necessary files. This still runs when everything
             // is up to date: the output directory mirrors the input one, and nothing else in it is
@@ -142,27 +201,47 @@ namespace Microsoft.Coyote.Rewriting
 
             try
             {
-                if (isUpToDate)
+                if (isUpToDate && cache.TryConfirmUpToDateRun())
                 {
                     // The findings of the analysis passes hold whether or not anything was rewritten,
                     // so they are replayed rather than lost.
                     cache.ReplayDiagnostics();
+                    foreach (string path in cache.GetAcceptedProducedPaths())
+                    {
+                        this.TrackProducedOutput(path);
+                    }
+
+                    this.OutputLedger?.Commit(this.MirroredOutputFiles, this.ProducedOutputFiles);
                     this.LogWriter.LogImportant("... Skipping rewriting as every assembly is up to date");
                     return;
                 }
 
+                if (isUpToDate)
+                {
+                    // Something changed after the first validation. The protected mirror deliberately
+                    // left original inputs out of the output, so run it again without protection
+                    // before rewriting from the now-current source tree.
+                    cache.Invalidate();
+                    protectedOutputPaths.Clear();
+                    outputDirectory = this.CreateOutputDirectoryAndCopyFiles(protectedOutputPaths);
+                }
+
                 // Get the set of assemblies to rewrite.
-                var assemblies = AssemblyInfo.LoadAssembliesToRewrite(this.Options, this.OnResolveAssemblyFailure);
+                var assemblies = AssemblyInfo.LoadAssembliesToRewrite(
+                    this.Options, this.OnResolveAssemblyFailure).ToList();
+                cache.RegisterRewriteInputs(assemblies);
                 this.InitializePasses(assemblies);
                 foreach (var assembly in assemblies)
                 {
                     string outputPath = Path.Combine(outputDirectory, assembly.Name);
                     this.RewriteAssembly(assembly, outputPath, cache);
+                    this.TrackAssemblyProducts(outputPath);
                 }
 
                 // Only once every assembly has been dealt with: a manifest describing a partially
                 // rewritten directory would report assemblies as up to date that were never reached.
                 cache.Save();
+                this.OutputLedger?.Commit(this.MirroredOutputFiles, this.ProducedOutputFiles);
             }
             catch (Exception ex)
             {
@@ -173,7 +252,7 @@ namespace Microsoft.Coyote.Rewriting
                 if (this.Options.IsReplacingAssemblies())
                 {
                     // If we are replacing the original assemblies, then delete the temporary output directory.
-                    Directory.Delete(outputDirectory, true);
+                    this.FileSystem.DeleteDirectory(outputDirectory, true);
                 }
 
                 this.Profiler.StopMeasuringExecutionTime();
@@ -400,7 +479,7 @@ namespace Microsoft.Coyote.Rewriting
                 string jsonFile = Path.ChangeExtension(outputPath, $".{(isRewritten ? "rw" : "il")}.json");
                 this.LogWriter.LogImportant("..... Writing the {0} IL of '{1}' as JSON to {2}",
                     isRewritten ? "rewritten" : "original", assembly.Name, jsonFile);
-                File.WriteAllText(jsonFile, json);
+                this.FileSystem.WriteAllText(jsonFile, json);
             }
         }
 
@@ -423,7 +502,7 @@ namespace Microsoft.Coyote.Rewriting
 
                 string jsonFile = Path.ChangeExtension(outputPath, ".diff.json");
                 this.LogWriter.LogImportant("..... Writing the IL diff of '{0}' as JSON to {1}", assembly.Name, jsonFile);
-                File.WriteAllText(jsonFile, diffJson);
+                this.FileSystem.WriteAllText(jsonFile, diffJson);
             }
         }
 
@@ -468,33 +547,49 @@ namespace Microsoft.Coyote.Rewriting
         private string CreateOutputDirectoryAndCopyFiles(HashSet<string> protectedOutputPaths)
         {
             string sourceDirectory = this.Options.AssembliesDirectory;
-            string outputDirectory = Directory.CreateDirectory(this.Options.IsReplacingAssemblies() ?
-                Path.Combine(this.Options.OutputDirectory, TempDirectory) : this.Options.OutputDirectory).FullName;
+
+            // The full path is taken from 'Path', not from the 'DirectoryInfo' the creation used to
+            // return: it is the same string, and asking for it separately is what lets the creation
+            // itself go through the seam.
+            string outputDirectory = Path.GetFullPath(this.Options.IsReplacingAssemblies() ?
+                Path.Combine(this.Options.OutputDirectory, TempDirectory) : this.Options.OutputDirectory);
+            this.FileSystem.CreateDirectory(outputDirectory);
             if (!this.Options.IsReplacingAssemblies())
             {
                 this.LogWriter.LogImportant("... Copying all files to the '{0}' directory", outputDirectory);
-
-                // Copy all files to the output directory, skipping any nested directory files.
-                foreach (string filePath in Directory.GetFiles(sourceDirectory, "*"))
+                Exception lastMirrorError = null;
+                for (int attempt = 0; attempt < 2; attempt++)
                 {
-                    this.CopyFileUnlessProtected(filePath, outputDirectory, protectedOutputPaths);
+                    try
+                    {
+                        this.MirroredOutputFiles =
+                            this.Mirror.GetMirroredFiles(sourceDirectory, outputDirectory);
+                        this.OutputLedger.RemoveStaleMirroredFiles(this.MirroredOutputFiles);
+                        this.Mirror.Mirror(sourceDirectory, outputDirectory, protectedOutputPaths,
+                            this.MirroredOutputFiles);
+                        var confirmed =
+                            this.Mirror.GetMirroredFiles(sourceDirectory, outputDirectory);
+                        if (this.MirroredOutputFiles.SetEquals(confirmed))
+                        {
+                            this.MirroredOutputFiles = confirmed;
+                            lastMirrorError = null;
+                            break;
+                        }
+
+                        lastMirrorError = new IOException(
+                            $"The source directory '{sourceDirectory}' changed while it was being mirrored.");
+                    }
+                    catch (Exception ex) when (
+                        attempt is 0 && (ex is IOException || ex is UnauthorizedAccessException))
+                    {
+                        lastMirrorError = ex;
+                    }
                 }
 
-                // Copy all nested directories to the output directory, while preserving directory structure.
-                foreach (string directoryPath in Directory.GetDirectories(sourceDirectory, "*", SearchOption.AllDirectories))
+                if (lastMirrorError != null)
                 {
-                    // Avoid copying the output directory itself.
-                    if (!directoryPath.StartsWith(outputDirectory))
-                    {
-                        this.LogWriter.LogDebug("..... Copying the '{0}' directory", directoryPath);
-                        string path = Path.Combine(outputDirectory, directoryPath.Remove(0, sourceDirectory.Length)
-                            .TrimStart('\\', '/'));
-                        Directory.CreateDirectory(path);
-                        foreach (string filePath in Directory.GetFiles(directoryPath, "*"))
-                        {
-                            this.CopyFileUnlessProtected(filePath, path, protectedOutputPaths);
-                        }
-                    }
+                    throw new IOException(
+                        $"Unable to mirror a stable snapshot of '{sourceDirectory}'.", lastMirrorError);
                 }
             }
 
@@ -515,162 +610,57 @@ namespace Microsoft.Coyote.Rewriting
             {
                 string assemblyPath = type.Assembly.Location;
                 string destination = Path.Combine(this.Options.OutputDirectory, Path.GetFileName(assemblyPath));
-                if (File.Exists(destination) && GetAssemblyVersion(destination) == type.Assembly.GetName().Version)
+                if (this.FileSystem.FileExists(destination) &&
+                    GetAssemblyVersion(destination) == type.Assembly.GetName().Version)
                 {
                     this.LogWriter.LogDebug("..... Preserving the existing '{0}' assembly in the output directory",
                         Path.GetFileName(assemblyPath));
+                    this.TrackProducedOutput(destination);
                     continue;
                 }
 
-                CopyFile(assemblyPath, this.Options.OutputDirectory);
+                this.Mirror.CopyFile(assemblyPath, this.Options.OutputDirectory);
+                this.TrackProducedOutput(destination);
             }
 
             return outputDirectory;
         }
 
         /// <summary>
-        /// Copies the specified file to the destination, unless doing so would overwrite an output
-        /// that is already up to date, or the cache manifest itself.
+        /// Records the generated assembly, symbols and enabled debug artifacts for output ownership.
         /// </summary>
-        private void CopyFileUnlessProtected(string filePath, string destination, HashSet<string> protectedOutputPaths)
+        private void TrackAssemblyProducts(string outputPath)
         {
-            if (string.Equals(Path.GetFileName(filePath), RewritingCache.ManifestFileName, StringComparison.Ordinal))
+            this.TrackProducedOutput(outputPath);
+            this.TrackProducedOutputIfPresent(Path.ChangeExtension(outputPath, "pdb"));
+            if (this.Options.IsLoggingAssemblyContents)
             {
-                // An input directory that was itself rewritten in place holds a manifest describing
-                // that run. Copying it here would leave a manifest in the output directory that
-                // describes a different one.
-                this.LogWriter.LogDebug("..... Skipping the '{0}' file, which belongs to another run", filePath);
-                return;
+                this.TrackProducedOutputIfPresent(Path.ChangeExtension(outputPath, ".il.json"));
+                this.TrackProducedOutputIfPresent(Path.ChangeExtension(outputPath, ".rw.json"));
             }
 
-            string targetPath = Path.Combine(destination, Path.GetFileName(filePath));
-            if (protectedOutputPaths.Contains(Path.GetFullPath(targetPath)))
+            if (this.Options.IsDiffingAssemblyContents)
             {
-                this.LogWriter.LogDebug("..... Preserving the up-to-date '{0}' file", targetPath);
-                return;
-            }
-
-            if (IsAlreadyCopied(filePath, targetPath))
-            {
-                // This copy runs even when the whole run is up to date, for the sake of the untracked
-                // files in the directory, so it is on the path that exists to do as little as possible.
-                // Two stat calls in place of rewriting tens of megabytes of assemblies, symbols and IL
-                // dumps that are already byte for byte what would be written over them.
-                this.LogWriter.LogDebug("..... Skipping the unchanged '{0}' file", targetPath);
-                return;
-            }
-
-            this.LogWriter.LogDebug("..... Copying the '{0}' file", filePath);
-            CopyFile(filePath, destination);
-        }
-
-        /// <summary>
-        /// Checks whether the destination already holds what copying the source would put there.
-        /// </summary>
-        /// <remarks>
-        /// Decided on content, not on length and last-write time as the MSBuild copy task does. Equal
-        /// metadata is not equal bytes: a file restored, checked out or unpacked with its timestamp
-        /// preserved keeps the size and time of the one it replaced, and skipping it on that evidence
-        /// would leave the previous bytes in the output. That matters most for exactly the file this
-        /// is most likely to be asked about -- a dependency that rewriting resolved from its new
-        /// source, while what runs beside the rewritten assembly is the old copy left here.
-        ///
-        /// Compared rather than hashed because both files are in hand: a digest would have to read
-        /// both sides too, and would add a collision class in exchange for nothing. This stops at the
-        /// first byte that differs, and at the first block for files that differ early, so the whole
-        /// read happens only when the answer is that no copy is needed.
-        /// </remarks>
-        private static bool IsAlreadyCopied(string filePath, string targetPath)
-        {
-            var source = new FileInfo(filePath);
-            var target = new FileInfo(targetPath);
-            if (!target.Exists || source.Length != target.Length)
-            {
-                return false;
-            }
-
-            try
-            {
-                return HasSameContent(filePath, targetPath);
-            }
-            catch (IOException)
-            {
-                // Unreadable for the moment says nothing about the content, and the copy that follows
-                // reports the problem in its own terms if it is still there.
-                return false;
+                this.TrackProducedOutputIfPresent(Path.ChangeExtension(outputPath, ".diff.json"));
             }
         }
 
-        /// <summary>
-        /// Checks whether two files of equal length hold the same bytes.
-        /// </summary>
-        private static bool HasSameContent(string leftPath, string rightPath)
+        private void TrackProducedOutputIfPresent(string path)
         {
-            const int BlockSize = 1 << 16;
-            using var left = new FileStream(leftPath, FileMode.Open, FileAccess.Read, FileShare.Read, BlockSize);
-            using var right = new FileStream(rightPath, FileMode.Open, FileAccess.Read, FileShare.Read, BlockSize);
-            byte[] leftBlock = new byte[BlockSize];
-            byte[] rightBlock = new byte[BlockSize];
-            while (true)
+            if (this.FileSystem.FileExists(path))
             {
-                int count = ReadBlock(left, leftBlock);
-                if (count != ReadBlock(right, rightBlock))
-                {
-                    return false;
-                }
-
-                if (count is 0)
-                {
-                    return true;
-                }
-
-                // Eight bytes at a time, because this runs over every file in the directory and the
-                // files it runs over are assemblies and IL dumps rather than a handful of bytes.
-                int whole = count - (count % sizeof(long));
-                for (int index = 0; index < whole; index += sizeof(long))
-                {
-                    if (BitConverter.ToInt64(leftBlock, index) != BitConverter.ToInt64(rightBlock, index))
-                    {
-                        return false;
-                    }
-                }
-
-                for (int index = whole; index < count; index++)
-                {
-                    if (leftBlock[index] != rightBlock[index])
-                    {
-                        return false;
-                    }
-                }
+                this.TrackProducedOutput(path);
             }
         }
 
-        /// <summary>
-        /// Fills the specified block from the stream, returning how much was read. A short read is not
-        /// the end of the stream, so this asks again until the block is full or there is no more.
-        /// </summary>
-        private static int ReadBlock(Stream stream, byte[] block)
+        private void TrackProducedOutput(string path)
         {
-            int total = 0;
-            while (total < block.Length)
+            if (this.OutputLedger != null &&
+                this.OutputLedger.TryGetRelativeOutputPath(path, out string relativePath))
             {
-                int read = stream.Read(block, total, block.Length - total);
-                if (read is 0)
-                {
-                    break;
-                }
-
-                total += read;
+                this.ProducedOutputFiles.Add(relativePath);
             }
-
-            return total;
         }
-
-        /// <summary>
-        /// Copies the specified file to the destination.
-        /// </summary>
-        private static void CopyFile(string filePath, string destination) =>
-            File.Copy(filePath, Path.Combine(destination, Path.GetFileName(filePath)), true);
 
         /// <summary>
         /// Returns the assembly version of the specified file, or null if it cannot be read.

@@ -46,10 +46,33 @@ $targets = [ordered]@{
 # copy, which is the evidence that the move emits identical IL. This value moved because the change
 # that ships with it adds a test method to the project, and a new method is new IL to diff. It was
 # reproduced from a deleted 'obj' and 'bin'.
+#
+# 'rewriting' again, and again only that one: the file system isolation tests are a new class in this
+# project, and the change shipping with this adds two methods to it. New test methods are new IL to
+# diff and nothing else -- the four other values were reproduced unchanged alongside it, which is
+# what says the seam extraction and the read sharing it carries did not move any injected IL. This
+# value was reproduced from a deleted 'obj' and 'bin'.
+#
+# 'testing' rebaselined for the same reason and only that one: the change shipping with this adds a
+# class of tests to that project, asserting that no test builds a testing engine of its own without
+# being seeded. New test methods are new IL to diff. The four other values were reproduced unchanged
+# alongside it, which is what says the read sharing, the directory identity and the case-sensitivity
+# query that ship with it moved no injected IL. Reproduced from a deleted 'obj' and 'bin'.
+#
+# 'testing' once more, when that class moved most of itself into Tests.Common so that every test
+# assembly could derive from it rather than only this one. What is left here is the frozen list, so
+# the methods that were in this assembly and are now in another are gone from its diff. The other
+# four were again reproduced unchanged. Reproduced from a deleted 'obj' and 'bin'.
+#
+# Worth knowing when reading a mismatch here: this hashes the diff between the compiled and the
+# rewritten assembly, not the assembly. Editing a method body that the rewriter does not touch
+# leaves it unchanged -- adding a string to a frozen list in the rewriting tests did -- while adding
+# a method moves it. A mismatch is therefore about what rewriting does, which is why it is worth
+# checking that the projects the change did not add methods to are all still unchanged.
 $expected_hashes = [ordered]@{
-    "rewriting" = "3FF83EDC9D83423222FFB1C0109B84D3F7AA7C9E20A6D0CDD24EA8E2FA15DA25"
+    "rewriting" = "E309AA5399DA8014839528813D5970699CEB7AC51EB0F4E93F889133C5737287"
     "rewriting-helpers" = "6C25B8F64593309BD37E258A2C59683FB56B63B281AA20A9B41015D2BFDD2D85"
-    "testing" = "22E7EB0DCE8F4CBB99906B9C6C35714F9B01A203D9AB64ECC645570CF467F1A5"
+    "testing" = "294902AE22C9E30EBDEA231984C29C81D883A146998D2E82514A84B56FE72865"
     "actors" = "531E0CC7818CC9B5B23C2DACF1B0DF4570C13BD45DB018E964AEE28E08179FF9"
     "actors-testing" = "8A3F2C008BB108C5C587DECF3205B10817E316D489CB670332119C460460AC4D"
 }
