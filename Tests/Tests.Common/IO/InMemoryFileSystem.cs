@@ -49,6 +49,18 @@ namespace Microsoft.Coyote.Tests.Common.IO
         private readonly bool CaseInsensitive;
 
         /// <summary>
+        /// The directories whose case sensitivity differs from the rest of this file system.
+        /// </summary>
+        /// <remarks>
+        /// One flag for the whole file system describes the ordinary case and nothing else. A run
+        /// whose output and whose dependencies sit on different volumes can have both answers at
+        /// once, and the code that compares paths has to pick one comparer per path rather than one
+        /// for the run -- which is exactly the kind of thing only a file system that can disagree
+        /// with itself will catch.
+        /// </remarks>
+        private readonly Dictionary<string, bool> DirectoryCaseSensitivity;
+
+        /// <summary>
         /// How many times a single file has been asked to describe itself.
         /// </summary>
         /// <remarks>
@@ -78,6 +90,16 @@ namespace Microsoft.Coyote.Tests.Common.IO
         internal Action<string, FileReadSharing> BeforeOpenRead { get; set; }
 
         /// <summary>
+        /// Invoked immediately before a file is described, for tests that change it in that interval.
+        /// </summary>
+        /// <remarks>
+        /// The counterpart of <see cref="BeforeOpenRead"/> for the decisions taken on metadata alone.
+        /// What it exists for is the interval between a file being read and the same file being
+        /// fingerprinted: a test needs to replace it in there without touching either call.
+        /// </remarks>
+        internal Action<string> BeforeGetFile { get; set; }
+
+        /// <summary>
         /// Stamped on the next write, and advanced by a second each time.
         /// </summary>
         /// <remarks>
@@ -93,6 +115,23 @@ namespace Microsoft.Coyote.Tests.Common.IO
             var comparer = isCaseInsensitive ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
             this.Files = new Dictionary<string, Entry>(comparer);
             this.Directories = new HashSet<string>(comparer);
+            this.DirectoryCaseSensitivity = new Dictionary<string, bool>(comparer);
+        }
+
+        /// <summary>
+        /// Makes the specified directory and everything below it answer the opposite of the rest of
+        /// this file system when asked whether it is case insensitive.
+        /// </summary>
+        /// <remarks>
+        /// Only the answer changes, not how this file system keys its own paths: what is being
+        /// described is a volume mounted somewhere inside the tree, and reproducing that faithfully
+        /// would mean two dictionaries and a rule for which one a path belongs to. Every decision
+        /// this exists to test is taken from <see cref="IsCaseInsensitive"/> alone.
+        /// </remarks>
+        internal InMemoryFileSystem WithCaseSensitivity(string directory, bool isCaseInsensitive)
+        {
+            this.DirectoryCaseSensitivity[Normalize(directory)] = isCaseInsensitive;
+            return this;
         }
 
         /// <summary>
@@ -162,6 +201,7 @@ namespace Microsoft.Coyote.Tests.Common.IO
         {
             this.GetFileCount++;
             string full = Normalize(path);
+            this.BeforeGetFile?.Invoke(full);
             return this.Files.TryGetValue(full, out Entry entry) ?
                 new InMemoryFileEntry(full, true, entry.Content.Length, entry.LastWriteTimeUtc) :
                 new InMemoryFileEntry(full, false, 0, default);
@@ -361,7 +401,23 @@ namespace Microsoft.Coyote.Tests.Common.IO
         }
 
         /// <inheritdoc/>
-        public bool IsCaseInsensitive(string directory) => this.CaseInsensitive;
+        /// <remarks>
+        /// The nearest enclosing override wins, so that a volume described at one directory covers
+        /// everything under it while a deeper one can still describe a volume mounted inside it.
+        /// </remarks>
+        public bool IsCaseInsensitive(string directory)
+        {
+            string full = Normalize(directory);
+            for (string current = full; !string.IsNullOrEmpty(current); current = GetParent(current))
+            {
+                if (this.DirectoryCaseSensitivity.TryGetValue(current, out bool isCaseInsensitive))
+                {
+                    return isCaseInsensitive;
+                }
+            }
+
+            return this.CaseInsensitive;
+        }
 
         /// <summary>
         /// Returns the specified file, or throws the way the real file system does if it is absent.

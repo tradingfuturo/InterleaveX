@@ -36,7 +36,7 @@ namespace Microsoft.Coyote.Tools.Tests
         {
         }
 
-        private const int SchemaVersion = 4;
+        private const int SchemaVersion = 5;
         private const string RewriterVersion = "1.2.3.4";
         private const string RewriterModuleId = "11111111-1111-1111-1111-111111111111";
         private const string ConfigurationHash = "configuration-hash";
@@ -58,6 +58,12 @@ namespace Microsoft.Coyote.Tools.Tests
         private static string InputDirectory => Path.Combine(Root, "input");
 
         private static string OutputDirectory => Path.Combine(Root, "output");
+
+        /// <summary>
+        /// The directory holding every installed version of a shared framework, as the roll-forward
+        /// that picks one of them sees it.
+        /// </summary>
+        private static string FrameworkDirectory => Path.Combine(Root, "dotnet", "shared", "Framework");
 
         /// <summary>
         /// A file system holding one assembly that has been rewritten, and the manifest describing it.
@@ -104,7 +110,9 @@ namespace Microsoft.Coyote.Tools.Tests
                 .WithFile(In("Dependency.dll"), "a dependency")
                 .WithFile(Out("App.dll"), "the rewritten assembly")
                 .WithFile(Out("App.pdb"), "the rewritten symbols")
-                .WithDirectory(Out());
+                .WithDirectory(Out())
+                .WithDirectory(Path.Combine(FrameworkDirectory, "8.0.10"))
+                .WithDirectory(Path.Combine(FrameworkDirectory, "8.0.2"));
 
             var validator = CreateValidator(fileSystem, withArtifacts);
 
@@ -115,7 +123,21 @@ namespace Microsoft.Coyote.Tools.Tests
                 artifacts.Add(validator.CaptureFile(Out("App.diff.json"), true));
             }
 
-            var manifest = new CacheManifest()
+            return new Fixture()
+            {
+                FileSystem = fileSystem,
+                Validator = validator,
+                Manifest = CreateManifest(validator, artifacts)
+            };
+        }
+
+        /// <summary>
+        /// Describes the run <see cref="CreateUpToDate"/> stages, captured from the file system
+        /// rather than written out, so that a test changes one thing and not two.
+        /// </summary>
+        private static CacheManifest CreateManifest(
+            RewritingCacheValidator validator, List<CacheFile> artifacts = null) =>
+            new CacheManifest()
             {
                 SchemaVersion = SchemaVersion,
                 FingerprintAlgorithm = RewritingCacheValidator.FingerprintAlgorithm,
@@ -134,6 +156,10 @@ namespace Microsoft.Coyote.Tools.Tests
                 {
                     validator.CaptureDirectory(InputDirectory, hashContent: true)
                 },
+                FrameworkInventories = new List<CacheDirectoryListing>()
+                {
+                    validator.CaptureDirectoryNames(FrameworkDirectory)
+                },
                 Entries = new List<CacheEntry>()
                 {
                     new CacheEntry()
@@ -146,19 +172,11 @@ namespace Microsoft.Coyote.Tools.Tests
                         RuntimeConfig = validator.CaptureFile(In("App.runtimeconfig.json"), true),
                         ReferenceNames = new List<string>() { "Dependency", "Absent" },
                         PresentReferences = new List<string>() { "Dependency" },
-                        Artifacts = artifacts,
+                        Artifacts = artifacts ?? new List<CacheFile>(),
                         ThreadStaticFields = new List<string>()
                     }
                 }
             };
-
-            return new Fixture()
-            {
-                FileSystem = fileSystem,
-                Validator = validator,
-                Manifest = manifest
-            };
-        }
 
         [Fact(Timeout = 5000)]
         public void TestNothingChangedIsUpToDate()
@@ -518,6 +536,159 @@ namespace Microsoft.Coyote.Tools.Tests
         }
 
         [Fact(Timeout = 5000)]
+        public void TestANewerInstalledFrameworkIsNoticed()
+        {
+            // Which shared framework directory gets searched is a roll-forward over whatever is
+            // installed, and it takes the highest. Installing a newer patch adds a directory beside
+            // the chosen one: no file the last run read has changed, and neither has any directory
+            // it searched, so nothing else here would ever notice that a fresh run would now resolve
+            // against something different.
+            var fixture = CreateUpToDate();
+            fixture.FileSystem.WithDirectory(Path.Combine(FrameworkDirectory, "8.0.20"));
+
+            Assert.False(fixture.IsCurrent(out string reason));
+            Assert.Contains("framework versions installed", reason);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestARemovedFrameworkVersionIsNoticed()
+        {
+            // The other direction, which sends the roll-forward to an older version it would not
+            // have picked before.
+            var fixture = CreateUpToDate();
+            fixture.FileSystem.DeleteDirectory(Path.Combine(FrameworkDirectory, "8.0.10"), true);
+
+            Assert.False(fixture.IsCurrent(out string reason));
+            Assert.Contains("framework versions installed", reason);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestAFrameworkThatWasNotInstalledAppearing()
+        {
+            // A framework asked for and not installed is recorded as absent rather than skipped, so
+            // that the run after it is installed does not accept output produced without it.
+            var fixture = CreateUpToDate();
+            string absent = Path.Combine(Root, "dotnet", "shared", "Absent");
+            fixture.Manifest.FrameworkInventories.Add(fixture.Validator.CaptureDirectoryNames(absent));
+            Assert.True(fixture.IsCurrent(out string reason), reason);
+
+            fixture.FileSystem.WithDirectory(Path.Combine(absent, "1.0.0"));
+            Assert.False(fixture.IsCurrent(out reason));
+            Assert.Contains("framework versions installed", reason);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestADuplicateFrameworkInventoryIsRejected()
+        {
+            var fixture = CreateUpToDate();
+            fixture.Manifest.FrameworkInventories.Add(fixture.Manifest.FrameworkInventories[0]);
+
+            Assert.False(fixture.IsCurrent(out string reason));
+            Assert.Contains("framework versions installed", reason);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestAMissingFrameworkInventoryListIsRejected()
+        {
+            // A manifest from before these were recorded parses into a null list. Treated as
+            // incomplete rather than as "no frameworks", which would accept exactly the runs this
+            // was added to reject.
+            var fixture = CreateUpToDate();
+            fixture.Manifest.FrameworkInventories = null;
+
+            Assert.False(fixture.IsCurrent(out string reason));
+            Assert.Contains("incomplete", reason);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestAFrameworkInventoryDoesNotDependOnTheFilesInIt()
+        {
+            // Only the names matter here: the content of the version that wins is recorded as an
+            // ordinary search directory, and reading every assembly of every installed framework
+            // would make this unaffordable on the path that exists to be fast.
+            var fixture = CreateUpToDate();
+            fixture.FileSystem.WithFile(
+                Path.Combine(FrameworkDirectory, "8.0.10", "System.Runtime.dll"), "an assembly");
+
+            Assert.True(fixture.IsCurrent(out string reason), reason);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestAnExecutableAppearingInASearchDirectoryIsNoticed()
+        {
+            // Mono.Cecil probes '.exe' before '.dll'. So an executable arriving beside an assembly
+            // does not merely satisfy a reference that used to fail -- it takes a resolution that
+            // currently goes to the assembly next to it, which recording only '*.dll' could not see.
+            var fixture = CreateUpToDate();
+            fixture.FileSystem.WithFile(In("Dependency.exe"), "an executable that now wins");
+
+            Assert.False(fixture.IsCurrent(out string reason));
+            Assert.Contains("search directory changed", reason);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestAWinmdAppearingInASearchDirectoryIsNoticed()
+        {
+            // The Windows Runtime half of the same probe.
+            var fixture = CreateUpToDate();
+            fixture.FileSystem.WithFile(In("Dependency.winmd"), "a windows metadata file");
+
+            Assert.False(fixture.IsCurrent(out string reason));
+            Assert.Contains("search directory changed", reason);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestAFileNoResolverWouldLookAtIsIgnored()
+        {
+            // The other side of it. A search directory is an ordinary build output holding logs,
+            // configuration and documentation, and invalidating on those would rewrite everything on
+            // every run for no reason at all.
+            var fixture = CreateUpToDate();
+            fixture.FileSystem.WithFile(In("build.log"), "a log nobody resolves");
+
+            Assert.True(fixture.IsCurrent(out string reason), reason);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestDependencyRootsDifferingOnlyInCaseAreBothChecked()
+        {
+            // Two genuinely different directories on a case-sensitive volume, recorded by a run
+            // whose output sits on a case-insensitive one. Deciding how to compare paths from the
+            // output directory folds these two into one, after which only one of them is
+            // fingerprinted and anything appearing in the other is invisible.
+            string sensitiveRoot = Path.Combine(Root, "deps");
+            var fileSystem = new InMemoryFileSystem(isCaseInsensitive: false)
+                .WithFile(In("App.dll"), "the original assembly")
+                .WithFile(In("App.pdb"), "the original symbols")
+                .WithFile(In("App.runtimeconfig.json"), "{ }")
+                .WithFile(In("Dependency.dll"), "a dependency")
+                .WithFile(Out("App.dll"), "the rewritten assembly")
+                .WithFile(Out("App.pdb"), "the rewritten symbols")
+                .WithFile(Path.Combine(sensitiveRoot, "Lib", "One.dll"), "one")
+                .WithFile(Path.Combine(sensitiveRoot, "lib", "Two.dll"), "two")
+                .WithDirectory(Out())
+                .WithDirectory(Path.Combine(FrameworkDirectory, "8.0.10"))
+                .WithDirectory(Path.Combine(FrameworkDirectory, "8.0.2"))
+                .WithCaseSensitivity(OutputDirectory, true);
+
+            var validator = CreateValidator(fileSystem);
+            var manifest = CreateManifest(validator);
+            manifest.DependencySearchDirectories.Add(
+                validator.CaptureDirectory(Path.Combine(sensitiveRoot, "Lib"), hashContent: true));
+            manifest.DependencySearchDirectories.Add(
+                validator.CaptureDirectory(Path.Combine(sensitiveRoot, "lib"), hashContent: true));
+
+            Assert.True(validator.IsManifestCurrent(manifest, out string reason), reason);
+
+            // In the one whose name differs from the other only in case. If the two collapsed, this
+            // directory is not the one that got fingerprinted and this goes unnoticed.
+            fileSystem.WithFile(Path.Combine(sensitiveRoot, "lib", "Newcomer.dll"), "unnoticed");
+
+            Assert.False(validator.IsManifestCurrent(manifest, out reason));
+            Assert.Contains("search directory changed", reason);
+        }
+
+        [Fact(Timeout = 5000)]
         public void TestCapturingADirectoryDoesNotAskAboutEachFile()
         {
             // A cost rather than an answer, and so invisible to every other test here: describing the
@@ -590,10 +761,11 @@ namespace Microsoft.Coyote.Tools.Tests
         [Fact(Timeout = 5000)]
         public void TestAMetadataCaptureStillNoticesARewrittenFile()
         {
-            // What the shared framework directories get instead, where reading several hundred
-            // assemblies on both paths would cost more than the rewrite being skipped. Weaker than a
-            // hash, and deliberately: it catches a replacement that changes the length or the write
-            // time, which is every replacement that is not a deliberate restore of both.
+            // Not what any directory gets today -- every one resolution is offered is hashed -- but
+            // the form an older manifest can still be holding, so rechecking one has to mean
+            // something rather than throw. Weaker than a hash, and knowably so: it catches a
+            // replacement that changes the length or the write time, which is every replacement that
+            // is not a deliberate restore of both.
             var fileSystem = new InMemoryFileSystem().WithFile(In("Framework.dll"), "aaaaaaaa");
             var validator = CreateValidator(fileSystem);
             var captured = validator.CaptureDirectory(InputDirectory, hashContent: false);
@@ -608,8 +780,8 @@ namespace Microsoft.Coyote.Tools.Tests
         public void TestACaptureIsRecheckedTheWayItWasRecorded()
         {
             // The two forms are not comparable, and only the run that wrote one knows which it chose.
-            // Rechecking a metadata capture as a hashed one would report every shared framework
-            // directory as changed on the very next run.
+            // Rechecking a metadata capture as a hashed one would report every directory an older
+            // manifest recorded that way as changed, on a run where nothing had changed at all.
             var fileSystem = new InMemoryFileSystem().WithFile(In("Framework.dll"), "an assembly");
             var validator = CreateValidator(fileSystem);
 
