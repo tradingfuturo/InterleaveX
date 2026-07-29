@@ -64,13 +64,22 @@ $targets = [ordered]@{
 # the methods that were in this assembly and are now in another are gone from its diff. The other
 # four were again reproduced unchanged. Reproduced from a deleted 'obj' and 'bin'.
 #
+# 'rewriting' rebaselined, and only that one: the change shipping with this adds a class of tests to
+# that project, asserting that the shared framework fallback asks the environment the run was given
+# for the .NET installation rather than reading it off the machine. New test methods are new IL to
+# diff. The four other values were reproduced unchanged alongside it -- including 'actors-testing',
+# which also gains a class, of frozen list entries the rewriter does not touch -- which is what says
+# the injected environment and the widened seed guard that ship with it moved no injected IL. The
+# value was reproduced from a deleted rewriting output, and the previous one was reproduced exactly
+# by building this project without the new file, which is how the drift was placed.
+#
 # Worth knowing when reading a mismatch here: this hashes the diff between the compiled and the
 # rewritten assembly, not the assembly. Editing a method body that the rewriter does not touch
 # leaves it unchanged -- adding a string to a frozen list in the rewriting tests did -- while adding
 # a method moves it. A mismatch is therefore about what rewriting does, which is why it is worth
 # checking that the projects the change did not add methods to are all still unchanged.
 $expected_hashes = [ordered]@{
-    "rewriting" = "E309AA5399DA8014839528813D5970699CEB7AC51EB0F4E93F889133C5737287"
+    "rewriting" = "6B1D1A07F149880EE7667F0B4676C2F241AF15887AB3CB363A288DCA6764D374"
     "rewriting-helpers" = "6C25B8F64593309BD37E258A2C59683FB56B63B281AA20A9B41015D2BFDD2D85"
     "testing" = "294902AE22C9E30EBDEA231984C29C81D883A146998D2E82514A84B56FE72865"
     "actors" = "531E0CC7818CC9B5B23C2DACF1B0DF4570C13BD45DB018E964AEE28E08179FF9"
