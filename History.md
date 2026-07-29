@@ -56,6 +56,15 @@ PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
   project's output holds its own and nothing of its siblings — a project that
   froze nothing was checked by nothing. A semantic build analyzer now requires
   the guard, and a centralized IL test verifies the compiled assemblies too.
+- The seed guard sees a test that asks the engine for one as well as one that
+  constructs it. All three checks matched a constructor call, and
+  `TestingEngine.Create` reaches that constructor through a body in the product
+  assembly — so a test calling it held no construction for anything to find, and
+  five that did were invisible to every one of them. One project built two
+  engines this way and was reported as having nothing to freeze. A build site is
+  now a constructor or anything static on the engine that hands one back, matched
+  by what it returns rather than by its name, so a second factory beside `Create`
+  is covered without anyone remembering these files exist.
 - A run asked to explore from a new seed each time now writes that seed down. It
   was left for the runtime to derive from a fresh guid, which explored just as
   widely but put the value only inside the strategy description — so the nightly

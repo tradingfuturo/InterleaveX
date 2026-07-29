@@ -13,9 +13,21 @@ using Microsoft.CodeAnalysis.Operations;
 namespace InterleaveX.TestConventionAnalyzer
 {
     /// <summary>
-    /// Requires each test assembly that constructs a testing engine to carry the per-assembly seed
-    /// isolation guard that freezes those construction sites.
+    /// Requires each test assembly that builds a testing engine to carry the per-assembly seed
+    /// isolation guard that freezes those build sites.
     /// </summary>
+    /// <remarks>
+    /// Both ways of building one count. Constructing it is the obvious one; asking the type for a
+    /// new instance -- <c>TestingEngine.Create</c> and anything else static on it that hands one
+    /// back -- reaches the same constructor through a method whose body lives in another assembly,
+    /// so a scan for construction alone sees nothing at all. The factory is matched by what it
+    /// returns rather than by its name, so a second one added beside <c>Create</c> is covered
+    /// without anyone remembering this file exists.
+    ///
+    /// The member has to be declared on the engine itself. Matching any static method that returns
+    /// one would also flag every caller of a test's own helper, and that helper already builds the
+    /// engine somewhere this reports.
+    /// </remarks>
     [DiagnosticAnalyzer(LanguageNames.CSharp)]
     public sealed class DeterministicSeedGuardAnalyzer : DiagnosticAnalyzer
     {
@@ -32,7 +44,7 @@ namespace InterleaveX.TestConventionAnalyzer
         private static readonly DiagnosticDescriptor MissingGuard = new DiagnosticDescriptor(
             MissingGuardDiagnosticId,
             "Testing engine construction is not guarded",
-            "Project '{0}' constructs TestingEngine but has no deterministic seed isolation guard",
+            "Project '{0}' builds a TestingEngine but has no deterministic seed isolation guard",
             "Determinism",
             DiagnosticSeverity.Error,
             isEnabledByDefault: true,
@@ -41,7 +53,7 @@ namespace InterleaveX.TestConventionAnalyzer
         private static readonly DiagnosticDescriptor StaleGuard = new DiagnosticDescriptor(
             StaleGuardDiagnosticId,
             "Deterministic seed guard is stale",
-            "Project '{0}' declares a deterministic seed isolation guard but constructs no TestingEngine",
+            "Project '{0}' declares a deterministic seed isolation guard but builds no TestingEngine",
             "Determinism",
             DiagnosticSeverity.Error,
             isEnabledByDefault: true,
@@ -75,6 +87,16 @@ namespace InterleaveX.TestConventionAnalyzer
                     }
                 }, OperationKind.ObjectCreation);
 
+                startContext.RegisterOperationAction(operationContext =>
+                {
+                    var invocation = (IInvocationOperation)operationContext.Operation;
+                    if (IsEngineFactory(invocation.TargetMethod, engineType) &&
+                        !IsSanctionedBuilder(operationContext.ContainingSymbol))
+                    {
+                        builders.Add(invocation.Syntax.GetLocation());
+                    }
+                }, OperationKind.Invocation);
+
                 startContext.RegisterSymbolAction(symbolContext =>
                 {
                     var type = (INamedTypeSymbol)symbolContext.Symbol;
@@ -103,6 +125,15 @@ namespace InterleaveX.TestConventionAnalyzer
                 });
             });
         }
+
+        /// <summary>
+        /// Returns true if the specified method is one the testing engine hands a new instance back
+        /// from, rather than one that merely mentions the type.
+        /// </summary>
+        private static bool IsEngineFactory(IMethodSymbol method, INamedTypeSymbol engineType) =>
+            method != null && method.IsStatic &&
+            SymbolEqualityComparer.Default.Equals(method.ContainingType, engineType) &&
+            SymbolEqualityComparer.Default.Equals(method.ReturnType, engineType);
 
         private static bool IsSanctionedBuilder(ISymbol symbol)
         {
