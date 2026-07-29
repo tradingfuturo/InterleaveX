@@ -102,12 +102,31 @@ namespace Microsoft.Coyote.Rewriting
         private readonly byte[] FingerprintBuffer = new byte[FingerprintBufferSize];
 
         /// <summary>
-        /// Compares paths as the file system holding this run's output does.
+        /// Compares paths as the file system holding each of them does.
         /// </summary>
-        internal StringComparer PathComparer { get; }
+        /// <remarks>
+        /// This one is for the files a run reads: its inputs, the modules it resolved, and the
+        /// directories it searched. Those can sit anywhere, and deciding how to compare them from the
+        /// output directory is how two distinct dependency trees came to be folded into one -- after
+        /// which only one of them is fingerprinted and a change in the other is invisible.
+        ///
+        /// Use <see cref="OutputPathComparer"/> instead for anything named relative to the output.
+        /// The two agree on the ordinary run, where everything is on one volume, and the difference
+        /// only shows up on the run that would otherwise be misjudged.
+        /// </remarks>
+        internal IEqualityComparer<string> PathComparer { get; }
 
         /// <summary>
-        /// The <see cref="StringComparison"/> matching <see cref="PathComparer"/>.
+        /// Compares paths as the file system holding this run's output does.
+        /// </summary>
+        /// <remarks>
+        /// For the files this run writes, which are all under one directory and so all answer to one
+        /// comparer. <see cref="PathComparison"/> matches it.
+        /// </remarks>
+        internal StringComparer OutputPathComparer { get; }
+
+        /// <summary>
+        /// The <see cref="StringComparison"/> matching <see cref="OutputPathComparer"/>.
         /// </summary>
         internal StringComparison PathComparison { get; }
 
@@ -117,8 +136,9 @@ namespace Microsoft.Coyote.Rewriting
             this.Expectation = expectation;
 
             bool isCaseInsensitive = fileSystem.IsCaseInsensitive(expectation.OutputDirectory);
-            this.PathComparer = isCaseInsensitive ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+            this.OutputPathComparer = isCaseInsensitive ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
             this.PathComparison = isCaseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            this.PathComparer = new FileSystemPathComparer(fileSystem);
         }
 
         /// <summary>
@@ -162,7 +182,7 @@ namespace Microsoft.Coyote.Rewriting
             }
 
             if (!this.PathComparer.Equals(manifest.AssembliesDirectory, this.Expectation.AssembliesDirectory) ||
-                !this.PathComparer.Equals(manifest.OutputDirectory, this.Expectation.OutputDirectory))
+                !this.OutputPathComparer.Equals(manifest.OutputDirectory, this.Expectation.OutputDirectory))
             {
                 // Guards against a manifest that was copied into this directory from elsewhere, which
                 // the input tree copy can do when an earlier in-place run left one behind.
@@ -251,13 +271,13 @@ namespace Microsoft.Coyote.Rewriting
                     return false;
                 }
 
-                if (!this.PathComparer.Equals(outputPath, expectedOutputPath))
+                if (!this.OutputPathComparer.Equals(outputPath, expectedOutputPath))
                 {
                     reason = $"the output path of '{entry.Name}' changed";
                     return false;
                 }
 
-                var expectedArtifacts = new HashSet<string>(this.PathComparer);
+                var expectedArtifacts = new HashSet<string>(this.OutputPathComparer);
                 if (this.Expectation.IsLoggingAssemblyContents)
                 {
                     expectedArtifacts.Add(NormalizeFile(Path.ChangeExtension(outputPath, ".il.json")));
@@ -270,7 +290,8 @@ namespace Microsoft.Coyote.Rewriting
                 }
 
                 if (!this.TryCreatePathSet(entry.Artifacts.Select(artifact => artifact?.Path),
-                    out HashSet<string> artifactPaths) || !artifactPaths.SetEquals(expectedArtifacts))
+                    out HashSet<string> artifactPaths, this.OutputPathComparer) ||
+                    !artifactPaths.SetEquals(expectedArtifacts))
                 {
                     reason = $"the debug artifacts of '{entry.Name}' are incomplete or unexpected";
                     return false;
@@ -349,9 +370,10 @@ namespace Microsoft.Coyote.Rewriting
         /// <summary>
         /// Returns true if the specified paths are valid, normalized and unique.
         /// </summary>
-        private bool TryCreatePathSet(IEnumerable<string> paths, out HashSet<string> normalized)
+        private bool TryCreatePathSet(IEnumerable<string> paths, out HashSet<string> normalized,
+            IEqualityComparer<string> comparer = null)
         {
-            normalized = new HashSet<string>(this.PathComparer);
+            normalized = new HashSet<string>(comparer ?? this.PathComparer);
             try
             {
                 foreach (string path in paths)

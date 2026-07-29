@@ -147,7 +147,7 @@ namespace Microsoft.Coyote.Rewriting
         /// <returns>True if the run can be skipped in its entirety, else false.</returns>
         internal bool TryGetUpToDateRun(out HashSet<string> protectedOutputPaths)
         {
-            protectedOutputPaths = new HashSet<string>(this.Validator.PathComparer);
+            protectedOutputPaths = new HashSet<string>(this.Validator.OutputPathComparer);
             if (this.IsDisabled)
             {
                 return false;
