@@ -661,8 +661,17 @@ namespace Microsoft.Coyote.Tools.Tests
                 return this.Inner.GetFiles(directory, searchPattern);
             }
 
-            public IReadOnlyList<IFileEntry> GetFileEntries(string directory, string searchPattern) =>
-                this.Inner.GetFileEntries(directory, searchPattern);
+            /// <remarks>
+            /// The same hook as <see cref="GetFiles"/>, because what a caller wants to interpose on
+            /// is a directory being listed and not which of the two calls does it. The mirror takes
+            /// its inventory through this one, so a hook that fired only on the other would silently
+            /// stop describing the thing its tests are named after.
+            /// </remarks>
+            public IReadOnlyList<IFileEntry> GetFileEntries(string directory, string searchPattern)
+            {
+                this.BeforeGetFiles?.Invoke(directory, searchPattern);
+                return this.Inner.GetFileEntries(directory, searchPattern);
+            }
 
             public string[] GetDirectories(string directory, string searchPattern, bool recursive) =>
                 this.Inner.GetDirectories(directory, searchPattern, recursive);

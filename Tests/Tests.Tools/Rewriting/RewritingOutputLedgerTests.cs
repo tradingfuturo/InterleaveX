@@ -148,36 +148,54 @@ namespace Microsoft.Coyote.Tools.Tests
         }
 
         [Fact(Timeout = 5000)]
-        public void TestVersion3CacheMigratesOnlyProvableOwnership()
+        public void TestAnAttemptThatFailedStillOwnsWhatItCopied()
         {
+            // The mirror is retried when the input tree moves underneath it, and the attempt that
+            // failed has already copied part of it. A file whose source then vanished is in no set
+            // the ledger otherwise knows about -- not the previous run's manifest, and not the
+            // listing this run commits -- so without being claimed here it stays in the output for
+            // good, belonging to nothing and removable by nothing.
             var fileSystem = new InMemoryFileSystem()
-                .WithFile(In("App.dll"), "input")
-                .WithFile(Out("App.dll"), "output")
-                .WithFile(Out("custom.txt"), "custom");
-            var cache = new CacheManifest()
-            {
-                SchemaVersion = 3,
-                AssembliesDirectory = RewritingCacheValidator.NormalizeDirectory(In()),
-                OutputDirectory = RewritingCacheValidator.NormalizeDirectory(Out()),
-                Entries = new List<CacheEntry>()
-                {
-                    new CacheEntry()
-                    {
-                        Input = new CacheFile() { Path = In("App.dll"), Exists = true },
-                        Output = new CacheFile() { Path = Out("App.dll"), Exists = true },
-                        Artifacts = new List<CacheFile>()
-                    }
-                },
-                ResolvedModules = new List<CacheFile>()
-            };
-            fileSystem.WriteAllText(Out(RewritingCache.ManifestFileName), JsonSerializer.Serialize(cache));
+                .WithDirectory(In())
+                .WithFile(Out("transient.dll"), "copied by the attempt that failed");
 
             var ledger = CreateLedger(fileSystem);
-            ledger.RemoveStaleMirroredFiles(Array.Empty<string>());
-            ledger.Commit(Array.Empty<string>(), Array.Empty<string>());
+            ledger.RemoveStaleMirroredFiles(Array.Empty<string>(), new[] { "transient.dll" });
 
-            Assert.False(fileSystem.FileExists(Out("App.dll")));
-            Assert.True(fileSystem.FileExists(Out("custom.txt")));
+            Assert.False(fileSystem.FileExists(Out("transient.dll")));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestAnAttemptedFileThatSurvivedIntoTheRunIsKept()
+        {
+            // The other half of the rule: what an earlier attempt copied and the successful attempt
+            // still lists is an ordinary mirrored file, and claiming it must not mean deleting it.
+            var fileSystem = new InMemoryFileSystem()
+                .WithDirectory(In())
+                .WithFile(Out("kept.dll"), "still in the input");
+
+            var ledger = CreateLedger(fileSystem);
+            ledger.RemoveStaleMirroredFiles(new[] { "kept.dll" }, new[] { "kept.dll" });
+            ledger.Commit(new[] { "kept.dll" }, Array.Empty<string>(), new[] { "kept.dll" });
+
+            Assert.True(fileSystem.FileExists(Out("kept.dll")));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestCommitRemovesWhatOnlyAFailedAttemptContributed()
+        {
+            // Reached when the copy itself threw rather than when the inventory disagreed: nothing
+            // re-lists in that case, so the commit is the last chance to notice.
+            var fileSystem = new InMemoryFileSystem()
+                .WithDirectory(In())
+                .WithFile(Out("transient.dll"), "copied by the attempt that failed")
+                .WithFile(Out("kept.dll"), "still in the input");
+
+            CreateLedger(fileSystem).Commit(new[] { "kept.dll" }, Array.Empty<string>(),
+                new[] { "kept.dll", "transient.dll" });
+
+            Assert.True(fileSystem.FileExists(Out("kept.dll")));
+            Assert.False(fileSystem.FileExists(Out("transient.dll")));
         }
 
         [Fact(Timeout = 5000)]

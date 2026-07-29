@@ -350,5 +350,83 @@ namespace Microsoft.Coyote.Tools.Tests
             Assert.Equal("the rewritten assembly", fileSystem.GetContents(Out("App.dll")));
             Assert.Equal("written after the first run", fileSystem.GetContents(Out("untracked.txt")));
         }
+
+        [Fact(Timeout = 5000)]
+        public void TestAnUnchangedTreeDescribesTheSameFilesTwice()
+        {
+            // The baseline the confirmation rests on: listing a tree that nothing touched twice has
+            // to agree with itself, or every run retries the copy and then fails.
+            var fileSystem = new InMemoryFileSystem()
+                .WithFile(In("App.dll"), "the original assembly")
+                .WithFile(In("nested", "deep.txt"), "nested content")
+                .WithDirectory(Out());
+            var mirror = CreateMirror(fileSystem);
+
+            var before = mirror.GetMirroredFiles(In(), Out());
+            var after = mirror.GetMirroredFiles(In(), Out());
+
+            Assert.True(RewritingOutputMirror.DescribeSameFiles(before, after));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestAFileModifiedAfterItWasCopiedIsNoticed()
+        {
+            // The copy walks the tree in one pass, so a file rewritten in place after that pass
+            // reached it leaves the output holding bytes the input no longer has. Both listings name
+            // exactly the same files, which is why comparing names alone accepted this and left an
+            // output that no version of the input ever produced.
+            var fileSystem = new InMemoryFileSystem()
+                .WithFile(In("App.dll"), "the original assembly")
+                .WithDirectory(Out());
+            var mirror = CreateMirror(fileSystem);
+
+            var before = mirror.GetMirroredFiles(In(), Out());
+            fileSystem.WriteAllText(In("App.dll"), "an assembly rebuilt while the copy was running");
+            var after = mirror.GetMirroredFiles(In(), Out());
+
+            Assert.Equal(before.Keys, after.Keys);
+            Assert.False(RewritingOutputMirror.DescribeSameFiles(before, after));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestAFileRewrittenToTheSameLengthIsNoticed()
+        {
+            // The case metadata alone might have been expected to miss. It does not: the write time
+            // moves even when the length does not, and only a replacement that preserves both
+            // survives this -- which is then caught by the content comparison on the next run.
+            var fileSystem = new InMemoryFileSystem()
+                .WithFile(In("App.dll"), "aaaaaaaa")
+                .WithDirectory(Out());
+            var mirror = CreateMirror(fileSystem);
+
+            var before = mirror.GetMirroredFiles(In(), Out());
+            fileSystem.WriteAllText(In("App.dll"), "bbbbbbbb");
+            var after = mirror.GetMirroredFiles(In(), Out());
+
+            Assert.False(RewritingOutputMirror.DescribeSameFiles(before, after));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestAFileAppearingOrDisappearingIsStillNoticed()
+        {
+            // What the inventory comparison always caught, kept under test now that it compares
+            // more than names.
+            var fileSystem = new InMemoryFileSystem()
+                .WithFile(In("App.dll"), "the original assembly")
+                .WithDirectory(Out());
+            var mirror = CreateMirror(fileSystem);
+
+            var before = mirror.GetMirroredFiles(In(), Out());
+            fileSystem.WithFile(In("Newcomer.dll"), "arrived mid-copy");
+
+            Assert.False(RewritingOutputMirror.DescribeSameFiles(
+                before, mirror.GetMirroredFiles(In(), Out())));
+
+            fileSystem.DeleteFile(In("Newcomer.dll"));
+            fileSystem.DeleteFile(In("App.dll"));
+
+            Assert.False(RewritingOutputMirror.DescribeSameFiles(
+                before, mirror.GetMirroredFiles(In(), Out())));
+        }
     }
 }
