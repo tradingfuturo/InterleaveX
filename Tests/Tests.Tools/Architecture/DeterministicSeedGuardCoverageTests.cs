@@ -9,6 +9,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Xml.Linq;
+using Microsoft.Coyote.Tests.Common.Architecture;
 using Mono.Cecil;
 using Xunit;
 using Xunit.Abstractions;
@@ -20,8 +21,6 @@ namespace Microsoft.Coyote.Tools.Tests
     /// </summary>
     public class DeterministicSeedGuardCoverageTests : BaseToolsTest
     {
-        private const string EngineType =
-            "Microsoft.Coyote.SystematicTesting.TestingEngine";
         private const string GuardType =
             "Microsoft.Coyote.Tests.Common.Architecture.DeterministicSeedIsolationTestsBase";
         private const string SanctionedBuilderType =
@@ -86,9 +85,7 @@ namespace Microsoft.Coyote.Tools.Tests
                 foreach (var method in type.Methods.Where(method => method.HasBody))
                 {
                     if (method.Body.Instructions.Any(instruction =>
-                        instruction.Operand is MethodReference reference &&
-                        reference.Name is ".ctor" &&
-                        reference.DeclaringType?.FullName == EngineType))
+                        EngineBuilderScan.IsEngineBuild(instruction.Operand)))
                     {
                         return true;
                     }

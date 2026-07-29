@@ -24,7 +24,10 @@ namespace Microsoft.Coyote.Tests.Common.Architecture
     /// reproducible, and nothing says so until a nightly failure cannot be re-run.
     ///
     /// One had already slipped through, so the methods that build an engine themselves are frozen by
-    /// each assembly that has any, and a new one is a failure.
+    /// each assembly that has any, and a new one is a failure. Building one means constructing it or
+    /// asking the type for one -- <c>TestingEngine.Create</c> and anything else static on it that
+    /// hands one back -- because the second reaches the same constructor through a body that lives
+    /// in the product assembly, where no scan of a test assembly can see it.
     ///
     /// Stated here and derived from once per assembly, rather than written out in each, because a
     /// test can only read the assemblies beside it: a test project's output directory holds its own
@@ -72,7 +75,7 @@ namespace Microsoft.Coyote.Tests.Common.Architecture
         }
 
         /// <summary>
-        /// Returns the methods of the specified assembly that construct a testing engine.
+        /// Returns the methods of the specified assembly that build a testing engine.
         /// </summary>
         /// <remarks>
         /// Read off the IL rather than the source, so that it sees the construction however it was
@@ -99,10 +102,7 @@ namespace Microsoft.Coyote.Tests.Common.Architecture
 
                         foreach (var instruction in method.Body.Instructions)
                         {
-                            if (instruction.Operand is MethodReference reference &&
-                                reference.Name is ".ctor" &&
-                                reference.DeclaringType?.FullName is
-                                    "Microsoft.Coyote.SystematicTesting.TestingEngine")
+                            if (EngineBuilderScan.IsEngineBuild(instruction.Operand))
                             {
                                 found.Add($"{type.FullName}::{method.Name}");
                                 break;
