@@ -16,6 +16,11 @@ concurrency defects across our codebase.
 PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
 
 ### v1.8.0 (InterleaveX)
+- `run-tests.ps1` tells you to build first only when something was never built.
+  The advice was printed after any failing run, including an ordinary failing
+  test, which sends whoever is reading it somewhere the failure is not. The two
+  cases were already told apart to report them; that distinction now reaches the
+  advice as well.
 - Exploration is faster and allocates far less per scheduling step. Measured with
   `Tools/SchedulerBench` at 100 iterations on an otherwise idle machine, against
   the three changes below combined: the `deep` workload, which isolates per-step

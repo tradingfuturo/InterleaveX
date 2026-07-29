@@ -17,7 +17,20 @@ param(
     [ValidateSet("Debug", "Release")]
     [string]$configuration = "Release",
     [switch]$cli,
-    [switch]$ci
+    [switch]$ci,
+    # Runs the targets one after another instead of together. The two modes reach their verdict
+    # through the same aggregation, so this changes only how long the run takes.
+    [switch]$sequential,
+    # Skips clearing the NuGet caches and reinstalling the local tools. That setup costs more than
+    # some of the targets it precedes, and it runs again on every invocation, so timing anything
+    # against a run that included it measures the setup rather than the tests.
+    [switch]$noSetup,
+    # Skips the layout and helper gates below. They are preconditions on the tree rather than part
+    # of a test run, and check-script-helpers.ps1 drives this script to prove that a run which tests
+    # nothing fails -- so without this the two would call each other until the call depth ran out.
+    [switch]$noGates,
+    # How many targets to run at once. Zero picks one per core, bounded by the number of targets.
+    [int]$throttle = 0
 )
 
 Import-Module $PSScriptRoot/common.psm1 -Force
@@ -25,15 +38,18 @@ Import-Module $PSScriptRoot/common.psm1 -Force
 # Checked here as well as in CI: a reference to the product output that forgets the configuration
 # resolves to whichever build happened to run last, and the resulting failure surfaces somewhere
 # else entirely.
-Write-Comment -text "Checking the build output layout." -color "blue"
-& $PSScriptRoot/check-build-layout.ps1
-if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
-}
+if (-not $noGates.IsPresent) {
+    Write-Comment -text "Checking the build output layout." -color "blue"
+    & $PSScriptRoot/check-build-layout.ps1
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
 
-& $PSScriptRoot/check-script-helpers.ps1
-if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
+    & $PSScriptRoot/check-script-helpers.ps1
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+
 }
 
 $all_frameworks = (Get-Variable "framework").Attributes.ValidValues
@@ -56,10 +72,13 @@ $runtime_version = FindDotNetRuntimeVersion -dotnet_runtime_path $dotnet_runtime
 # command being available after locally being restored.
 # Example: https://github.com/dotnet/sdk/issues/11820
 # Restore the local ilverify tool.
-&dotnet nuget locals all --clear
-&dotnet tool restore
-&dotnet tool install dotnet-ilverify --version 10.0.0
-&dotnet tool list
+if (-not $noSetup.IsPresent) {
+    &dotnet nuget locals all --clear
+    &dotnet tool restore
+    &dotnet tool install dotnet-ilverify --version 10.0.0
+    &dotnet tool list
+}
+
 $ilverify = "dotnet ilverify"
 
 [System.Environment]::SetEnvironmentVariable('COYOTE_CLI_TELEMETRY_OPTOUT', '1')
@@ -71,68 +90,76 @@ Write-Comment -text "Running the Coyote tests." -color "blue"
 # reports itself: an unbuilt configuration is only a non-terminating Get-ChildItem error, and a
 # '-framework' that names one nobody built is filtered out in silence. Both used to reach the final
 # 'Done' with exit code 0, so an explicit selection could run nothing and still pass.
-$unbuilt_targets = @()
-$empty_targets = @()
+#
+# Each target is now run by 'Invoke-TestTargetShard', which returns what happened rather than ending
+# the run, and the verdict is reached by 'Test-ShardOutcome'. Both exist because the targets are run
+# together by default: a shard reporting a failure the way the rest of these scripts do, by calling
+# 'exit', would end its own runspace while the parent finished and reported success.
+$context = @{
+    ScriptRoot = $PSScriptRoot
+    Configuration = $configuration
+    Framework = $framework
+    AllFrameworks = $all_frameworks
+    IsCi = $ci.IsPresent
+    Filter = $filter
+    Logger = $logger
+    Verbosity = $v
+    Dotnet = $dotnet
+    Ilverify = $ilverify
+    DotnetRuntimePath = $dotnet_runtime_path
+    AspnetRuntimePath = $aspnet_runtime_path
+    RuntimeVersion = $runtime_version
+}
 
-foreach ($kvp in $targets.GetEnumerator()) {
-    if (($test -ne "all") -and ($test -ne $($kvp.Name))) {
-        continue
-    }
+$selected = @($targets.GetEnumerator() | Where-Object { ($test -eq "all") -or ($test -eq $_.Name) })
+$expected_targets = @($selected | ForEach-Object { $_.Value })
 
-    $output_dir = "$PSScriptRoot/../Tests/$($kvp.Value)/bin/$configuration"
-    if (-not (Test-Path $output_dir)) {
-        $unbuilt_targets += $($kvp.Value)
-        continue
-    }
+if ($throttle -le 0) {
+    # One shard per core, and never more shards than there are targets to run. Each shard is a
+    # 'dotnet test' process exploring schedules, which saturates a core for as long as it runs, and
+    # every test in the suite carries a five second timeout. Running more of them than the machine
+    # has cores does not just take longer -- it makes tests that were only ever going to be slow
+    # start failing, which on a two or four core CI runner is most of them.
+    $throttle = [Math]::Max(1, [Math]::Min($selected.Count, [Environment]::ProcessorCount))
+}
 
-    $ran_for_target = 0
-    $frameworks = Get-ChildItem -Path $output_dir | `
-        Where-Object Name -CIn $all_frameworks | Select-Object -expand Name
-    foreach ($f in $frameworks) {
-        if ((-not $ci.IsPresent) -and ($f -ne $framework)) {
-            continue
-        }
+if ($sequential.IsPresent) {
+    $results = @($selected | ForEach-Object {
+        Invoke-TestTargetShard -Context $context -Name $_.Name -Project $_.Value
+    })
+} else {
+    $module = "$PSScriptRoot/common.psm1"
+    $results = @($selected | ForEach-Object -ThrottleLimit $throttle -Parallel {
+        Import-Module $using:module -Force
+        Invoke-TestTargetShard -Context $using:context -Name $_.Name -Project $_.Value
+    })
+}
 
-        $target = "$PSScriptRoot/../Tests/$($kvp.Value)/$($kvp.Value).csproj"
-        if ($f -eq "net10.0" -or $f -eq "net9.0" -or $f -eq "net8.0") {
-            $AssemblyName = GetAssemblyName($target)
-            $command = [IO.Path]::Combine($PSScriptRoot, "..", "Tests", $($kvp.Value), "bin", $configuration, $f, "$AssemblyName.dll")
-            $command = $command + ' -r "' + [IO.Path]::Combine( `
-                $PSScriptRoot, "..", "Tests", $($kvp.Value), "bin", $configuration, $f, "*.dll") + '"'
-            $command = $command + ' -r "' + [IO.Path]::Combine($PSScriptRoot, "..", "bin", $configuration, $f, "*.dll") + '"'
-            $command = $command + ' -r "' + [IO.Path]::Combine($dotnet_runtime_path, $runtime_version, "*.dll") + '"'
-            $command = $command + ' -r "' + [IO.Path]::Combine($aspnet_runtime_path, $runtime_version, "*.dll") + '"'
-            # Exclude the compiler-generated <PrivateImplementationDetails>.InlineArrayAsReadOnlySpan
-            # helper. ilverify (10.0.0) raises a false-positive ReturnPtrToStack on it because it does
-            # not model [InlineArray] ref semantics. This helper is emitted by Roslyn for collection
-            # expressions and is unrelated to the binary rewriter: the identical error is present in the
-            # pre-rewrite (obj) assembly, so excluding it does not weaken corruption detection.
-            $command = $command + ' -e "InlineArrayAsReadOnlySpan"'
-            Invoke-ToolCommand -tool $ilverify -cmd $command -error_msg "found corrupted assembly rewriting"
-        }
-
-        Invoke-DotnetTest -dotnet $dotnet -project $($kvp.Name) -target $target `
-            -filter $filter -logger $logger -framework $f -verbosity $v -configuration $configuration
-        $ran_for_target = $ran_for_target + 1
-    }
-
-    if ($ran_for_target -eq 0) {
-        $empty_targets += $($kvp.Value)
+# Held until every shard is done and printed one block at a time. Concurrent targets writing to a
+# single console interleave into something that cannot be read, least of all by whoever is looking
+# for which target failed.
+foreach ($result in ($results | Sort-Object Target)) {
+    Write-Comment -prefix "..." -text "----- $($result.Target) [$($result.Stage)] -----" -color "blue"
+    if (-not [string]::IsNullOrWhiteSpace($result.Output)) {
+        Write-Host $result.Output
     }
 }
 
-if ($unbuilt_targets.Count -gt 0) {
-    Write-Error "no '$configuration' build found for: $($unbuilt_targets -join ', ')."
-    Write-Error "Build that configuration first, for example: ./Scripts/build.ps1 -configuration $configuration"
-    exit 1
-}
+$outcome = Test-ShardOutcome -Results $results -ExpectedTargets $expected_targets
+if ($outcome.IsFailed) {
+    foreach ($message in $outcome.Messages) {
+        Write-Error $message
+    }
 
-if ($empty_targets.Count -gt 0) {
-    Write-Error "no tests ran for: $($empty_targets -join ', ')."
-    if ($ci.IsPresent) {
-        Write-Error "The '$configuration' build produced none of the target frameworks."
-    } else {
-        Write-Error "The '$configuration' build has no '$framework' output. Build it, or pass a -framework that was built."
+    # Only when something never ran. A test that ran and failed is not fixed by building again, and
+    # saying so in front of the failure sends whoever is reading it to the wrong place.
+    if ($outcome.HasUnrunTargets) {
+        Write-Error "Build that configuration first, for example: ./Scripts/build.ps1 -configuration $configuration"
+        if ($ci.IsPresent) {
+            Write-Error "In CI the '$configuration' build must produce at least one target framework."
+        } else {
+            Write-Error "Check the '$configuration' build has '$framework' output, or pass a -framework that was built."
+        }
     }
 
     exit 1

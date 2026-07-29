@@ -58,14 +58,12 @@ function Invoke-DotnetBuild([String]$dotnet, [String]$solution, [String]$config,
     Invoke-ToolCommand -tool $dotnet -cmd $build_command -error_msg "Failed to build $solution"
 }
 
-# Runs the specified .NET test using the specified framework.
-function Invoke-DotnetTest([String]$dotnet, [String]$project, [String]$target, [string]$filter, [string]$framework, [string]$logger, [string]$verbosity, [string]$configuration) {
-    Write-Comment -prefix "..." -text "Testing '$project' ($framework)"
-    if (-not (Test-Path $target)) {
-        Write-Error "tests for '$project' ($framework) not found."
-        exit
-    }
-
+# Returns the 'dotnet test' command line for the specified target.
+#
+# Stated once rather than at each caller, because the sequential and sharded paths must run the very
+# same command: a flag that reaches only one of them makes the two modes disagree about what they
+# measured, which is exactly what nobody would think to check.
+function Get-DotnetTestCommand([String]$target, [string]$filter, [string]$framework, [string]$logger, [string]$verbosity, [string]$configuration) {
     $command = "test $target -c $configuration -f $framework --no-build -v $verbosity --logger 'trx' --blame --blame-crash"
     if (!($filter -eq "")) {
         $command = "$command --filter $filter"
@@ -75,8 +73,144 @@ function Invoke-DotnetTest([String]$dotnet, [String]$project, [String]$target, [
         $command = "$command --logger $logger"
     }
 
-    $error_msg = "Failed to test '$project'"
-    Invoke-ToolCommand -tool $dotnet -cmd $command -error_msg $error_msg
+    return $command
+}
+
+# Runs every framework of one test target and returns what happened, without ending the run.
+#
+# This is the unit the test script fans out over. Each target is an independent 'dotnet test'
+# process, so they have full isolation from one another already -- but only if nothing in here
+# reports a failure the way the rest of this module does, by calling 'exit'. See
+# 'Invoke-ToolCommandWithResult' for why that would silently pass a failing run.
+#
+# The 'Stage' says how far the target got, and is what tells a target that was never built apart
+# from one whose tests failed. Both used to reach the final 'Done' with exit code 0.
+function Invoke-TestTargetShard([hashtable]$Context, [String]$Name, [String]$Project) {
+    $output = New-Object System.Text.StringBuilder
+    $frameworks_run = @()
+
+    function New-Result([string]$stage, [int]$code) {
+        return [pscustomobject]@{
+            Target = $Project
+            Name = $Name
+            Frameworks = $frameworks_run
+            Stage = $stage
+            ExitCode = $code
+            Output = $output.ToString()
+        }
+    }
+
+    $configuration = $Context.Configuration
+    $output_dir = "$($Context.ScriptRoot)/../Tests/$Project/bin/$configuration"
+    if (-not (Test-Path $output_dir)) {
+        return New-Result "unbuilt" 1
+    }
+
+    $target = "$($Context.ScriptRoot)/../Tests/$Project/$Project.csproj"
+    $frameworks = Get-ChildItem -Path $output_dir | `
+        Where-Object Name -CIn $Context.AllFrameworks | Select-Object -expand Name
+    foreach ($f in $frameworks) {
+        if ((-not $Context.IsCi) -and ($f -ne $Context.Framework)) {
+            continue
+        }
+
+        if ($f -eq "net10.0" -or $f -eq "net9.0" -or $f -eq "net8.0") {
+            $assembly_name = GetAssemblyName($target)
+            $command = [IO.Path]::Combine($Context.ScriptRoot, "..", "Tests", $Project, "bin", `
+                $configuration, $f, "$assembly_name.dll")
+            $command = $command + ' -r "' + [IO.Path]::Combine( `
+                $Context.ScriptRoot, "..", "Tests", $Project, "bin", $configuration, $f, "*.dll") + '"'
+            $command = $command + ' -r "' + [IO.Path]::Combine( `
+                $Context.ScriptRoot, "..", "bin", $configuration, $f, "*.dll") + '"'
+            $command = $command + ' -r "' + [IO.Path]::Combine( `
+                $Context.DotnetRuntimePath, $Context.RuntimeVersion, "*.dll") + '"'
+            $command = $command + ' -r "' + [IO.Path]::Combine( `
+                $Context.AspnetRuntimePath, $Context.RuntimeVersion, "*.dll") + '"'
+            # Exclude the compiler-generated <PrivateImplementationDetails>.InlineArrayAsReadOnlySpan
+            # helper. ilverify (10.0.0) raises a false-positive ReturnPtrToStack on it because it does
+            # not model [InlineArray] ref semantics. This helper is emitted by Roslyn for collection
+            # expressions and is unrelated to the binary rewriter: the identical error is present in the
+            # pre-rewrite (obj) assembly, so excluding it does not weaken corruption detection.
+            $command = $command + ' -e "InlineArrayAsReadOnlySpan"'
+
+            [void]$output.AppendLine("... Verifying '$Project' ($f)")
+            $verified = Invoke-ToolCommandWithResult -tool $Context.Ilverify -cmd $command
+            [void]$output.AppendLine($verified.Output)
+            if ($verified.ExitCode -ne 0) {
+                [void]$output.AppendLine("Error: found corrupted assembly rewriting in '$Project' ($f).")
+                return New-Result "ilverify" $verified.ExitCode
+            }
+        }
+
+        [void]$output.AppendLine("... Testing '$Name' ($f)")
+        $command = Get-DotnetTestCommand -target $target -filter $Context.Filter -framework $f `
+            -logger $Context.Logger -verbosity $Context.Verbosity -configuration $configuration
+        $tested = Invoke-ToolCommandWithResult -tool $Context.Dotnet -cmd $command
+        [void]$output.AppendLine($tested.Output)
+        if ($tested.ExitCode -ne 0) {
+            [void]$output.AppendLine("Error: failed to test '$Name' ($f).")
+            return New-Result "test" $tested.ExitCode
+        }
+
+        $frameworks_run += $f
+    }
+
+    if ($frameworks_run.Count -eq 0) {
+        return New-Result "empty" 1
+    }
+
+    return New-Result "ok" 0
+}
+
+# Decides whether a set of shard results is a passing run, and returns the reasons if it is not.
+#
+# Kept free of any process or file system interaction so that every way a run can fail can be
+# checked directly, and so that the sequential and sharded paths reach their verdict through the
+# same code rather than through two accountings that agree until they do not.
+function Test-ShardOutcome([object[]]$Results, [string[]]$ExpectedTargets) {
+    $messages = @()
+    $reported = @($Results | Where-Object { $null -ne $_ })
+
+    # A shard that threw, crashed, or was never dispatched produces no result at all. Counting only
+    # what came back would read that as a clean run, so absence is failure rather than silence.
+    $names = @($reported | ForEach-Object { $_.Target })
+    foreach ($target in $ExpectedTargets) {
+        if ($names -notcontains $target) {
+            $messages += "no result was reported for '$target': its shard did not finish."
+        }
+    }
+
+    # The stages that say a target never got as far as running anything. These are reported together,
+    # naming every target at once, because "no build found for: A, B" is the one line someone needs
+    # rather than one line each. Stated as a table so that the reporting below and the exclusion
+    # after it cannot disagree about which stages they are: adding a stage here is the whole edit.
+    $collected = [ordered]@{ unbuilt = "no build found for"; empty = "no tests ran for" }
+    $unrun = $false
+    foreach ($stage in $collected.Keys) {
+        $targets = @($reported | Where-Object { $_.Stage -eq $stage } | ForEach-Object { $_.Target })
+        if ($targets.Count -gt 0) {
+            $messages += "$($collected[$stage]): $($targets -join ', ')."
+            $unrun = $true
+        }
+    }
+
+    foreach ($result in ($reported | Where-Object {
+            $_.ExitCode -ne 0 -and $collected.Keys -notcontains $_.Stage })) {
+        $messages += "'$($result.Target)' failed at the '$($result.Stage)' stage with exit code $($result.ExitCode)."
+    }
+
+    # Told apart from an ordinary failure so that the caller can say what to do about it. "Build that
+    # configuration first" is the answer to a target that never ran anything, and is noise in front of a
+    # test that ran and failed. Derived from the same table as the reporting above rather than from a
+    # second list of stage names, for the same reason that table exists.
+    #
+    # A shard that reported nothing at all deliberately does not count: it crashed or was never
+    # dispatched, which is not something a build fixes either.
+    return [pscustomobject]@{
+        IsFailed = $messages.Count -gt 0
+        HasUnrunTargets = $unrun
+        Messages = $messages
+    }
 }
 
 # Runs the specified tool command.
@@ -86,6 +220,27 @@ function Invoke-ToolCommand([String]$tool, [String]$cmd, [String]$error_msg) {
     if (-not ($LASTEXITCODE -eq 0)) {
         Write-Error $error_msg
         exit $LASTEXITCODE
+    }
+}
+
+# Runs the specified tool command and returns its exit code and everything it wrote, rather than
+# ending the run.
+#
+# Every other failure in this file is reported by calling 'exit' in the caller's scope, which works
+# only while that scope is the script itself. Inside a parallel runspace 'exit' ends that runspace
+# alone: the parent keeps going, sees nothing, and reports success, so a shard whose tests failed
+# would pass the run. A caller that fans out therefore has to receive the outcome as a value and
+# aggregate it itself.
+#
+# The output is captured rather than streamed for the same reason. Concurrent shards writing to one
+# console interleave into something no one can read, so each shard's output is held and printed as a
+# block once it finishes. Both streams are captured, because a tool that fails usually explains
+# itself on standard error.
+function Invoke-ToolCommandWithResult([String]$tool, [String]$cmd) {
+    $output = Invoke-Expression "$tool $cmd 2>&1" | Out-String
+    return [pscustomobject]@{
+        ExitCode = $LASTEXITCODE
+        Output = $output
     }
 }
 
