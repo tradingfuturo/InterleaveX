@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
 // Modifications Copyright (c) 2026 pipflow.com <https://pipflow.com>
@@ -120,9 +120,21 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         private RewritingOutputLedger OutputLedger;
 
-        private HashSet<string> MirroredOutputFiles;
+        private Dictionary<string, MirroredFile> MirroredOutputFiles;
 
         private HashSet<string> ProducedOutputFiles;
+
+        /// <summary>
+        /// Every relative path any attempt of this run has put in the output directory.
+        /// </summary>
+        /// <remarks>
+        /// The mirror is retried when the input tree moves underneath it, and the attempt that failed
+        /// has already copied some of it. Those files belong to no run otherwise: the ledger owns what
+        /// the previous run recorded and what this one commits, and a file copied from a source that
+        /// then vanished is in neither. Accumulated across attempts rather than reset with each one,
+        /// which is what makes the retry able to clean up after the attempt before it.
+        /// </remarks>
+        private HashSet<string> AttemptedMirroredFiles;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="RewritingEngine"/> class.
@@ -182,8 +194,9 @@ namespace Microsoft.Coyote.Rewriting
                     this.Options.AssembliesDirectory, this.Options.OutputDirectory);
                 var comparer = this.FileSystem.IsCaseInsensitive(this.Options.OutputDirectory) ?
                     StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-                this.MirroredOutputFiles = new HashSet<string>(comparer);
+                this.MirroredOutputFiles = new Dictionary<string, MirroredFile>(comparer);
                 this.ProducedOutputFiles = new HashSet<string>(comparer);
+                this.AttemptedMirroredFiles = new HashSet<string>(comparer);
             }
 
             bool isUpToDate = cache.TryGetUpToDateRun(out HashSet<string> protectedOutputPaths);
@@ -211,7 +224,8 @@ namespace Microsoft.Coyote.Rewriting
                         this.TrackProducedOutput(path);
                     }
 
-                    this.OutputLedger?.Commit(this.MirroredOutputFiles, this.ProducedOutputFiles);
+                    this.OutputLedger?.Commit(this.MirroredOutputFiles.Keys, this.ProducedOutputFiles,
+                        this.AttemptedMirroredFiles);
                     this.LogWriter.LogImportant("... Skipping rewriting as every assembly is up to date");
                     return;
                 }
@@ -241,7 +255,8 @@ namespace Microsoft.Coyote.Rewriting
                 // Only once every assembly has been dealt with: a manifest describing a partially
                 // rewritten directory would report assemblies as up to date that were never reached.
                 cache.Save();
-                this.OutputLedger?.Commit(this.MirroredOutputFiles, this.ProducedOutputFiles);
+                this.OutputLedger?.Commit(this.MirroredOutputFiles.Keys, this.ProducedOutputFiles,
+                    this.AttemptedMirroredFiles);
             }
             catch (Exception ex)
             {
@@ -564,12 +579,21 @@ namespace Microsoft.Coyote.Rewriting
                     {
                         this.MirroredOutputFiles =
                             this.Mirror.GetMirroredFiles(sourceDirectory, outputDirectory);
-                        this.OutputLedger.RemoveStaleMirroredFiles(this.MirroredOutputFiles);
+
+                        // Claimed before the copy, so that a file this attempt is about to write is
+                        // already owned if the attempt does not finish.
+                        this.AttemptedMirroredFiles.UnionWith(this.MirroredOutputFiles.Keys);
+                        this.OutputLedger.RemoveStaleMirroredFiles(this.MirroredOutputFiles.Keys,
+                            this.AttemptedMirroredFiles);
                         this.Mirror.Mirror(sourceDirectory, outputDirectory, protectedOutputPaths,
-                            this.MirroredOutputFiles);
+                            this.MirroredOutputFiles.Keys);
                         var confirmed =
                             this.Mirror.GetMirroredFiles(sourceDirectory, outputDirectory);
-                        if (this.MirroredOutputFiles.SetEquals(confirmed))
+
+                        // Compared on length and write time as well as on name. Equal inventories say
+                        // nothing about a file that was rewritten in place after this copied it, and
+                        // that file is now in the output holding bytes the input no longer has.
+                        if (RewritingOutputMirror.DescribeSameFiles(this.MirroredOutputFiles, confirmed))
                         {
                             this.MirroredOutputFiles = confirmed;
                             lastMirrorError = null;

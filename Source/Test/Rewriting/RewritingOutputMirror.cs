@@ -13,6 +13,22 @@ using Microsoft.Coyote.Logging;
 namespace Microsoft.Coyote.Rewriting
 {
     /// <summary>
+    /// One file of the input tree, as it was when the tree was listed.
+    /// </summary>
+    internal readonly struct MirroredFile
+    {
+        internal MirroredFile(long length, DateTime lastWriteTimeUtc)
+        {
+            this.Length = length;
+            this.LastWriteTimeUtc = lastWriteTimeUtc;
+        }
+
+        internal long Length { get; }
+
+        internal DateTime LastWriteTimeUtc { get; }
+    }
+
+    /// <summary>
     /// Mirrors the directory holding the assemblies to rewrite into the output directory.
     /// </summary>
     /// <remarks>
@@ -56,35 +72,67 @@ namespace Microsoft.Coyote.Rewriting
         }
 
         /// <summary>
-        /// Returns the relative paths that the specified source directory contributes to the output.
+        /// Returns the relative paths that the specified source directory contributes to the output,
+        /// each with the length and write time it had when it was listed.
         /// </summary>
+        /// <remarks>
+        /// The metadata is what makes this worth taking twice. Names alone say whether a file arrived
+        /// or went away between two listings, and say nothing about one that was rewritten in place
+        /// while the copy was running -- which is the case that leaves the output holding bytes no
+        /// version of the input ever had. It costs nothing to carry: the listing already reports both
+        /// fields, so this is the same walk it always was.
+        /// </remarks>
         /// <param name="sourceDirectory">The directory holding the assemblies to rewrite.</param>
         /// <param name="outputDirectory">The directory to mirror it into.</param>
-        internal HashSet<string> GetMirroredFiles(string sourceDirectory, string outputDirectory)
+        internal Dictionary<string, MirroredFile> GetMirroredFiles(string sourceDirectory, string outputDirectory)
         {
             var comparer = this.FileSystem.IsCaseInsensitive(outputDirectory) ?
                 StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-            var files = new HashSet<string>(comparer);
+            var files = new Dictionary<string, MirroredFile>(comparer);
             var comparison = this.FileSystem.IsCaseInsensitive(outputDirectory) ?
                 StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
-            foreach (string filePath in this.FileSystem.GetFiles(sourceDirectory, "*"))
+            foreach (var entry in this.FileSystem.GetFileEntries(sourceDirectory, "*"))
             {
-                AddMirroredFile(sourceDirectory, filePath, files);
+                AddMirroredFile(sourceDirectory, entry, files);
             }
 
             foreach (string directoryPath in this.FileSystem.GetDirectories(sourceDirectory, "*", true))
             {
                 if (!IsWithin(directoryPath, outputDirectory, comparison))
                 {
-                    foreach (string filePath in this.FileSystem.GetFiles(directoryPath, "*"))
+                    foreach (var entry in this.FileSystem.GetFileEntries(directoryPath, "*"))
                     {
-                        AddMirroredFile(sourceDirectory, filePath, files);
+                        AddMirroredFile(sourceDirectory, entry, files);
                     }
                 }
             }
 
             return files;
+        }
+
+        /// <summary>
+        /// Returns true if the two listings describe the same files in the same state.
+        /// </summary>
+        internal static bool DescribeSameFiles(
+            IReadOnlyDictionary<string, MirroredFile> left, IReadOnlyDictionary<string, MirroredFile> right)
+        {
+            if (left.Count != right.Count)
+            {
+                return false;
+            }
+
+            foreach (var file in left)
+            {
+                if (!right.TryGetValue(file.Key, out MirroredFile other) ||
+                    other.Length != file.Value.Length ||
+                    other.LastWriteTimeUtc != file.Value.LastWriteTimeUtc)
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         internal void Mirror(string sourceDirectory, string outputDirectory,
@@ -104,20 +152,21 @@ namespace Microsoft.Coyote.Rewriting
         internal void Mirror(string sourceDirectory, string outputDirectory,
             HashSet<string> protectedOutputPaths) =>
             this.Mirror(sourceDirectory, outputDirectory, protectedOutputPaths,
-                this.GetMirroredFiles(sourceDirectory, outputDirectory));
+                this.GetMirroredFiles(sourceDirectory, outputDirectory).Keys);
 
-        private static void AddMirroredFile(string sourceDirectory, string filePath, HashSet<string> files)
+        private static void AddMirroredFile(string sourceDirectory, IFileEntry entry,
+            Dictionary<string, MirroredFile> files)
         {
-            string name = Path.GetFileName(filePath);
+            string name = Path.GetFileName(entry.Path);
             if (string.Equals(name, RewritingCache.ManifestFileName, StringComparison.Ordinal) ||
                 string.Equals(name, RewritingOutputLedger.ManifestFileName, StringComparison.Ordinal))
             {
                 return;
             }
 
-            string relative = filePath.Substring(sourceDirectory.TrimEnd('\\', '/').Length)
+            string relative = entry.Path.Substring(sourceDirectory.TrimEnd('\\', '/').Length)
                 .TrimStart('\\', '/').Replace('\\', '/');
-            files.Add(relative);
+            files[relative] = new MirroredFile(entry.Length, entry.LastWriteTimeUtc);
         }
 
         /// <summary>

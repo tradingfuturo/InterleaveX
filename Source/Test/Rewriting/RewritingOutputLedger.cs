@@ -63,17 +63,31 @@ namespace Microsoft.Coyote.Rewriting
             this.TryLoadCurrentManifest();
         }
 
-        internal void RemoveStaleMirroredFiles(IEnumerable<string> currentMirroredFiles)
+        /// <param name="currentMirroredFiles">What the input tree contributes to the output now.</param>
+        /// <param name="alsoOwnedFiles">
+        /// Paths an earlier attempt of this same run put in the output. A retry re-lists the input,
+        /// so a file that was copied and then vanished from the source is absent from every set the
+        /// ledger knows about: it was never in the previous run's manifest, so nothing here owns it,
+        /// and it is not in the current listing, so nothing here will ever record it. Without this it
+        /// stays in the output forever, belonging to no run.
+        /// </param>
+        internal void RemoveStaleMirroredFiles(IEnumerable<string> currentMirroredFiles,
+            IEnumerable<string> alsoOwnedFiles = null)
         {
             var current = new HashSet<string>(currentMirroredFiles, this.PathComparer);
-            this.DeleteOwnedFiles(this.PreviousMirroredFiles.Where(path => !current.Contains(path)));
+            var owned = new HashSet<string>(this.PreviousMirroredFiles, this.PathComparer);
+            owned.UnionWith(this.NormalizeCurrentPaths(alsoOwnedFiles));
+            this.DeleteOwnedFiles(owned.Where(path => !current.Contains(path)));
         }
 
-        internal void Commit(IEnumerable<string> mirroredFiles, IEnumerable<string> producedFiles)
+        internal void Commit(IEnumerable<string> mirroredFiles, IEnumerable<string> producedFiles,
+            IEnumerable<string> alsoOwnedFiles = null)
         {
             var mirrored = this.NormalizeCurrentPaths(mirroredFiles);
             var produced = this.NormalizeCurrentPaths(producedFiles);
-            this.DeleteOwnedFiles(this.PreviousProducedFiles.Where(path =>
+            var owned = new HashSet<string>(this.PreviousProducedFiles, this.PathComparer);
+            owned.UnionWith(this.NormalizeCurrentPaths(alsoOwnedFiles));
+            this.DeleteOwnedFiles(owned.Where(path =>
                 !produced.Contains(path) && !mirrored.Contains(path)));
 
             var manifest = new OutputOwnershipManifest()
