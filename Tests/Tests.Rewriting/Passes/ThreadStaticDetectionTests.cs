@@ -7,6 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using Microsoft.Coyote.IO;
 using Microsoft.Coyote.Logging;
 using Mono.Cecil;
 using Xunit;
@@ -191,12 +192,17 @@ namespace Microsoft.Coyote.Rewriting.Tests
                 BindingFlags.Instance | BindingFlags.NonPublic, null,
                 new[]
                 {
-                    typeof(string), typeof(string), typeof(RewritingOptions), typeof(AssemblyResolveEventHandler)
+                    typeof(string), typeof(string), typeof(RewritingOptions), typeof(AssemblyResolveEventHandler),
+                    typeof(IFileSystem), typeof(Func<string, string>)
                 },
                 null);
             Assert.NotNull(constructor);
             return (AssemblyInfo)constructor.Invoke(
-                new object[] { Path.GetFileName(path), path, options, null });
+                new object[]
+                {
+                    Path.GetFileName(path), path, options, null, HostFileSystem.Instance,
+                    (Func<string, string>)Environment.GetEnvironmentVariable
+                });
         }
 
         /// <summary>

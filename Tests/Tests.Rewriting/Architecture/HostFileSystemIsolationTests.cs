@@ -93,6 +93,8 @@ namespace Microsoft.Coyote.Rewriting.Tests
             "Microsoft.Coyote.Rewriting.RewritingCacheValidator",
             "Microsoft.Coyote.Rewriting.RewritingCacheExpectation",
             "Microsoft.Coyote.Rewriting.RewritingOutputMirror",
+            "Microsoft.Coyote.Rewriting.RewritingOutputLedger",
+            "Microsoft.Coyote.IO.FileSystemPathComparer",
             "Microsoft.Coyote.Rewriting.CacheManifest",
             "Microsoft.Coyote.Rewriting.CacheEntry",
             "Microsoft.Coyote.Rewriting.CacheFile",
@@ -322,14 +324,20 @@ namespace Microsoft.Coyote.Rewriting.Tests
         /// here: it is the real implementation of the seam, so every one of its members is a file
         /// system call by definition.
         ///
-        /// <c>AssemblyInfo</c> and the three <c>RewritingEngine</c> members left here read and write
-        /// the assemblies themselves, which stays on real paths deliberately -- Mono.Cecil resolves
-        /// through its own paths, and a module read from a stream has no file name for the cache to
-        /// record, so routing these through the seam would empty the record the cache relies on to
-        /// notice a changed dependency. Everything else the engine does to the file system -- making
-        /// and removing the output directory, writing the IL dumps, checking for a dependency already
-        /// in place -- goes through <c>IFileSystem</c>, so that this list marks the boundary rather
-        /// than merely a method that happens to sit near it.
+        /// The two <c>RewritingEngine</c> members left here move the assemblies themselves, and what
+        /// keeps them here is narrower than it once was. It is not that Mono.Cecil is involved: it is
+        /// that these two act on bytes Cecil has already written to a real path. The copy that puts a
+        /// rewritten assembly in its final place reads what <c>assembly.Write</c> just produced, and
+        /// the probe beside it asks about the symbol file that same write emitted. A file system that
+        /// answered either of those from anywhere but the disk would be describing something that
+        /// does not exist, and the mismatch would be silent -- so they are honest about reaching the
+        /// real one rather than taking a seam they cannot mean.
+        ///
+        /// Everything else is on the seam, including all of <c>AssemblyInfo</c>: which framework
+        /// version wins, what a runtime configuration asks for, whether a dependency sits beside its
+        /// referrer. Those are decisions rather than transfers, and each is now something a test can
+        /// set up -- which is what the incremental cache needs, since a candidate it never looked at
+        /// is exactly what used to change underneath it unnoticed.
         ///
         /// <c>ParallelTestFiles</c> is here on purpose too. Its tests are written against the real
         /// file system because what they check is that it never throws, whatever the file system
@@ -361,13 +369,8 @@ namespace Microsoft.Coyote.Rewriting.Tests
             "Microsoft.Coyote.IO.HostFileSystem::ReadAllText",
             "Microsoft.Coyote.IO.HostFileSystem::ReplaceFile",
             "Microsoft.Coyote.IO.HostFileSystem::WriteAllText",
-            "Microsoft.Coyote.Rewriting.AssemblyInfo::GetFrameworksFromRuntimeConfig",
-            "Microsoft.Coyote.Rewriting.AssemblyInfo::IsSymbolFileAvailable",
-            "Microsoft.Coyote.Rewriting.AssemblyInfo::LoadDependencies",
-            "Microsoft.Coyote.Rewriting.AssemblyInfo::ResolveFrameworkDirectory",
             "Microsoft.Coyote.Rewriting.RewritingEngine::CopyWithRetriesAsync",
             "Microsoft.Coyote.Rewriting.RewritingEngine::RewriteAssembly",
-            "Microsoft.Coyote.Rewriting.RewritingEngine::TryResolveFromSharedFrameworks",
             "Microsoft.Coyote.Rewriting.RewritingOptions::ParseFromJSON",
             "Microsoft.Coyote.Rewriting.RewritingOptions::Sanitize",
             "Microsoft.Coyote.SystematicTesting.ParallelTestFiles::TryCreate",
