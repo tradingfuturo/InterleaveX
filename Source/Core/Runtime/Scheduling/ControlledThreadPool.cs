@@ -129,6 +129,15 @@ namespace Microsoft.Coyote.Runtime
         internal static Action<PooledThread> ReservationFaultInjector;
 
         /// <summary>
+        /// Observes a worker immediately after it becomes idle. Null outside protocol tests.
+        /// </summary>
+        /// <remarks>
+        /// Observation is deliberately best-effort and cannot influence pool accounting: a test
+        /// callback that throws is ignored after the worker has already been published.
+        /// </remarks>
+        internal static Action<PooledThread> ParkedWorkerObserver;
+
+        /// <summary>
         /// Accounts for a thread that retired itself because it waited longer than the idle timeout.
         /// </summary>
         internal void OnThreadExpired() => Interlocked.Decrement(ref this.IdleCount);
@@ -192,6 +201,15 @@ namespace Microsoft.Coyote.Runtime
                 }
 
                 this.IdleThreads.Add(worker);
+                try
+                {
+                    ParkedWorkerObserver?.Invoke(worker);
+                }
+                catch (Exception)
+                {
+                    // A diagnostic observer must not strand a published worker or corrupt IdleCount.
+                }
+
                 return true;
             }
         }

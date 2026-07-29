@@ -79,14 +79,19 @@ namespace Microsoft.Coyote.Runtime.Tests
             var pool = ControlledThreadPool.Instance;
             pool.Drain();
 
+            // The observer is sticky evidence that parking happened, so the test does not have to
+            // sample IdleThreadCount during this deliberately short timeout window.
             int originalTimeout = ControlledThreadPool.IdleTimeoutMs;
-            ControlledThreadPool.IdleTimeoutMs = 250;
+            Action<PooledThread> originalObserver = ControlledThreadPool.ParkedWorkerObserver;
+            ControlledThreadPool.IdleTimeoutMs = 50;
+            using var parked = new ManualResetEventSlim(false);
+            ControlledThreadPool.ParkedWorkerObserver = _ => parked.Set();
             try
             {
                 PooledThread worker = pool.Rent();
                 worker.Dispatch(() => WorkerDisposition.Reuse);
 
-                Assert.True(SpinWait.SpinUntil(() => pool.IdleThreadCount is 1, WaitTimeout),
+                Assert.True(parked.Wait(WaitTimeout),
                     "The worker never parked after completing its operation.");
 
                 long createdBeforeExpiry = ControlledThreadPool.ThreadsCreated;
@@ -106,6 +111,7 @@ namespace Microsoft.Coyote.Runtime.Tests
             }
             finally
             {
+                ControlledThreadPool.ParkedWorkerObserver = originalObserver;
                 ControlledThreadPool.IdleTimeoutMs = originalTimeout;
                 pool.Drain();
             }
