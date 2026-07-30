@@ -407,6 +407,24 @@ namespace Microsoft.Coyote.Tools.Tests
         }
 
         [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestAFileRewrittenWhilePreservingMetadataIsNoticed()
+        {
+            var fileSystem = new InMemoryFileSystem()
+                .WithFile(In("App.dll"), "aaaaaaaa")
+                .WithDirectory(Out());
+            var mirror = CreateMirror(fileSystem);
+
+            var before = mirror.GetMirroredFiles(In(), Out());
+            DateTime stamp = fileSystem.GetFile(In("App.dll")).LastWriteTimeUtc;
+            fileSystem.WriteAllText(In("App.dll"), "bbbbbbbb");
+            fileSystem.Touch(In("App.dll"), stamp);
+            var after = mirror.GetMirroredFiles(In(), Out());
+
+            Assert.False(RewritingOutputMirror.DescribeSameFiles(before, after));
+        }
+
+        [Fact(Timeout = 5000)]
         public void TestAFileAppearingOrDisappearingIsStillNoticed()
         {
             // What the inventory comparison always caught, kept under test now that it compares

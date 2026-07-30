@@ -601,16 +601,16 @@ namespace Microsoft.Coyote.Tools.Tests
         }
 
         [Fact(Timeout = 5000)]
-        public void TestAFrameworkInventoryDoesNotDependOnTheFilesInIt()
+        public void TestAFrameworkInventoryDependsOnTheFilesInIt()
         {
-            // Only the names matter here: the content of the version that wins is recorded as an
-            // ordinary search directory, and reading every assembly of every installed framework
-            // would make this unaffordable on the path that exists to be fast.
+            // Candidate framework versions are part of the resolution input, including assemblies
+            // in a version directory that was not selected by the current run.
             var fixture = CreateUpToDate();
             fixture.FileSystem.WithFile(
                 Path.Combine(FrameworkDirectory, "8.0.10", "System.Runtime.dll"), "an assembly");
 
-            Assert.True(fixture.IsCurrent(out string reason), reason);
+            Assert.False(fixture.IsCurrent(out string reason));
+            Assert.Contains("framework versions installed", reason);
         }
 
         [Fact(Timeout = 5000)]

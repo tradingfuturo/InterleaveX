@@ -56,8 +56,8 @@ namespace Microsoft.Coyote.Tools.Tests
         /// </remarks>
         private sealed class FakeAssembly : IRewrittenAssembly
         {
-            private readonly Dictionary<string, IFileEntry> ResolutionStamps =
-                new Dictionary<string, IFileEntry>(StringComparer.Ordinal);
+            private readonly Dictionary<string, ResolutionStamp> ResolutionStamps =
+                new Dictionary<string, ResolutionStamp>(StringComparer.Ordinal);
 
             internal FakeAssembly(IFileSystem fileSystem, string filePath, params string[] resolvedModulePaths)
             {
@@ -66,6 +66,7 @@ namespace Microsoft.Coyote.Tools.Tests
                 this.ReferenceNames = Array.Empty<string>();
                 this.SearchDirectories = new[] { Path.GetDirectoryName(filePath) };
                 this.ResolvedModulePaths = resolvedModulePaths;
+                this.ResolutionCandidatePaths = Array.Empty<string>();
                 this.FrameworkInventoryRoots = Array.Empty<string>();
 
                 foreach (string path in resolvedModulePaths.Concat(new[]
@@ -75,7 +76,9 @@ namespace Microsoft.Coyote.Tools.Tests
                     Path.ChangeExtension(filePath, ".runtimeconfig.json")
                 }))
                 {
-                    this.ResolutionStamps[path] = fileSystem.GetFile(path);
+                    IFileEntry entry = fileSystem.GetFile(path);
+                    this.ResolutionStamps[path] = new ResolutionStamp(entry,
+                        entry.Exists ? RewritingCacheValidator.ComputeFileFingerprint(fileSystem, path) : null);
                 }
             }
 
@@ -89,9 +92,11 @@ namespace Microsoft.Coyote.Tools.Tests
 
             public IEnumerable<string> ResolvedModulePaths { get; }
 
+            public IEnumerable<string> ResolutionCandidatePaths { get; }
+
             public IReadOnlyList<string> FrameworkInventoryRoots { get; }
 
-            public bool TryGetResolutionStamp(string path, out IFileEntry stamp) =>
+            public bool TryGetResolutionStamp(string path, out ResolutionStamp stamp) =>
                 this.ResolutionStamps.TryGetValue(path, out stamp);
         }
 
@@ -151,6 +156,18 @@ namespace Microsoft.Coyote.Tools.Tests
             // ever tell the two apart.
             Assert.False(TryRecordRun(CreateFileSystem(), fileSystem =>
                 fileSystem.WriteAllText(In("Dependency.dll"), "a different dependency")));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestAModuleReplacedWhilePreservingMetadataIsNotRecorded()
+        {
+            Assert.False(TryRecordRun(CreateFileSystem(), fileSystem =>
+            {
+                DateTime stamp = fileSystem.GetFile(In("Dependency.dll")).LastWriteTimeUtc;
+                fileSystem.WriteAllText(In("Dependency.dll"), "b dependency");
+                fileSystem.Touch(In("Dependency.dll"), stamp);
+            }));
         }
 
         [Fact(Timeout = 5000)]

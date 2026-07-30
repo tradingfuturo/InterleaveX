@@ -157,12 +157,28 @@ namespace Microsoft.Coyote.Tools.Tests
             // good, belonging to nothing and removable by nothing.
             var fileSystem = new InMemoryFileSystem()
                 .WithDirectory(In())
-                .WithFile(Out("transient.dll"), "copied by the attempt that failed");
+                .WithDirectory(Out());
 
             var ledger = CreateLedger(fileSystem);
+            fileSystem.WithFile(Out("transient.dll"), "copied by the attempt that failed");
             ledger.RemoveStaleMirroredFiles(Array.Empty<string>(), new[] { "transient.dll" });
 
             Assert.False(fileSystem.FileExists(Out("transient.dll")));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestAnUncopiedAttemptDoesNotOwnAnUnrelatedOutput()
+        {
+            var fileSystem = new InMemoryFileSystem()
+                .WithDirectory(In())
+                .WithFile(Out("transient.dll"), "user-owned");
+
+            CreateLedger(fileSystem).RemoveStaleMirroredFiles(Array.Empty<string>(),
+                new[] { "transient.dll" });
+
+            Assert.True(fileSystem.FileExists(Out("transient.dll")));
+            Assert.Equal("user-owned", fileSystem.GetContents(Out("transient.dll")));
         }
 
         [Fact(Timeout = 5000)]
@@ -188,10 +204,12 @@ namespace Microsoft.Coyote.Tools.Tests
             // re-lists in that case, so the commit is the last chance to notice.
             var fileSystem = new InMemoryFileSystem()
                 .WithDirectory(In())
-                .WithFile(Out("transient.dll"), "copied by the attempt that failed")
-                .WithFile(Out("kept.dll"), "still in the input");
+                .WithDirectory(Out());
 
-            CreateLedger(fileSystem).Commit(new[] { "kept.dll" }, Array.Empty<string>(),
+            var ledger = CreateLedger(fileSystem);
+            fileSystem.WithFile(Out("transient.dll"), "copied by the attempt that failed")
+                .WithFile(Out("kept.dll"), "still in the input");
+            ledger.Commit(new[] { "kept.dll" }, Array.Empty<string>(),
                 new[] { "kept.dll", "transient.dll" });
 
             Assert.True(fileSystem.FileExists(Out("kept.dll")));

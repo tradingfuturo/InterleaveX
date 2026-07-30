@@ -128,6 +128,25 @@ class T { void M() { var e = Microsoft.Coyote.SystematicTesting.Elsewhere.Build(
         }
 
         [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestAFactoryMethodGroupRequiresAGuard()
+        {
+            var diagnostics = Analyze(@"
+class T
+{
+    void M()
+    {
+        System.Func<object, object, Microsoft.Coyote.SystematicTesting.TestingEngine> factory =
+            Microsoft.Coyote.SystematicTesting.TestingEngine.Create;
+        var engine = factory(null, null);
+    }
+}");
+
+            Diagnostic diagnostic = Assert.Single(diagnostics);
+            Assert.Equal(DeterministicSeedGuardAnalyzer.MissingGuardDiagnosticId, diagnostic.Id);
+        }
+
+        [Fact(Timeout = 5000)]
         public void TestAStaticMemberThatReturnsSomethingElseIsNotABuilder()
         {
             // The engine's own statics are not all factories, and the rule is what a member returns
