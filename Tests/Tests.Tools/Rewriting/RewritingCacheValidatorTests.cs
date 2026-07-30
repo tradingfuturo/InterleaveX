@@ -601,16 +601,15 @@ namespace Microsoft.Coyote.Tools.Tests
         }
 
         [Fact(Timeout = 5000)]
-        public void TestAFrameworkInventoryDependsOnTheFilesInIt()
+        public void TestAFrameworkInventoryIgnoresFilesInVersionDirectories()
         {
-            // Candidate framework versions are part of the resolution input, including assemblies
-            // in a version directory that was not selected by the current run.
+            // Candidate version names are part of the resolution input. The bytes in each selected
+            // version are captured by the dependency-search-directory record instead.
             var fixture = CreateUpToDate();
             fixture.FileSystem.WithFile(
                 Path.Combine(FrameworkDirectory, "8.0.10", "System.Runtime.dll"), "an assembly");
 
-            Assert.False(fixture.IsCurrent(out string reason));
-            Assert.Contains("framework versions installed", reason);
+            Assert.True(fixture.IsCurrent(out string reason), reason);
         }
 
         [Fact(Timeout = 5000)]
@@ -705,9 +704,9 @@ namespace Microsoft.Coyote.Tools.Tests
 
             var validator = CreateValidator(fileSystem);
             int before = fileSystem.GetFileCount;
-            var captured = validator.CaptureDirectory(directory, hashContent: false);
+            var captured = validator.CaptureDirectoryNames(directory);
 
-            Assert.NotNull(captured.ContentHash);
+            Assert.NotNull(captured.NamesHash);
             Assert.Equal(before, fileSystem.GetFileCount);
         }
 

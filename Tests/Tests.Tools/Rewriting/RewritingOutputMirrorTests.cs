@@ -352,6 +352,70 @@ namespace Microsoft.Coyote.Tools.Tests
         }
 
         [Fact(Timeout = 5000)]
+        public void TestCaseCollidingSourceFilesAreRejectedForCaseInsensitiveOutput()
+        {
+            var fileSystem = new InMemoryFileSystem(isCaseInsensitive: false)
+                .WithFile(In("Foo.dll"), "first")
+                .WithFile(In("foo.dll"), "second")
+                .WithDirectory(Out())
+                .WithCaseSensitivity(Out(), isCaseInsensitive: true);
+
+            var error = Assert.Throws<InvalidDataException>(() =>
+                CreateMirror(fileSystem).GetMirroredFiles(In(), Out(), includeFingerprints: false));
+
+            Assert.Contains("Foo.dll", error.Message);
+            Assert.Contains("foo.dll", error.Message);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestNestedMirrorBackupIsExcludedFromSourceInventory()
+        {
+            string output = In("nested", "output");
+            string backup = output + ".mirror-backup-test";
+            var fileSystem = new InMemoryFileSystem()
+                .WithFile(In("App.dll"), "assembly")
+                .WithFile(Path.Combine(backup, "old.dll"), "old output")
+                .WithDirectory(output);
+
+            var files = CreateMirror(fileSystem).GetMirroredFiles(In(), output,
+                includeFingerprints: false, excludedDirectories: new[] { backup });
+
+            Assert.Contains("App.dll", files.Keys);
+            Assert.DoesNotContain(files.Keys, path => path.Contains("mirror-backup", StringComparison.Ordinal));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestMetadataOnlyInventoryDoesNotReadFileBytes()
+        {
+            var fileSystem = new InMemoryFileSystem()
+                .WithFile(In("App.dll"), "assembly")
+                .WithFile(In("nested", "deep.txt"), "nested")
+                .WithDirectory(Out());
+
+            CreateMirror(fileSystem).GetMirroredFiles(In(), Out(), includeFingerprints: false);
+
+            Assert.Empty(fileSystem.Reads);
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestMetadataConfirmationStillDetectsSameMetadataDifferentBytes()
+        {
+            var fileSystem = new InMemoryFileSystem()
+                .WithFile(In("App.dll"), "aaaaaaaa")
+                .WithFile(Out("App.dll"), "aaaaaaaa")
+                .WithDirectory(Out());
+            var mirror = CreateMirror(fileSystem);
+            var before = mirror.GetMirroredFiles(In(), Out(), includeFingerprints: false);
+            DateTime stamp = fileSystem.GetFile(In("App.dll")).LastWriteTimeUtc;
+
+            fileSystem.WriteAllText(In("App.dll"), "bbbbbbbb");
+            fileSystem.Touch(In("App.dll"), stamp);
+            var after = mirror.GetMirroredFiles(In(), Out(), includeFingerprints: false);
+
+            Assert.False(mirror.DescribeSameFiles(In(), Out(), before, after));
+        }
+
+        [Fact(Timeout = 5000)]
         public void TestAnUnchangedTreeDescribesTheSameFilesTwice()
         {
             // The baseline the confirmation rests on: listing a tree that nothing touched twice has

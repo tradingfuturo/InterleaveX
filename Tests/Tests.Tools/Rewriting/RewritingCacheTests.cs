@@ -68,6 +68,7 @@ namespace Microsoft.Coyote.Tools.Tests
                 this.ResolvedModulePaths = resolvedModulePaths;
                 this.ResolutionCandidatePaths = Array.Empty<string>();
                 this.FrameworkInventoryRoots = Array.Empty<string>();
+                this.FrameworkInventorySnapshots = Array.Empty<CacheDirectoryListing>();
 
                 foreach (string path in resolvedModulePaths.Concat(new[]
                 {
@@ -95,6 +96,8 @@ namespace Microsoft.Coyote.Tools.Tests
             public IEnumerable<string> ResolutionCandidatePaths { get; }
 
             public IReadOnlyList<string> FrameworkInventoryRoots { get; }
+
+            public IReadOnlyList<CacheDirectoryListing> FrameworkInventorySnapshots { get; }
 
             public bool TryGetResolutionStamp(string path, out ResolutionStamp stamp) =>
                 this.ResolutionStamps.TryGetValue(path, out stamp);
