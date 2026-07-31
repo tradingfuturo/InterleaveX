@@ -61,5 +61,16 @@ namespace Microsoft.Coyote.Tools.Tests
             Assert.Throws<IOException>(() => journal.Restore());
             Assert.True(fileSystem.DirectoryExists(journal.BackupDirectory));
         }
+
+        [Fact(Timeout = 5000)]
+        public void TestTrailingOutputSeparatorPlacesBackupBesideOutput()
+        {
+            var fileSystem = new InMemoryFileSystem().WithDirectory(Out());
+            string outputWithSeparator = Out() + Path.DirectorySeparatorChar;
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(
+                fileSystem, outputWithSeparator);
+
+            Assert.Equal(Path.GetDirectoryName(Out()), Path.GetDirectoryName(journal.BackupDirectory));
+        }
     }
 }

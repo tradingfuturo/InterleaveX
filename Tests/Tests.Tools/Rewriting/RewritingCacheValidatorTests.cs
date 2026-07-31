@@ -578,6 +578,26 @@ namespace Microsoft.Coyote.Tools.Tests
         }
 
         [Fact(Timeout = 5000)]
+        public void TestAnAbsentSharedFrameworkRootBecomesStaleWhenItAppears()
+        {
+            var fileSystem = new InMemoryFileSystem();
+            var validator = CreateValidator(fileSystem);
+            string shared = Path.Combine(Root, "dotnet", "shared");
+
+            IReadOnlyList<CacheDirectoryListing> snapshots =
+                RewritingEngine.CaptureFallbackFrameworkInventories(
+                    fileSystem, shared, out IReadOnlyList<string> candidates);
+
+            Assert.Single(snapshots);
+            Assert.False(snapshots[0].Exists);
+            Assert.Empty(candidates);
+
+            fileSystem.WithDirectory(Path.Combine(shared, "Microsoft.NETCore.App"));
+
+            Assert.False(validator.IsInventoryCurrent(snapshots[0]));
+        }
+
+        [Fact(Timeout = 5000)]
         public void TestADuplicateFrameworkInventoryIsRejected()
         {
             var fixture = CreateUpToDate();

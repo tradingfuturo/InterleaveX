@@ -367,6 +367,68 @@ namespace Microsoft.Coyote.Tools.Tests
         }
 
         [Fact(Timeout = 60000)]
+        public void TestRetryRestoresPreexistingOutputOverwrittenByVanishedSource()
+        {
+            using var workspace = Workspace.Create();
+            workspace.Rewrite();
+            string transientInput = Path.Combine(workspace.InputDirectory, "transient.txt");
+            string transientOutput = Path.Combine(workspace.OutputDirectory, "transient.txt");
+            File.WriteAllText(transientInput, "source-owned");
+            File.WriteAllText(transientOutput, "user-owned");
+            bool copied = false;
+            bool removed = false;
+            var fileSystem = new CallbackFileSystem(HostFileSystem.Instance,
+                beforeGetFiles: (directory, _) =>
+                {
+                    if (copied && !removed &&
+                        string.Equals(directory, workspace.InputDirectory,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.Delete(transientInput);
+                        removed = true;
+                    }
+                },
+                beforeCopyFile: (source, _, __) =>
+                {
+                    if (string.Equals(source, transientInput, StringComparison.OrdinalIgnoreCase))
+                    {
+                        copied = true;
+                    }
+                });
+
+            string log = workspace.Rewrite(fileSystem);
+
+            Assert.True(removed);
+            Assert.Contains(UpToDateMessage, log);
+            Assert.Equal("user-owned", File.ReadAllText(transientOutput));
+            Assert.Empty(Directory.GetDirectories(
+                Path.GetDirectoryName(workspace.OutputDirectory),
+                Path.GetFileName(workspace.OutputDirectory) + ".mirror-backup-*"));
+        }
+
+        [Fact(Timeout = 60000)]
+        public void TestFailedMirrorRollbackRemovesRecoveryJournal()
+        {
+            using var workspace = Workspace.Create();
+            workspace.Rewrite();
+            string transientInput = Path.Combine(workspace.InputDirectory, "transient.txt");
+            File.WriteAllText(transientInput, "will not copy");
+            var fileSystem = new CallbackFileSystem(HostFileSystem.Instance,
+                beforeCopyFile: (source, _, __) =>
+                {
+                    if (string.Equals(source, transientInput, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new IOException("injected mirror failure");
+                    }
+                });
+
+            Assert.Throws<IOException>(() => workspace.Rewrite(fileSystem));
+            Assert.Empty(Directory.GetDirectories(
+                Path.GetDirectoryName(workspace.OutputDirectory),
+                Path.GetFileName(workspace.OutputDirectory) + ".mirror-backup-*"));
+        }
+
+        [Fact(Timeout = 60000)]
         public void TestCaseSensitivityProbeMatchesTheFileSystem()
         {
             // Whether two spellings name one file is a property of the file system rather than of the

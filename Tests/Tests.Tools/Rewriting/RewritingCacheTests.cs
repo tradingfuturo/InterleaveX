@@ -59,6 +59,9 @@ namespace Microsoft.Coyote.Tools.Tests
             private readonly Dictionary<string, ResolutionStamp> ResolutionStamps =
                 new Dictionary<string, ResolutionStamp>(StringComparer.Ordinal);
 
+            private readonly HashSet<string> UnreliableStampPaths =
+                new HashSet<string>(StringComparer.Ordinal);
+
             internal FakeAssembly(IFileSystem fileSystem, string filePath, params string[] resolvedModulePaths)
             {
                 this.Name = Path.GetFileName(filePath);
@@ -95,12 +98,16 @@ namespace Microsoft.Coyote.Tools.Tests
 
             public IEnumerable<string> ResolutionCandidatePaths { get; }
 
+            public IEnumerable<string> UnreliableResolutionStampPaths => this.UnreliableStampPaths;
+
             public IReadOnlyList<string> FrameworkInventoryRoots { get; }
 
             public IReadOnlyList<CacheDirectoryListing> FrameworkInventorySnapshots { get; }
 
             public bool TryGetResolutionStamp(string path, out ResolutionStamp stamp) =>
                 this.ResolutionStamps.TryGetValue(path, out stamp);
+
+            internal void MarkUnreliable(string path) => this.UnreliableStampPaths.Add(path);
         }
 
         /// <summary>
@@ -201,6 +208,21 @@ namespace Microsoft.Coyote.Tools.Tests
             // rewrite of what is on disk now would have carried.
             Assert.False(TryRecordRun(CreateFileSystem(), fileSystem =>
                 fileSystem.WithFile(In("App.pdb"), "symbols that were not there")));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestAnUnreliableResolutionStampIsNotRecorded()
+        {
+            var fileSystem = CreateFileSystem();
+            var cache = CreateCache(fileSystem);
+            var assembly = new FakeAssembly(fileSystem, In("App.dll"), In("Dependency.dll"));
+            assembly.MarkUnreliable(In("Dependency.dll"));
+            cache.RegisterRewriteInputs(new[] { assembly });
+
+            cache.RecordAssembly(assembly, Out("App.dll"), Array.Empty<string>());
+            cache.Save();
+
+            Assert.False(fileSystem.FileExists(Out(RewritingCache.ManifestFileName)));
         }
 
         [Fact(Timeout = 5000)]
