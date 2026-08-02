@@ -221,18 +221,32 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                if (runtime.HasExecutionEnded)
-                {
-                    // During teardown the block state is unreliable; the real lock is what EnterScope
-                    // actually holds, so answer from it.
-                    return lockObj.IsHeldByCurrentThread;
-                }
-
-                var block = Monitor.SynchronizedBlock.FindForRuntime(runtime, lockObj);
-                return block != null && block.IsEntered();
+                return IsBlockHeldByCurrentThread(runtime, lockObj);
             }
 
             return lockObj.IsHeldByCurrentThread;
+        }
+
+        /// <summary>
+        /// Determines whether the executing operation of the specified runtime holds the specified lock.
+        /// </summary>
+        /// <remarks>
+        /// The teardown check follows the lookup, for the reason given in
+        /// <see cref="Monitor.IsBlockEntered"/>: checking first would leave the window between the check
+        /// and the lookup unguarded, and the lookup could then return a block that the next iteration
+        /// installed and holds, which this iteration would inspect and report as its own.
+        /// </remarks>
+        internal static bool IsBlockHeldByCurrentThread(CoyoteRuntime runtime, SystemThreading.Lock lockObj)
+        {
+            var block = Monitor.SynchronizedBlock.FindForRuntime(runtime, lockObj);
+            if (runtime.HasExecutionEnded)
+            {
+                // During teardown the block state is unreliable; the real lock is what EnterScope
+                // actually holds, so answer from it.
+                return lockObj.IsHeldByCurrentThread;
+            }
+
+            return block != null && block.IsEntered();
         }
     }
 }

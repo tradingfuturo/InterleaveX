@@ -90,13 +90,27 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// <summary>
         /// Determines whether the current thread holds the lock on the specified object.
         /// </summary>
+        /// <remarks>
+        /// A MISSING BLOCK IS AN ANSWER HERE, NOT AN ERROR, which is why this is the one query that does not
+        /// go through <see cref="FindBlock"/>. That helper throws
+        /// <see cref="SystemThreading.SynchronizationLockException"/> when an object has no block, which is
+        /// right for <c>Exit</c>, <c>Wait</c> and <c>Pulse</c> — they are contract violations unless the
+        /// caller owns the lock — but wrong for a predicate whose entire purpose is to report that the lock is
+        /// NOT held. An object has no block whenever nobody currently holds or awaits it: blocks are evicted
+        /// once their use count falls to zero, so a released lock and a never-locked object are both simply
+        /// absent from the cache, and both must answer <see langword="false"/>.
+        /// <para>
+        /// Leaving <see cref="FindBlock"/> also leaves the teardown check that helper made, so
+        /// <see cref="IsBlockEntered"/> makes it instead, in the order that helper established.
+        /// </para>
+        /// </remarks>
         public static bool IsEntered(object obj)
         {
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                return FindBlock(runtime, obj)?.IsEntered() ?? false;
+                return IsBlockEntered(runtime, obj);
             }
 
             return SystemThreading.Monitor.IsEntered(obj);
@@ -381,6 +395,31 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             }
 
             return block;
+        }
+
+        /// <summary>
+        /// Determines whether the executing operation of the specified runtime holds the lock on the
+        /// specified object, reporting that it does not if there is no block for the object, or if that
+        /// runtime has stopped executing its test iteration.
+        /// </summary>
+        /// <remarks>
+        /// The teardown check happens after the lookup for the reason given in <see cref="FindBlock"/>,
+        /// and the ordering matters just as much here even though a miss is not an error. Teardown clears
+        /// the block cache and the next iteration repopulates it, so the lookup an operation that outlived
+        /// its iteration performs can return a block belonging to that next iteration: one owned by an
+        /// operation of the runtime that is current on this thread, which would report itself as held.
+        /// Checking the status first would leave the window between the check and the lookup unguarded,
+        /// because nothing after the lookup would be left to notice that the status had changed. Checking
+        /// after closes it: the status is written before the cache is cleared, and both reads are volatile,
+        /// so a lookup that could have seen what teardown did is followed by a read that sees the ended
+        /// status. The block is therefore never inspected on behalf of an iteration that has ended, which
+        /// is what keeps a stale ownership answer, and the cross-iteration assertion a block raises when
+        /// the runtime current on the thread is not the one that created it, out of an unwinding operation.
+        /// </remarks>
+        internal static bool IsBlockEntered(CoyoteRuntime runtime, object obj)
+        {
+            var block = SynchronizedBlock.FindForRuntime(runtime, obj);
+            return !runtime.HasExecutionEnded && block != null && block.IsEntered();
         }
 
         /// <summary>

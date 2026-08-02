@@ -11,6 +11,10 @@ using Xunit;
 using Xunit.Abstractions;
 using CoyoteMonitor = Microsoft.Coyote.Rewriting.Types.Threading.Monitor;
 using SynchronizedBlock = Microsoft.Coyote.Rewriting.Types.Threading.Monitor.SynchronizedBlock;
+#if NET9_0_OR_GREATER
+using CoyoteLock = Microsoft.Coyote.Rewriting.Types.Threading.Lock;
+using SystemLock = System.Threading.Lock;
+#endif
 
 namespace Microsoft.Coyote.Runtime.Tests
 {
@@ -56,28 +60,136 @@ namespace Microsoft.Coyote.Runtime.Tests
             var syncObject = new object();
             CoyoteRuntime endedRuntime = this.CaptureEndedRuntime();
             PlantBlock(endedRuntime, syncObject);
+            bool isLockReportedAsEntered = true;
 
             // Querying reaches the cache through a different path than acquiring, and must also discard
             // the previous iteration's block. Discarding it leaves nothing cached for this object, which
-            // is the state of a lock that was never entered, so the query reports that rather than
+            // is the state of a lock this iteration does not hold, so the query reports that rather than
             // reporting that this iteration is touching a previous iteration's state.
             this.RunSystematicTest(() =>
             {
-                try
-                {
-                    CoyoteMonitor.IsEntered(syncObject);
-                    Specifications.Specification.Assert(false,
-                        "Querying a lock that was never entered in this iteration should not succeed.");
-                }
-                catch (System.Threading.SynchronizationLockException)
-                {
-                    // Expected: the planted block was discarded, so no lock is being tracked.
-                }
+                isLockReportedAsEntered = CoyoteMonitor.IsEntered(syncObject);
             },
             this.GetConfiguration().WithTestingIterations(1));
 
+            Assert.False(isLockReportedAsEntered,
+                "Querying a lock reported the previous iteration's block for it as held.");
             Assert.Null(FindPlantedBlock(syncObject));
         }
+
+        [Fact(Timeout = 30000)]
+        public void TestQueryingOnEndedRuntimeNeverInspectsTheBlock()
+        {
+            var syncObject = new object();
+            CoyoteRuntime endedRuntime = this.CaptureEndedRuntime();
+            bool isLockReportedAsEntered = true;
+
+            // Rejecting the block has to happen before it is inspected rather than after, and the answer
+            // alone cannot tell the two apart: inspecting a block asks whoever is asking whether they own
+            // it, and an ended runtime never owns anything, so an implementation that inspects first and
+            // masks the result with the status afterwards answers false as well. What separates them is
+            // that inspecting a block asks the runtime CURRENT ON THE THREAD, not the runtime the query is
+            // being made on behalf of. Planting a block created by a runtime other than the current one
+            // therefore turns any inspection into the cross-iteration assertion that this ordering exists
+            // to keep out of an operation that outlived its iteration, which fails the test whatever the
+            // query goes on to answer. The owner is set because a block without one answers without asking.
+            this.RunSystematicTest(() =>
+            {
+                CoyoteRuntime runtime = CoyoteRuntime.Current;
+                SynchronizedBlock stale = CreateBlock(endedRuntime, syncObject);
+                SetOwner(stale, runtime.GetExecutingOperation());
+                GetCache()[syncObject] = new Lazy<SynchronizedBlock>(() => stale);
+
+                isLockReportedAsEntered = CoyoteMonitor.IsBlockEntered(endedRuntime, syncObject);
+            },
+            this.GetConfiguration().WithTestingIterations(1));
+
+            Assert.False(isLockReportedAsEntered,
+                "Querying a lock on behalf of an iteration that ended reported it as held.");
+        }
+
+        [Fact(Timeout = 30000)]
+        public void TestQueryingChecksTeardownAfterLookingUp()
+        {
+            var syncObject = new object();
+            CoyoteRuntime endedRuntime = this.CaptureEndedRuntime();
+            bool isLookedUp = false;
+
+            GetCache()[syncObject] = new Lazy<SynchronizedBlock>(() =>
+            {
+                isLookedUp = true;
+                return CreateBlock(endedRuntime, syncObject);
+            });
+
+            // The status a runtime ends with is written before the cache it leaves behind is cleared, and
+            // both are read through volatile reads, so a query that looks up first and checks the status
+            // afterwards observes the ended status whenever its lookup could have seen what teardown did.
+            // Checking first inverts that: the status can turn ended in the window between the check and
+            // the lookup, and nothing downstream of the lookup is left to notice. The order is pinned here
+            // by observing that the lookup runs at all for a runtime that has already ended, which it only
+            // does if the check has not already returned.
+            bool isLockReportedAsEntered = CoyoteMonitor.IsBlockEntered(endedRuntime, syncObject);
+
+            Assert.False(isLockReportedAsEntered,
+                "Querying a lock on behalf of an iteration that ended reported it as held.");
+            Assert.True(isLookedUp,
+                "Querying a lock checked for teardown before looking the block up, which leaves the window " +
+                "between the check and the lookup unguarded.");
+        }
+
+#if NET9_0_OR_GREATER
+#pragma warning disable CS9216 // Lock objects are intentionally passed as object to SynchronizedBlock
+        [Fact(Timeout = 30000)]
+        public void TestQueryingLockOnEndedRuntimeNeverInspectsTheBlock()
+        {
+            var lockObj = new SystemLock();
+            CoyoteRuntime endedRuntime = this.CaptureEndedRuntime();
+            bool isLockReportedAsHeld = true;
+
+            // The same setup on the lock type that keys its blocks by a System.Threading.Lock, and for the
+            // same reason: the block is created by a runtime other than the one current on this thread, so
+            // inspecting it raises the cross-iteration assertion rather than quietly answering.
+            this.RunSystematicTest(() =>
+            {
+                CoyoteRuntime runtime = CoyoteRuntime.Current;
+                SynchronizedBlock stale = CreateBlock(endedRuntime, lockObj);
+                SetOwner(stale, runtime.GetExecutingOperation());
+                GetCache()[lockObj] = new Lazy<SynchronizedBlock>(() => stale);
+
+                isLockReportedAsHeld = CoyoteLock.IsBlockHeldByCurrentThread(endedRuntime, lockObj);
+            },
+            this.GetConfiguration().WithTestingIterations(1));
+
+            Assert.False(isLockReportedAsHeld,
+                "Querying a lock on behalf of an iteration that ended reported it as held.");
+        }
+
+        [Fact(Timeout = 30000)]
+        public void TestQueryingLockChecksTeardownAfterLookingUp()
+        {
+            var lockObj = new SystemLock();
+            CoyoteRuntime endedRuntime = this.CaptureEndedRuntime();
+            bool isLookedUp = false;
+
+            GetCache()[lockObj] = new Lazy<SynchronizedBlock>(() =>
+            {
+                isLookedUp = true;
+                return CreateBlock(endedRuntime, lockObj);
+            });
+
+            // Pins the order for the same reason as the object-based query: the lookup only runs if the
+            // teardown check has not already returned, so a check made first is visible as a lookup that
+            // never happened.
+            bool isLockReportedAsHeld = CoyoteLock.IsBlockHeldByCurrentThread(endedRuntime, lockObj);
+
+            Assert.False(isLockReportedAsHeld,
+                "Querying a lock on behalf of an iteration that ended reported it as held.");
+            Assert.True(isLookedUp,
+                "Querying a lock checked for teardown before looking the block up, which leaves the window " +
+                "between the check and the lookup unguarded.");
+        }
+#pragma warning restore CS9216 // Lock objects are intentionally passed as object to SynchronizedBlock
+#endif
 
         [Fact(Timeout = 30000)]
         public void TestQueryingLooksAgainAfterDiscardingAnEndedIterationsBlock()

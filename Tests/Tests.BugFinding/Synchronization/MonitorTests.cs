@@ -232,6 +232,82 @@ namespace Microsoft.Coyote.BugFinding.Tests
             this.GetConfiguration().WithTestingIterations(10));
         }
 
+        [Fact(Timeout = 5000)]
+        public void TestMonitorIsEnteredWhileHeld()
+        {
+            this.Test(() =>
+            {
+                object syncObject = new object();
+                lock (syncObject)
+                {
+                    Assert.True(Monitor.IsEntered(syncObject),
+                        "IsEntered must report true while the current operation holds the lock.");
+                }
+            },
+            this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestMonitorIsEnteredAfterRelease()
+        {
+            // Regression test: a released lock has no SynchronizedBlock — blocks are evicted once their use
+            // count reaches zero — and IsEntered used to resolve through the helper that THROWS on a missing
+            // block. Answering "is this held" with SynchronizationLockException made the predicate unusable
+            // for its only purpose: asking before deciding whether it is safe to block.
+            this.Test(() =>
+            {
+                object syncObject = new object();
+                lock (syncObject)
+                {
+                }
+
+                Assert.False(Monitor.IsEntered(syncObject),
+                    "IsEntered must report false once the lock has been released.");
+            },
+            this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestMonitorIsEnteredOnNeverLockedObject()
+        {
+            // The same regression from the other side: an object nobody has ever locked is simply absent from
+            // the block cache, which is an answer (false), not a contract violation.
+            this.Test(() =>
+            {
+                object syncObject = new object();
+                Assert.False(Monitor.IsEntered(syncObject),
+                    "IsEntered must report false for an object that was never locked.");
+            },
+            this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestMonitorIsEnteredIsPerOperation()
+        {
+            // Ownership is per controlled operation, so a lock held by ANOTHER operation must read false here
+            // rather than true (or throw) — the block exists, it is simply owned by somebody else.
+            //
+            // The observer runs from INSIDE the holder's lock and is joined without awaiting, deliberately:
+            // holding a lock across an await hands the continuation to a different controlled operation, and
+            // the Exit would then run unowned. The observer never wants the lock, so the blocking join cannot
+            // deadlock against it.
+            this.Test(() =>
+            {
+                object syncObject = new object();
+                lock (syncObject)
+                {
+                    Task observer = Task.Run(() =>
+                    {
+                        Assert.False(Monitor.IsEntered(syncObject),
+                            "IsEntered must report false for an operation that does not hold the lock.");
+                    });
+
+                    observer.Wait();
+                }
+            },
+            this.GetConfiguration().WithTestingIterations(10));
+        }
+
         private class SignalData
         {
             private readonly object SyncObject;
