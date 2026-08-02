@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
 namespace Microsoft.Coyote.IO
@@ -81,8 +82,24 @@ namespace Microsoft.Coyote.IO
         public void MoveFile(string sourcePath, string targetPath) => File.Move(sourcePath, targetPath);
 
         /// <inheritdoc/>
-        public void ReplaceFile(string sourcePath, string targetPath, string backupPath) =>
-            File.Replace(sourcePath, targetPath, backupPath);
+        public void ReplaceFile(string sourcePath, string targetPath, string backupPath)
+        {
+            // Windows can briefly refuse to remove the destination while an antivirus/indexer or
+            // the test runner's blame monitor releases a handle. Preserve File.Replace's atomic
+            // semantics, but give that transient sharing window a bounded chance to close.
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    File.Replace(sourcePath, targetPath, backupPath);
+                    return;
+                }
+                catch (IOException) when (attempt < 4)
+                {
+                    Thread.Sleep(50);
+                }
+            }
+        }
 
         /// <inheritdoc/>
         public void DeleteFile(string path)

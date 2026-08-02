@@ -44,6 +44,8 @@ namespace Microsoft.Coyote.Rewriting
         private readonly StringComparison PathComparison;
         private readonly HashSet<string> PreviousMirroredFiles;
         private readonly HashSet<string> PreviousProducedFiles;
+        private readonly Dictionary<string, bool> AttemptFileWasPreexisting;
+        private readonly HashSet<string> ExistingOutputFiles;
 
         internal RewritingOutputLedger(IFileSystem fileSystem, LogWriter logWriter,
             string assembliesDirectory, string outputDirectory)
@@ -59,10 +61,23 @@ namespace Microsoft.Coyote.Rewriting
                 StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
             this.PreviousMirroredFiles = new HashSet<string>(this.PathComparer);
             this.PreviousProducedFiles = new HashSet<string>(this.PathComparer);
+            this.AttemptFileWasPreexisting = new Dictionary<string, bool>(this.PathComparer);
+            this.ExistingOutputFiles = new HashSet<string>(this.PathComparer);
+            foreach (string file in this.EnumerateOutputFiles(this.OutputDirectory))
+            {
+                if (TryGetRelativePath(this.OutputDirectory, file, this.PathComparison,
+                    out string relative))
+                {
+                    this.ExistingOutputFiles.Add(relative);
+                }
+            }
 
             this.TryLoadCurrentManifest();
         }
 
+        /// <summary>
+        /// Removes previously owned outputs that no longer belong to the current mirror.
+        /// </summary>
         /// <param name="currentMirroredFiles">What the input tree contributes to the output now.</param>
         /// <param name="alsoOwnedFiles">
         /// Paths an earlier attempt of this same run put in the output. A retry re-lists the input,
@@ -71,13 +86,14 @@ namespace Microsoft.Coyote.Rewriting
         /// and it is not in the current listing, so nothing here will ever record it. Without this it
         /// stays in the output forever, belonging to no run.
         /// </param>
+        /// <param name="beforeDelete">Invoked with each full path immediately before deletion.</param>
         internal void RemoveStaleMirroredFiles(IEnumerable<string> currentMirroredFiles,
-            IEnumerable<string> alsoOwnedFiles = null)
+            IEnumerable<string> alsoOwnedFiles = null, Action<string> beforeDelete = null)
         {
             var current = new HashSet<string>(currentMirroredFiles, this.PathComparer);
             var owned = new HashSet<string>(this.PreviousMirroredFiles, this.PathComparer);
-            owned.UnionWith(this.NormalizeCurrentPaths(alsoOwnedFiles));
-            this.DeleteOwnedFiles(owned.Where(path => !current.Contains(path)));
+            owned.UnionWith(this.GetNewAttemptFiles(alsoOwnedFiles));
+            this.DeleteOwnedFiles(owned.Where(path => !current.Contains(path)), beforeDelete);
         }
 
         internal void Commit(IEnumerable<string> mirroredFiles, IEnumerable<string> producedFiles,
@@ -86,7 +102,7 @@ namespace Microsoft.Coyote.Rewriting
             var mirrored = this.NormalizeCurrentPaths(mirroredFiles);
             var produced = this.NormalizeCurrentPaths(producedFiles);
             var owned = new HashSet<string>(this.PreviousProducedFiles, this.PathComparer);
-            owned.UnionWith(this.NormalizeCurrentPaths(alsoOwnedFiles));
+            owned.UnionWith(this.GetNewAttemptFiles(alsoOwnedFiles));
             this.DeleteOwnedFiles(owned.Where(path =>
                 !produced.Contains(path) && !mirrored.Contains(path)));
 
@@ -150,6 +166,43 @@ namespace Microsoft.Coyote.Rewriting
             return normalized;
         }
 
+        private HashSet<string> GetNewAttemptFiles(IEnumerable<string> paths)
+        {
+            var normalized = this.NormalizeCurrentPaths(paths);
+            foreach (string path in normalized)
+            {
+                if (!this.AttemptFileWasPreexisting.ContainsKey(path))
+                {
+                    this.AttemptFileWasPreexisting[path] = this.ExistingOutputFiles.Contains(path);
+                }
+            }
+
+            normalized.RemoveWhere(path => this.AttemptFileWasPreexisting[path]);
+
+            return normalized;
+        }
+
+        private IEnumerable<string> EnumerateOutputFiles(string directory)
+        {
+            if (!this.FileSystem.DirectoryExists(directory))
+            {
+                yield break;
+            }
+
+            foreach (string file in this.FileSystem.GetFiles(directory, "*"))
+            {
+                yield return file;
+            }
+
+            foreach (string child in this.FileSystem.GetDirectories(directory, "*", false))
+            {
+                foreach (string file in this.EnumerateOutputFiles(child))
+                {
+                    yield return file;
+                }
+            }
+        }
+
         private bool TryLoadCurrentManifest()
         {
             if (!this.FileSystem.FileExists(this.ManifestPath))
@@ -206,13 +259,14 @@ namespace Microsoft.Coyote.Rewriting
             return true;
         }
 
-        private void DeleteOwnedFiles(IEnumerable<string> relativePaths)
+        private void DeleteOwnedFiles(IEnumerable<string> relativePaths, Action<string> beforeDelete = null)
         {
             var directories = new HashSet<string>(this.PathComparer);
             foreach (string relativePath in relativePaths.ToArray())
             {
                 string fullPath = this.ResolveOwnedPath(relativePath);
                 this.LogWriter.LogDebug("..... Removing the stale owned output '{0}'", fullPath);
+                beforeDelete?.Invoke(fullPath);
                 this.FileSystem.DeleteFile(fullPath);
                 for (string directory = Path.GetDirectoryName(fullPath);
                     !string.IsNullOrEmpty(directory) &&

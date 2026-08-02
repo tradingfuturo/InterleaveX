@@ -99,7 +99,6 @@ namespace Microsoft.Coyote.Rewriting
 
         private readonly IFileSystem FileSystem;
         private readonly RewritingCacheExpectation Expectation;
-        private readonly byte[] FingerprintBuffer = new byte[FingerprintBufferSize];
 
         /// <summary>
         /// Compares paths as the file system holding each of them does.
@@ -333,7 +332,7 @@ namespace Microsoft.Coyote.Rewriting
                 }
 
                 if (string.IsNullOrEmpty(modulePath) || !resolvedModulePaths.Add(modulePath) ||
-                    !HasContentFingerprint(module) || !this.IsFileCurrent(module))
+                    !HasContentFingerprintWhenPresent(module) || !this.IsFileCurrent(module))
                 {
                     reason = $"the resolved assembly '{module?.Path}' changed or is invalid";
                     return false;
@@ -638,29 +637,30 @@ namespace Microsoft.Coyote.Rewriting
         /// </remarks>
         internal CacheDirectoryListing CaptureDirectoryNames(string path)
         {
-            var inventory = new CacheDirectoryListing()
+            bool exists = this.FileSystem.DirectoryExists(path);
+            var directories = exists ? this.FileSystem.GetDirectories(path, "*", false) :
+                Array.Empty<string>();
+            return CaptureDirectoryNames(path, exists, directories);
+        }
+
+        internal static CacheDirectoryListing CaptureDirectoryNames(string path, bool exists,
+            IEnumerable<string> directories)
+        {
+            var ordered = (directories ?? Enumerable.Empty<string>())
+                .OrderBy(directory => directory, StringComparer.Ordinal).ToArray();
+            var builder = new StringBuilder();
+            foreach (string directory in ordered)
             {
-                Path = NormalizeDirectory(path),
-                Exists = this.FileSystem.DirectoryExists(path)
-            };
-
-            if (inventory.Exists)
-            {
-                var names = this.FileSystem.GetDirectories(path, "*", false)
-                    .Select(directory => Path.GetFileName(
-                        directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)))
-                    .OrderBy(name => name, StringComparer.Ordinal);
-
-                var builder = new StringBuilder();
-                foreach (string name in names)
-                {
-                    builder.Append(name).Append('\n');
-                }
-
-                inventory.NamesHash = ComputeFingerprint(Encoding.UTF8.GetBytes(builder.ToString()));
+                builder.Append(Path.GetFileName(directory.TrimEnd(
+                    Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))).Append('\n');
             }
 
-            return inventory;
+            return new CacheDirectoryListing()
+            {
+                Path = NormalizeDirectory(path),
+                Exists = exists,
+                NamesHash = exists ? ComputeFingerprint(Encoding.UTF8.GetBytes(builder.ToString())) : null
+            };
         }
 
         /// <summary>
@@ -867,22 +867,29 @@ namespace Microsoft.Coyote.Rewriting
         /// <summary>
         /// Computes the XXH128 fingerprint of the specified file.
         /// </summary>
-        internal string ComputeFileFingerprint(string path)
+        internal string ComputeFileFingerprint(string path) =>
+            ComputeFileFingerprint(this.FileSystem, path);
+
+        /// <summary>
+        /// Computes a content fingerprint through the supplied file system.
+        /// </summary>
+        internal static string ComputeFileFingerprint(IFileSystem fileSystem, string path)
         {
             // Refuse a writer while reading. A hash of bytes from the middle of a replacement can
             // accidentally describe neither the old nor the new input, and that evidence is later
             // used to protect rewritten output from being overwritten.
-            using var stream = this.FileSystem.OpenRead(path, FileReadSharing.DenyWriters);
+            using var stream = fileSystem.OpenRead(path, FileReadSharing.DenyWriters);
             var algorithm = new XxHash128();
+            byte[] buffer = new byte[FingerprintBufferSize];
             while (true)
             {
-                int count = stream.Read(this.FingerprintBuffer, 0, this.FingerprintBuffer.Length);
+                int count = stream.Read(buffer, 0, buffer.Length);
                 if (count is 0)
                 {
                     break;
                 }
 
-                algorithm.Append(new ReadOnlySpan<byte>(this.FingerprintBuffer, 0, count));
+                algorithm.Append(new ReadOnlySpan<byte>(buffer, 0, count));
             }
 
             return ToHexString(algorithm.GetCurrentHash());

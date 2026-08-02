@@ -97,6 +97,16 @@ namespace InterleaveX.TestConventionAnalyzer
                     }
                 }, OperationKind.Invocation);
 
+                startContext.RegisterOperationAction(operationContext =>
+                {
+                    var methodReference = (IMethodReferenceOperation)operationContext.Operation;
+                    if (IsEngineFactory(methodReference.Method, engineType) &&
+                        !IsSanctionedBuilder(operationContext.ContainingSymbol))
+                    {
+                        builders.Add(methodReference.Syntax.GetLocation());
+                    }
+                }, OperationKind.MethodReference);
+
                 startContext.RegisterSymbolAction(symbolContext =>
                 {
                     var type = (INamedTypeSymbol)symbolContext.Symbol;

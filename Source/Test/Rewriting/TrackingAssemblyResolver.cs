@@ -28,10 +28,17 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         private readonly HashSet<string> ResolvedPaths;
 
+        private readonly HashSet<string> CandidatePaths;
+
+        /// <summary>
+        /// Paths whose point-in-time content could not be captured.
+        /// </summary>
+        private readonly HashSet<string> UnreliableStampPaths;
+
         /// <summary>
         /// What each file looked like when it was read.
         /// </summary>
-        private readonly Dictionary<string, IFileEntry> Stamps;
+        private readonly Dictionary<string, ResolutionStamp> Stamps;
 
         /// <summary>
         /// The file system the stamps are taken from.
@@ -49,7 +56,9 @@ namespace Microsoft.Coyote.Rewriting
             // rewriting cache does the comparison that decides identity, against the file system the
             // files actually sit on. Two spellings surviving to there cost a hash, not an answer.
             this.ResolvedPaths = new HashSet<string>(StringComparer.Ordinal);
-            this.Stamps = new Dictionary<string, IFileEntry>(StringComparer.Ordinal);
+            this.CandidatePaths = new HashSet<string>(StringComparer.Ordinal);
+            this.UnreliableStampPaths = new HashSet<string>(StringComparer.Ordinal);
+            this.Stamps = new Dictionary<string, ResolutionStamp>(StringComparer.Ordinal);
         }
 
         /// <summary>
@@ -60,31 +69,34 @@ namespace Microsoft.Coyote.Rewriting
         /// and a later read of the same file is a read of whatever the first one already described.
         ///
         /// A file system that refuses to describe the file leaves it unstamped rather than failing the
-        /// resolution, which would turn a transient error into a rewriting failure. Nothing is lost by
-        /// it: the same file is opened again when the cache fingerprints it, and a refusal there is
-        /// already what stops a manifest from being written.
+        /// resolution, but the path is exposed as unreliable so the cache cannot publish a manifest
+        /// that describes bytes different from the ones the rewrite consumed.
         /// </remarks>
         internal void Stamp(string path)
         {
-            if (string.IsNullOrEmpty(path) || this.Stamps.ContainsKey(path))
+            if (string.IsNullOrEmpty(path) || this.Stamps.ContainsKey(path) ||
+                this.UnreliableStampPaths.Contains(path))
             {
                 return;
             }
 
             try
             {
-                this.Stamps.Add(path, this.FileSystem.GetFile(path));
+                IFileEntry entry = this.FileSystem.GetFile(path);
+                string fingerprint = entry.Exists ?
+                    RewritingCacheValidator.ComputeFileFingerprint(this.FileSystem, path) : null;
+                this.Stamps.Add(path, new ResolutionStamp(entry, fingerprint));
             }
             catch (Exception)
             {
-                // Deliberately unstamped. See the remarks above.
+                this.UnreliableStampPaths.Add(path);
             }
         }
 
         /// <summary>
         /// Returns what the specified file looked like when it was read.
         /// </summary>
-        internal bool TryGetResolutionStamp(string path, out IFileEntry stamp) =>
+        internal bool TryGetResolutionStamp(string path, out ResolutionStamp stamp) =>
             this.Stamps.TryGetValue(path, out stamp);
 
         /// <summary>
@@ -96,13 +108,39 @@ namespace Microsoft.Coyote.Rewriting
         /// </remarks>
         internal IEnumerable<string> ResolvedModulePaths => this.ResolvedPaths;
 
-        /// <inheritdoc/>
-        public override AssemblyDefinition Resolve(AssemblyNameReference name) =>
-            this.Track(base.Resolve(name));
+        internal IEnumerable<string> ResolutionCandidatePaths => this.CandidatePaths;
+
+        internal IEnumerable<string> UnreliableResolutionStampPaths => this.UnreliableStampPaths;
 
         /// <inheritdoc/>
-        public override AssemblyDefinition Resolve(AssemblyNameReference name, ReaderParameters parameters) =>
-            this.Track(base.Resolve(name, parameters));
+        public override AssemblyDefinition Resolve(AssemblyNameReference name)
+        {
+            this.StampCandidates(name);
+            return this.Track(base.Resolve(name));
+        }
+
+        /// <inheritdoc/>
+        public override AssemblyDefinition Resolve(AssemblyNameReference name, ReaderParameters parameters)
+        {
+            this.StampCandidates(name);
+            return this.Track(base.Resolve(name, parameters));
+        }
+
+        private void StampCandidates(AssemblyNameReference name)
+        {
+            string[] directories = this.GetSearchDirectories();
+            foreach (string directory in directories)
+            {
+                foreach (string extension in new[] { ".dll", ".exe", ".winmd" })
+                {
+                    string path = System.IO.Path.Combine(directory, name.Name + extension);
+                    if (this.CandidatePaths.Add(path))
+                    {
+                        this.Stamp(path);
+                    }
+                }
+            }
+        }
 
         /// <summary>
         /// Records the file that backs the specified assembly, and returns the assembly.

@@ -60,12 +60,7 @@ namespace Microsoft.Coyote.IO
                 return false;
             }
 
-            // Ordinal first: it settles every equal pair and almost every unequal one without a probe,
-            // and it is the answer whenever the two sit in different directories -- which is where a
-            // single probe of one of them would have been the wrong question to ask anyway.
-            return string.Equals(x, y, StringComparison.Ordinal) ||
-                (this.IgnoresCase(x) && this.IgnoresCase(y) &&
-                    string.Equals(x, y, StringComparison.OrdinalIgnoreCase));
+            return string.Equals(this.Canonicalize(x), this.Canonicalize(y), StringComparison.Ordinal);
         }
 
         /// <inheritdoc/>
@@ -75,30 +70,42 @@ namespace Microsoft.Coyote.IO
         /// in different directories may then collide or not; either is correct, because equality
         /// decides the answer and a collision only costs a comparison.
         /// </remarks>
-        public int GetHashCode(string obj) =>
-            obj is null ? 0 :
-            this.IgnoresCase(obj) ? StringComparer.OrdinalIgnoreCase.GetHashCode(obj) :
-            StringComparer.Ordinal.GetHashCode(obj);
+        public int GetHashCode(string obj) => obj is null ? 0 :
+            StringComparer.Ordinal.GetHashCode(this.Canonicalize(obj));
 
         /// <summary>
-        /// Returns true if the file system holding the specified path ignores case in it.
+        /// Canonicalizes each path segment using the case rule of the directory that owns that
+        /// segment. A single rule for the final directory folds distinct ancestors when a sensitive
+        /// directory contains insensitive child mounts.
         /// </summary>
-        /// <remarks>
-        /// A file system that refuses to answer is treated as case sensitive, which is the answer
-        /// that keeps two different paths apart rather than merging them.
-        /// </remarks>
-        private bool IgnoresCase(string path)
+        private string Canonicalize(string path)
         {
-            string directory;
-            try
+            string fullPath = Path.GetFullPath(path);
+            string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+            string remainder = fullPath.Substring(root.Length);
+            var builder = new System.Text.StringBuilder(root);
+            string currentDirectory = root;
+            char[] separators = new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar };
+            foreach (string segment in remainder.Split(separators,
+                StringSplitOptions.RemoveEmptyEntries))
             {
-                directory = Path.GetDirectoryName(path);
-            }
-            catch (Exception)
-            {
-                return false;
+                bool ignoresCase = this.DirectoryIgnoresCase(currentDirectory);
+                builder.Append(ignoresCase ? segment.ToUpperInvariant() : segment);
+                builder.Append(Path.DirectorySeparatorChar);
+                currentDirectory = Path.Combine(currentDirectory, segment);
             }
 
+            if (builder.Length > 0 && builder[builder.Length - 1] == Path.DirectorySeparatorChar &&
+                !string.Equals(currentDirectory, root, StringComparison.Ordinal))
+            {
+                builder.Length--;
+            }
+
+            return builder.ToString();
+        }
+
+        private bool DirectoryIgnoresCase(string directory)
+        {
             if (string.IsNullOrEmpty(directory))
             {
                 return false;

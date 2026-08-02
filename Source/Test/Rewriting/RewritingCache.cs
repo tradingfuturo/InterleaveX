@@ -43,7 +43,7 @@ namespace Microsoft.Coyote.Rewriting
         /// The layout of the manifest. Bump this whenever the recorded state changes meaning, so that
         /// a manifest written by an older build is discarded rather than misread.
         /// </summary>
-        private const int CurrentSchemaVersion = 5;
+        private const int CurrentSchemaVersion = 7;
 
         /// <summary>
         /// The rewriting options of the current run.
@@ -85,6 +85,8 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         private readonly Dictionary<string, CacheFile> RecordedModules;
 
+        private readonly Dictionary<string, CacheFile> RecordedResolutionCandidates;
+
         /// <summary>
         /// The directories resolution searched during this run, normalized to keep one record each.
         /// </summary>
@@ -99,6 +101,8 @@ namespace Microsoft.Coyote.Rewriting
         /// changes the answer while leaving every recorded file and directory untouched.
         /// </remarks>
         private readonly HashSet<string> RecordedFrameworkInventories;
+
+        private readonly Dictionary<string, CacheDirectoryListing> FrameworkInventorySnapshots;
 
         /// <summary>
         /// The complete set of assemblies loaded for this run, including discovered dependencies.
@@ -125,13 +129,13 @@ namespace Microsoft.Coyote.Rewriting
         /// Initializes a new instance of the <see cref="RewritingCache"/> class.
         /// </summary>
         internal RewritingCache(RewritingOptions options, Configuration configuration, LogWriter logWriter,
-            IFileSystem fileSystem)
+            IFileSystem fileSystem, string effectiveDotnetRoot = null)
         {
             this.Options = options;
             this.LogWriter = logWriter;
             this.FileSystem = fileSystem;
             this.ManifestPath = Path.Combine(options.OutputDirectory, ManifestFileName);
-            this.ConfigurationHash = ComputeConfigurationHash(options, configuration);
+            this.ConfigurationHash = ComputeConfigurationHash(options, configuration, effectiveDotnetRoot);
 
             this.Validator = new RewritingCacheValidator(fileSystem, new RewritingCacheExpectation(
                 CurrentSchemaVersion, GetRewriterVersion(), GetRewriterModuleId(), this.ConfigurationHash,
@@ -141,8 +145,11 @@ namespace Microsoft.Coyote.Rewriting
 
             this.RecordedEntries = new List<CacheEntry>();
             this.RecordedModules = new Dictionary<string, CacheFile>(this.Validator.PathComparer);
+            this.RecordedResolutionCandidates = new Dictionary<string, CacheFile>(this.Validator.PathComparer);
             this.RecordedSearchDirectories = new HashSet<string>(this.Validator.PathComparer);
             this.RecordedFrameworkInventories = new HashSet<string>(this.Validator.PathComparer);
+            this.FrameworkInventorySnapshots = new Dictionary<string, CacheDirectoryListing>(
+                this.Validator.PathComparer);
             this.IsDisabled = options.IsIncrementalRewritingDisabled;
         }
 
@@ -271,15 +278,48 @@ namespace Microsoft.Coyote.Rewriting
         /// the ordinary search has already failed, and what it finds is not attributable to the
         /// runtime configuration of any one assembly.
         /// </remarks>
-        internal void RecordFrameworkInventories(IEnumerable<string> paths)
+        internal void RecordFrameworkInventories(IEnumerable<CacheDirectoryListing> snapshots)
         {
-            foreach (string path in paths ?? Enumerable.Empty<string>())
+            foreach (CacheDirectoryListing snapshot in snapshots ?? Enumerable.Empty<CacheDirectoryListing>())
             {
-                if (!string.IsNullOrEmpty(path))
+                if (snapshot != null && !string.IsNullOrEmpty(snapshot.Path))
                 {
-                    this.RecordedFrameworkInventories.Add(
-                        RewritingCacheValidator.NormalizeDirectory(path));
+                    string normalized = RewritingCacheValidator.NormalizeDirectory(snapshot.Path);
+                    if (this.RecordedFrameworkInventories.Add(normalized))
+                    {
+                        try
+                        {
+                            snapshot.Path = normalized;
+                            this.FrameworkInventorySnapshots.Add(normalized, snapshot);
+                        }
+                        catch (Exception ex)
+                        {
+                            this.HasRecordingFailure = true;
+                            this.LogWriter.LogDebug(
+                                "..... Unable to record framework inventory '{0}': {1}",
+                                normalized, ex.Message);
+                        }
+                    }
                 }
+            }
+        }
+
+        internal void RecordResolutionCandidate(string path)
+        {
+            try
+            {
+                string normalized = RewritingCacheValidator.NormalizeFile(path);
+                if (!this.RecordedResolutionCandidates.ContainsKey(normalized))
+                {
+                    this.RecordedResolutionCandidates.Add(normalized,
+                        this.Validator.CaptureFile(normalized, true));
+                }
+            }
+            catch (Exception ex)
+            {
+                this.HasRecordingFailure = true;
+                this.LogWriter.LogDebug("..... Unable to record resolution candidate '{0}': {1}",
+                    path, ex.Message);
             }
         }
 
@@ -353,6 +393,17 @@ namespace Microsoft.Coyote.Rewriting
         {
             try
             {
+                string[] unreliableStampPaths = (assembly.UnreliableResolutionStampPaths ??
+                    Enumerable.Empty<string>()).ToArray();
+                if (unreliableStampPaths.Length > 0)
+                {
+                    this.HasRecordingFailure = true;
+                    this.LogWriter.LogDebug(
+                        "..... Unable to record '{0}' because resolution stamps were unreliable: {1}",
+                        assembly.Name, string.Join(", ", unreliableStampPaths));
+                    return;
+                }
+
                 // What this run wrote for this assembly. These are the files that are *supposed* to
                 // differ from what was read -- rewriting in place makes the input its own output --
                 // so they are the ones the check below has to leave alone.
@@ -414,12 +465,13 @@ namespace Microsoft.Coyote.Rewriting
                 var searchDirectories = assembly.SearchDirectories
                     .Select(RewritingCacheValidator.NormalizeDirectory).ToArray();
                 var modules = new Dictionary<string, CacheFile>(this.Validator.PathComparer);
-                foreach (string modulePath in assembly.ResolvedModulePaths)
+                foreach (string modulePath in assembly.ResolutionCandidatePaths.Concat(assembly.ResolvedModulePaths))
                 {
                     string normalizedPath = RewritingCacheValidator.NormalizeFile(modulePath);
                     if ((this.ExpectedRewriteInputs is null ||
                         !this.ExpectedRewriteInputs.Contains(normalizedPath)) &&
                         !this.RecordedModules.ContainsKey(normalizedPath) &&
+                        !this.RecordedResolutionCandidates.ContainsKey(normalizedPath) &&
                         !modules.ContainsKey(normalizedPath))
                     {
                         modules.Add(normalizedPath, Capture(modulePath));
@@ -434,7 +486,7 @@ namespace Microsoft.Coyote.Rewriting
                     this.RecordedSearchDirectories.Add(searchDirectory);
                 }
 
-                this.RecordFrameworkInventories(assembly.FrameworkInventoryRoots);
+                this.RecordFrameworkInventories(assembly.FrameworkInventorySnapshots);
 
                 foreach (var module in modules)
                 {
@@ -472,16 +524,17 @@ namespace Microsoft.Coyote.Rewriting
         private void VerifyUnchangedSinceItWasRead(IRewrittenAssembly assembly, string path,
             string normalizedPath)
         {
-            if (!assembly.TryGetResolutionStamp(path, out IFileEntry stamp) &&
+            if (!assembly.TryGetResolutionStamp(path, out ResolutionStamp stamp) &&
                 !assembly.TryGetResolutionStamp(normalizedPath, out stamp))
             {
                 return;
             }
 
             var current = this.FileSystem.GetFile(normalizedPath);
-            if (current.Exists != stamp.Exists ||
-                (current.Exists && (current.Length != stamp.Length ||
-                    current.LastWriteTimeUtc != stamp.LastWriteTimeUtc)))
+            if (current.Exists != stamp.Entry.Exists ||
+                (current.Exists && (current.Length != stamp.Entry.Length ||
+                    !string.Equals(RewritingCacheValidator.ComputeFileFingerprint(
+                        this.FileSystem, normalizedPath), stamp.Fingerprint, StringComparison.Ordinal))))
             {
                 throw new IOException(
                     $"The file '{normalizedPath}' changed after '{assembly.Name}' read it.");
@@ -532,25 +585,15 @@ namespace Microsoft.Coyote.Rewriting
                         .OrderBy(path => path, StringComparer.Ordinal).ToList(),
                     RewriteInputs = this.ExpectedRewriteInputs
                         .OrderBy(path => path, StringComparer.Ordinal).ToList(),
-                    ResolvedModules = this.RecordedModules.Values
+                    ResolvedModules = this.RecordedModules.Values.Concat(this.RecordedResolutionCandidates.Values)
+                        .GroupBy(file => file.Path, this.Validator.PathComparer).Select(group => group.First())
                         .Where(file => !recordedByEntries.Contains(file.Path))
                         .OrderBy(file => file.Path, StringComparer.Ordinal).ToList(),
-                    // Every directory resolution is offered, hashed, including the shared frameworks.
-                    // A name and a length cannot see a replacement that keeps both, and the
-                    // assemblies that were offered but never read are exactly the ones no entry
-                    // records a hash for -- which is the case this exists to notice.
-                    //
-                    // TODO: measure what this costs. It reads several hundred assemblies out of each
-                    // framework directory, on the path that checks the manifest as well as the one
-                    // that writes it, and the cheap form below is still implemented. Trading it back
-                    // means weakening what a skipped rewrite is allowed to miss, so it wants a
-                    // measurement first rather than an estimate.
                     DependencySearchDirectories = this.RecordedSearchDirectories
                         .OrderBy(path => path, StringComparer.Ordinal)
                         .Select(path => this.Validator.CaptureDirectory(path, true)).ToList(),
-                    FrameworkInventories = this.RecordedFrameworkInventories
-                        .OrderBy(path => path, StringComparer.Ordinal)
-                        .Select(path => this.Validator.CaptureDirectoryNames(path)).ToList(),
+                    FrameworkInventories = this.FrameworkInventorySnapshots.Values
+                        .OrderBy(inventory => inventory.Path, StringComparer.Ordinal).ToList(),
                     Entries = this.RecordedEntries.OrderBy(e => e.Name, StringComparer.Ordinal).ToList()
                 };
 
@@ -648,7 +691,8 @@ namespace Microsoft.Coyote.Rewriting
         /// the product version changes rarely, so without it a locally rebuilt rewriter would be served
         /// output produced by the previous one.
         /// </remarks>
-        private static string ComputeConfigurationHash(RewritingOptions options, Configuration configuration)
+        private static string ComputeConfigurationHash(RewritingOptions options, Configuration configuration,
+            string effectiveDotnetRoot)
         {
             var builder = new StringBuilder();
             void Append(string name, object value) =>
@@ -658,6 +702,8 @@ namespace Microsoft.Coyote.Rewriting
             Append("rewriter-module", GetRewriterModuleId());
             Append("assemblies-directory", RewritingCacheValidator.NormalizeDirectory(options.AssembliesDirectory));
             Append("output-directory", RewritingCacheValidator.NormalizeDirectory(options.OutputDirectory));
+            Append("effective-dotnet-root", string.IsNullOrEmpty(effectiveDotnetRoot) ? "<none>" :
+                RewritingCacheValidator.NormalizeDirectory(effectiveDotnetRoot));
             foreach (string path in options.AssemblyPaths.Select(RewritingCacheValidator.NormalizeFile)
                 .OrderBy(p => p, StringComparer.Ordinal))
             {

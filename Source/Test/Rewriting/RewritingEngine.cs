@@ -113,7 +113,7 @@ namespace Microsoft.Coyote.Rewriting
         /// fallback first runs while the assemblies are still being loaded, which is before the run
         /// has a closure for the cache to attribute anything to.
         /// </remarks>
-        private readonly HashSet<string> FallbackFrameworkRoots;
+        private readonly List<CacheDirectoryListing> FallbackFrameworkInventories;
 
         /// <summary>
         /// The file system this run reads and writes, other than through Mono.Cecil.
@@ -126,6 +126,11 @@ namespace Microsoft.Coyote.Rewriting
         private readonly Func<string, string> GetEnvironmentVariable;
 
         /// <summary>
+        /// The .NET installation selected once for this run and shared by cache admission and resolution.
+        /// </summary>
+        private readonly string EffectiveDotnetRoot;
+
+        /// <summary>
         /// Copies the input directory into the output one, leaving up-to-date outputs alone.
         /// </summary>
         private readonly RewritingOutputMirror Mirror;
@@ -134,6 +139,8 @@ namespace Microsoft.Coyote.Rewriting
         /// Ownership of files in a separate output directory, else null for in-place rewriting.
         /// </summary>
         private RewritingOutputLedger OutputLedger;
+
+        private RewritingCache CurrentCache;
 
         private Dictionary<string, MirroredFile> MirroredOutputFiles;
 
@@ -161,11 +168,12 @@ namespace Microsoft.Coyote.Rewriting
             this.Configuration = configuration;
             this.Passes = new LinkedList<Pass>();
             this.ResolveWarnings = new HashSet<string>();
-            this.FallbackFrameworkRoots = new HashSet<string>(StringComparer.Ordinal);
+            this.FallbackFrameworkInventories = new List<CacheDirectoryListing>();
             this.LogWriter = logWriter;
             this.Profiler = profiler;
             this.FileSystem = fileSystem;
             this.GetEnvironmentVariable = getEnvironmentVariable;
+            this.EffectiveDotnetRoot = AssemblyInfo.GetDotnetRoot(fileSystem, getEnvironmentVariable);
             this.Mirror = new RewritingOutputMirror(fileSystem, logWriter);
         }
 
@@ -203,7 +211,8 @@ namespace Microsoft.Coyote.Rewriting
             // original assemblies; and loading the assemblies is itself a large part of the cost that
             // an up-to-date run exists to avoid.
             var cache = new RewritingCache(this.Options, this.Configuration, this.LogWriter,
-                this.FileSystem);
+                this.FileSystem, this.EffectiveDotnetRoot);
+            this.CurrentCache = cache;
             if (!this.Options.IsReplacingAssemblies())
             {
                 this.OutputLedger = new RewritingOutputLedger(this.FileSystem, this.LogWriter,
@@ -258,8 +267,11 @@ namespace Microsoft.Coyote.Rewriting
 
                 // Get the set of assemblies to rewrite.
                 var assemblies = AssemblyInfo.LoadAssembliesToRewrite(this.Options,
-                    this.OnResolveAssemblyFailure, this.FileSystem, this.GetEnvironmentVariable).ToList();
+                    this.OnResolveAssemblyFailure, this.FileSystem, this.GetEnvironmentVariable,
+                    this.EffectiveDotnetRoot).ToList();
                 cache.RegisterRewriteInputs(assemblies);
+                cache.RecordFrameworkInventories(assemblies.SelectMany(assembly =>
+                    assembly.FrameworkInventorySnapshots));
                 this.InitializePasses(assemblies);
                 foreach (var assembly in assemblies)
                 {
@@ -270,7 +282,7 @@ namespace Microsoft.Coyote.Rewriting
 
                 // After the passes, because the fallback resolution that fills this runs throughout
                 // them and not only while the assemblies are being loaded.
-                cache.RecordFrameworkInventories(this.FallbackFrameworkRoots);
+                cache.RecordFrameworkInventories(this.FallbackFrameworkInventories);
 
                 // Only once every assembly has been dealt with: a manifest describing a partially
                 // rewritten directory would report assemblies as up to date that were never reached.
@@ -592,28 +604,32 @@ namespace Microsoft.Coyote.Rewriting
             if (!this.Options.IsReplacingAssemblies())
             {
                 this.LogWriter.LogImportant("... Copying all files to the '{0}' directory", outputDirectory);
+                var mirrorJournal = new RewritingOutputChangeJournal(this.FileSystem, outputDirectory);
                 Exception lastMirrorError = null;
                 for (int attempt = 0; attempt < 2; attempt++)
                 {
                     try
                     {
                         this.MirroredOutputFiles =
-                            this.Mirror.GetMirroredFiles(sourceDirectory, outputDirectory);
+                            this.Mirror.GetMirroredFiles(sourceDirectory, outputDirectory,
+                                includeFingerprints: false,
+                                excludedDirectories: new[] { mirrorJournal.BackupDirectory });
 
-                        // Claimed before the copy, so that a file this attempt is about to write is
-                        // already owned if the attempt does not finish.
-                        this.AttemptedMirroredFiles.UnionWith(this.MirroredOutputFiles.Keys);
                         this.OutputLedger.RemoveStaleMirroredFiles(this.MirroredOutputFiles.Keys,
-                            this.AttemptedMirroredFiles);
+                            this.AttemptedMirroredFiles, mirrorJournal.Capture);
                         this.Mirror.Mirror(sourceDirectory, outputDirectory, protectedOutputPaths,
-                            this.MirroredOutputFiles.Keys);
+                            this.MirroredOutputFiles.Keys, this.AttemptedMirroredFiles,
+                            mirrorJournal.Capture);
                         var confirmed =
-                            this.Mirror.GetMirroredFiles(sourceDirectory, outputDirectory);
+                            this.Mirror.GetMirroredFiles(sourceDirectory, outputDirectory,
+                                includeFingerprints: false,
+                                excludedDirectories: new[] { mirrorJournal.BackupDirectory });
 
                         // Compared on length and write time as well as on name. Equal inventories say
                         // nothing about a file that was rewritten in place after this copied it, and
                         // that file is now in the output holding bytes the input no longer has.
-                        if (RewritingOutputMirror.DescribeSameFiles(this.MirroredOutputFiles, confirmed))
+                        if (this.Mirror.DescribeSameFiles(sourceDirectory, outputDirectory,
+                            this.MirroredOutputFiles, confirmed, protectedOutputPaths))
                         {
                             this.MirroredOutputFiles = confirmed;
                             lastMirrorError = null;
@@ -624,16 +640,72 @@ namespace Microsoft.Coyote.Rewriting
                             $"The source directory '{sourceDirectory}' changed while it was being mirrored.");
                     }
                     catch (Exception ex) when (
-                        attempt is 0 && (ex is IOException || ex is UnauthorizedAccessException))
+                        ex is IOException || ex is UnauthorizedAccessException)
                     {
                         lastMirrorError = ex;
+                    }
+
+                    if (attempt is 0 && lastMirrorError != null)
+                    {
+                        try
+                        {
+                            // Every retry starts from the same output state. In particular, a file
+                            // that existed before mirroring must be restored after an earlier attempt
+                            // overwrote it, rather than being mistaken for newly-owned output.
+                            mirrorJournal.Restore();
+                        }
+                        catch (Exception restoreError)
+                        {
+                            throw new IOException(
+                                $"Unable to retry mirroring '{sourceDirectory}', and rollback failed. " +
+                                $"The recovery journal remains at '{mirrorJournal.BackupDirectory}'.",
+                                new AggregateException(lastMirrorError, restoreError));
+                        }
+
+                        this.AttemptedMirroredFiles.Clear();
                     }
                 }
 
                 if (lastMirrorError != null)
                 {
+                    try
+                    {
+                        mirrorJournal.Restore();
+                    }
+                    catch (Exception restoreError)
+                    {
+                        throw new IOException(
+                            $"Unable to mirror a stable snapshot of '{sourceDirectory}', and rollback failed. " +
+                            $"The recovery journal remains at '{mirrorJournal.BackupDirectory}'.",
+                            new AggregateException(lastMirrorError, restoreError));
+                    }
+
+                    try
+                    {
+                        mirrorJournal.Complete();
+                    }
+                    catch (Exception cleanupError)
+                    {
+                        throw new IOException(
+                            $"Unable to mirror a stable snapshot of '{sourceDirectory}'. Rollback " +
+                            $"succeeded, but the recovery journal could not be removed from " +
+                            $"'{mirrorJournal.BackupDirectory}'.",
+                            new AggregateException(lastMirrorError, cleanupError));
+                    }
+
                     throw new IOException(
                         $"Unable to mirror a stable snapshot of '{sourceDirectory}'.", lastMirrorError);
+                }
+
+                try
+                {
+                    mirrorJournal.Complete();
+                }
+                catch (Exception cleanupError)
+                {
+                    this.LogWriter.LogWarning(
+                        "..... Unable to remove the completed mirror recovery journal '{0}': {1}",
+                        mirrorJournal.BackupDirectory, cleanupError.Message);
                 }
             }
 
@@ -846,22 +918,10 @@ namespace Microsoft.Coyote.Rewriting
                 if (dotnetRoot != null)
                 {
                     string sharedDir = Path.Combine(dotnetRoot, "shared");
-                    if (this.FileSystem.DirectoryExists(sharedDir))
-                    {
-                        // Both levels are recorded, because both decide what is probed below: the
-                        // names under 'shared' are the frameworks on offer, and the names under each
-                        // of those are the versions of it. Neither is described by the runtime
-                        // configuration of any assembly, so nothing else would notice one arriving.
-                        this.FallbackFrameworkRoots.Add(sharedDir);
-                        foreach (string frameworkDir in this.FileSystem.GetDirectories(sharedDir, "*", false))
-                        {
-                            this.FallbackFrameworkRoots.Add(frameworkDir);
-                            foreach (string versionDir in this.FileSystem.GetDirectories(frameworkDir, "*", false))
-                            {
-                                this.CachedFrameworkDirectories.Add(versionDir);
-                            }
-                        }
-                    }
+                    IReadOnlyList<string> frameworkDirectories;
+                    this.FallbackFrameworkInventories.AddRange(CaptureFallbackFrameworkInventories(
+                        this.FileSystem, sharedDir, out frameworkDirectories));
+                    this.CachedFrameworkDirectories.AddRange(frameworkDirectories);
                 }
             }
 
@@ -869,6 +929,7 @@ namespace Microsoft.Coyote.Rewriting
             foreach (string dir in this.CachedFrameworkDirectories)
             {
                 string candidate = Path.Combine(dir, fileName);
+                this.CurrentCache?.RecordResolutionCandidate(candidate);
                 if (this.FileSystem.FileExists(candidate))
                 {
                     try
@@ -884,6 +945,73 @@ namespace Microsoft.Coyote.Rewriting
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Captures the directory names that determine the shared-framework fallback candidates.
+        /// </summary>
+        /// <remarks>
+        /// The shared directory itself is recorded even when it is absent. Its later appearance
+        /// changes the candidate space just as surely as a new framework or version under it does.
+        /// </remarks>
+        internal static IReadOnlyList<CacheDirectoryListing> CaptureFallbackFrameworkInventories(
+            IFileSystem fileSystem, string sharedDirectory, out IReadOnlyList<string> versionDirectories)
+        {
+            bool sharedExists = fileSystem.DirectoryExists(sharedDirectory);
+            string[] frameworkDirectories = sharedExists ?
+                fileSystem.GetDirectories(sharedDirectory, "*", false) : Array.Empty<string>();
+            var snapshots = new List<CacheDirectoryListing>()
+            {
+                RewritingCacheValidator.CaptureDirectoryNames(
+                    sharedDirectory, sharedExists, frameworkDirectories)
+            };
+            var versions = new List<string>();
+
+            if (sharedExists)
+            {
+                foreach (string frameworkDirectory in OrderFrameworkDirectories(frameworkDirectories))
+                {
+                    string[] installedVersions = fileSystem.GetDirectories(
+                        frameworkDirectory, "*", false);
+                    snapshots.Add(RewritingCacheValidator.CaptureDirectoryNames(
+                        frameworkDirectory, true, installedVersions));
+                    versions.AddRange(OrderVersionDirectories(installedVersions));
+                }
+            }
+
+            versionDirectories = versions;
+            return snapshots;
+        }
+
+        private static IEnumerable<string> OrderFrameworkDirectories(IEnumerable<string> directories)
+        {
+            return directories
+                .OrderBy(path => string.Equals(Path.GetFileName(path), "Microsoft.NETCore.App",
+                    StringComparison.Ordinal) ? 0 : 1)
+                .ThenBy(path => Path.GetFileName(path), StringComparer.Ordinal);
+        }
+
+        private static IEnumerable<string> OrderVersionDirectories(IEnumerable<string> directories)
+        {
+            return directories
+                .Select(path =>
+                {
+                    string name = Path.GetFileName(path);
+                    int dash = name.IndexOf('-');
+                    string core = dash < 0 ? name : name.Substring(0, dash);
+                    return new
+                    {
+                        Path = path,
+                        IsValid = Version.TryParse(core, out Version version),
+                        Version = version,
+                        IsPrerelease = dash >= 0
+                    };
+                })
+                .OrderByDescending(item => item.IsValid)
+                .ThenByDescending(item => item.Version)
+                .ThenBy(item => item.IsPrerelease)
+                .ThenBy(item => item.Path, StringComparer.Ordinal)
+                .Select(item => item.Path);
         }
 
         /// <summary>
