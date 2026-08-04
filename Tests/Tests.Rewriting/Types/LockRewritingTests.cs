@@ -51,6 +51,21 @@ namespace Microsoft.Coyote.Rewriting.Tests
             var lockObj = new Lock();
             Assert.NotNull(lockObj);
         }
+
+        [Fact(Timeout = 5000)]
+        public void TestRewritingLockIsHeldByCurrentThread()
+        {
+            // Verify that the getter of Lock.IsHeldByCurrentThread is rewritten, and still answers
+            // what the lock itself would when there is no controlled execution to answer from.
+            var lockObj = new Lock();
+            Assert.False(lockObj.IsHeldByCurrentThread);
+
+            lockObj.Enter();
+            Assert.True(lockObj.IsHeldByCurrentThread);
+
+            lockObj.Exit();
+            Assert.False(lockObj.IsHeldByCurrentThread);
+        }
     }
 }
 #endif

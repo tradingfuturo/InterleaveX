@@ -75,6 +75,30 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 lockObj.Exit();
             });
         }
+
+        /// <summary>
+        /// Answered from the controlled block the runtime holds for the lock, rather than from the
+        /// real lock, which is what makes it agree with the rest of the controlled execution.
+        /// </summary>
+        [Fact(Timeout = 5000)]
+        public void TestLockIsHeldByCurrentThread()
+        {
+            this.Test(() =>
+            {
+                var lockObj = new Lock();
+                Specification.Assert(!lockObj.IsHeldByCurrentThread,
+                    "Expected the lock to be unheld before it is entered.");
+
+                lock (lockObj)
+                {
+                    Specification.Assert(lockObj.IsHeldByCurrentThread,
+                        "Expected the lock to be held by the operation that entered it.");
+                }
+
+                Specification.Assert(!lockObj.IsHeldByCurrentThread,
+                    "Expected the lock to be unheld once it is exited.");
+            });
+        }
     }
 }
 #endif
