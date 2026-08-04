@@ -256,7 +256,7 @@ namespace Microsoft.Coyote.Rewriting
                 // The declaring type is being rewritten, so only rewrite the return and
                 // parameter types if they are generic.
                 // resolvedMethod = FindMatchingMethodInDeclaringType(resolvedNewDeclaringType, resolvedMethod, matchName);
-                if (!TryFindMethod(resolvedNewDeclaringType, resolvedMethod, matchName, out resolvedMethod))
+                if (!this.TryFindMethod(resolvedNewDeclaringType, resolvedMethod, matchName, out resolvedMethod))
                 {
                     // No matching method found.
                     return false;
@@ -362,14 +362,19 @@ namespace Microsoft.Coyote.Rewriting
         /// <summary>
         /// Finds the matching method in the specified declaring type, if any.
         /// </summary>
-        private static bool TryFindMethod(TypeDefinition declaringType, MethodDefinition originalMethod,
+        private bool TryFindMethod(TypeDefinition declaringType, MethodDefinition originalMethod,
             string matchName, out MethodDefinition match)
         {
+            // Computed once per lookup rather than per candidate: rewriting a type imports it into
+            // the module, so doing this inside the loop would grow the type reference table with
+            // every method that is considered and then rejected.
+            TypeReference expectedReturnType = this.RewriteType(originalMethod.ReturnType, Options.None);
+
             match = null;
             foreach (var method in declaringType.Methods)
             {
                 if ((method.Name == matchName && CheckMethodParametersMatch(originalMethod, method)) ||
-                    CheckMethodSignaturesMatch(originalMethod, method))
+                    CheckMethodSignaturesMatch(originalMethod, method, expectedReturnType))
                 {
                     match = method;
                     break;
@@ -410,18 +415,30 @@ namespace Microsoft.Coyote.Rewriting
         /// Checks if the signatures of the original and the replacement methods match.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// This method also checks the use case where we are converting an instance method into a static method.
         /// In such a case case, we are inserting a first parameter that has the same type as the declaring type
         /// of the original method.
+        /// </para>
+        /// <para>
+        /// The return type is compared against the REWRITTEN return type of the original method, not the
+        /// original one: a replacement legitimately returns the modelled counterpart of what it replaces,
+        /// as <c>GetAwaiter</c> and <c>ConfigureAwait</c> do. Comparing it at all is what stops a
+        /// replacement whose return type is merely wrong from being accepted: the parameters would still
+        /// line up, the call site would be redirected, and the emitted call would leave the evaluation
+        /// stack short by exactly one slot. Rejecting the match instead leaves the call unrewritten,
+        /// which loses the modelling but keeps the assembly verifiable.
+        /// </para>
         /// </remarks>
-        private static bool CheckMethodSignaturesMatch(MethodDefinition originalMethod, MethodDefinition newMethod)
+        private static bool CheckMethodSignaturesMatch(MethodDefinition originalMethod, MethodDefinition newMethod,
+            TypeReference expectedReturnType)
         {
             // TODO: make sure all necessary checks are in place!
             // Check if the method properties match. We check 'IsStatic' later as we need to do additional checks
             // in cases where we are replacing an instance method with a static method.
             if (originalMethod.Name != newMethod.Name ||
                 originalMethod.IsConstructor != newMethod.IsConstructor ||
-                originalMethod.ReturnType.IsGenericInstance != newMethod.ReturnType.IsGenericInstance ||
+                expectedReturnType.FullName != newMethod.ReturnType.FullName ||
                 originalMethod.IsPublic != newMethod.IsPublic ||
                 originalMethod.IsPrivate != newMethod.IsPrivate ||
                 originalMethod.IsAssembly != newMethod.IsAssembly ||
