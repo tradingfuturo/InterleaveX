@@ -5,7 +5,6 @@ using System;
 using System.Runtime.Serialization;
 using Microsoft.Coyote.Runtime;
 using SystemGenerics = System.Collections.Generic;
-using SystemInterlocked = System.Threading.Interlocked;
 
 namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 {
@@ -100,6 +99,23 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 #endif
 
         /// <summary>
+        /// Opens the data-race guard for one access to the specified dictionary, or returns a
+        /// no-op scope when the dictionary is not a modelled instance.
+        /// </summary>
+        /// <remarks>
+        /// A helper rather than an inline conditional access, because a scope is a struct and so
+        /// cannot be produced by the null-conditional operator. The scope must be opened and closed
+        /// inside the shim: rewriting replaces call sites, never the surrounding user method, so
+        /// there is nowhere else the guard could span the operation from.
+        /// </remarks>
+        /// <param name="instance">The dictionary being accessed.</param>
+        /// <param name="isWriteAccess">True if the access can modify the dictionary.</param>
+        /// <returns>The scope guarding this access.</returns>
+        private static DataRaceChecker.Scope Enter(
+            SystemGenerics.Dictionary<TKey, TValue> instance, bool isWriteAccess) =>
+            instance is Wrapper wrapper ? wrapper.Checker.Enter(isWriteAccess) : default;
+
+        /// <summary>
         /// Gets the value associated with the specified key.
         /// </summary>
 #pragma warning disable CA1707 // Identifiers should not contain underscores
@@ -110,7 +126,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 #pragma warning restore SA1300 // Element should begin with upper-case letter
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance[key];
         }
 
@@ -126,13 +142,18 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 #pragma warning restore SA1300 // Element should begin with upper-case letter
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance[key] = value;
         }
 
         /// <summary>
         /// Gets a collection containing the keys in the dictionary.
         /// </summary>
+        /// <remarks>
+        /// The returned collection is the real one, and enumerating it is NOT guarded: only the
+        /// call that hands it out is. Guarding the enumeration would require modelling the
+        /// enumerator types themselves.
+        /// </remarks>
 #pragma warning disable CA1707 // Identifiers should not contain underscores
 #pragma warning disable SA1300 // Element should begin with upper-case letter
 #pragma warning disable IDE1006 // Naming Styles
@@ -142,13 +163,14 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 #pragma warning restore SA1300 // Element should begin with upper-case letter
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.Keys;
         }
 
         /// <summary>
         /// Gets a collection containing the values in the dictionary.
         /// </summary>
+        /// <remarks>Enumerating the result is not guarded; see <see cref="get_Keys"/>.</remarks>
 #pragma warning disable CA1707 // Identifiers should not contain underscores
 #pragma warning disable SA1300 // Element should begin with upper-case letter
 #pragma warning disable IDE1006 // Naming Styles
@@ -158,7 +180,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 #pragma warning restore SA1300 // Element should begin with upper-case letter
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.Values;
         }
 
@@ -173,7 +195,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 #pragma warning restore SA1300 // Element should begin with upper-case letter
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.Count;
         }
 
@@ -182,7 +204,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void Add(SystemGenerics.Dictionary<TKey, TValue> instance, TKey key, TValue value)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.Add(key, value);
         }
 
@@ -191,7 +213,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void Clear(SystemGenerics.Dictionary<TKey, TValue> instance)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.Clear();
         }
 
@@ -200,7 +222,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool ContainsKey(SystemGenerics.Dictionary<TKey, TValue> instance, TKey key)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.ContainsKey(key);
         }
 
@@ -209,17 +231,18 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool ContainsValue(SystemGenerics.Dictionary<TKey, TValue> instance, TValue value)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.ContainsValue(value);
         }
 
         /// <summary>
         /// Returns an enumerator that iterates through the dictionary.
         /// </summary>
+        /// <remarks>Enumerating the result is not guarded; see <see cref="get_Keys"/>.</remarks>
         public static SystemGenerics.Dictionary<TKey, TValue>.Enumerator GetEnumerator(
             SystemGenerics.Dictionary<TKey, TValue> instance)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.GetEnumerator();
         }
 
@@ -229,7 +252,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool Remove(SystemGenerics.Dictionary<TKey, TValue> instance, TKey key)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             return instance.Remove(key);
         }
 
@@ -239,7 +262,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static bool TryGetValue(SystemGenerics.Dictionary<TKey, TValue> instance,
             TKey key, out TValue value)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.TryGetValue(key, out value);
         }
 
@@ -253,7 +276,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static void GetObjectData(SystemGenerics.Dictionary<TKey, TValue> instance,
             SerializationInfo info, StreamingContext context)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.GetObjectData(info, context);
         }
 
@@ -263,7 +286,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void OnDeserialization(SystemGenerics.Dictionary<TKey, TValue> instance, object sender)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.OnDeserialization(sender);
         }
 
@@ -274,7 +297,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void EnsureCapacity(SystemGenerics.Dictionary<TKey, TValue> instance, int size)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.EnsureCapacity(size);
         }
 
@@ -283,7 +306,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool Remove(SystemGenerics.Dictionary<TKey, TValue> instance, TKey key, out TValue value)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             return instance.Remove(key, out value);
         }
 
@@ -293,7 +316,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void TrimExcess(SystemGenerics.Dictionary<TKey, TValue> instance)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.TrimExcess();
         }
 
@@ -303,7 +326,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void TrimExcess(SystemGenerics.Dictionary<TKey, TValue> instance, int size)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.TrimExcess(size);
         }
 
@@ -312,7 +335,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool TryAdd(SystemGenerics.Dictionary<TKey, TValue> instance, TKey key, TValue value)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             return instance.TryAdd(key, value);
         }
 #endif
@@ -323,119 +346,78 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         private class Wrapper : SystemGenerics.Dictionary<TKey, TValue>
         {
             /// <summary>
-            /// Count of read accesses to the dictionary.
+            /// Detects unsynchronized concurrent access to this dictionary.
             /// </summary>
-            private volatile int ReaderCount;
-
-            /// <summary>
-            /// Count of write accesses to the dictionary.
-            /// </summary>
-            private volatile int WriterCount;
+            internal readonly DataRaceChecker Checker =
+                new DataRaceChecker(typeof(SystemGenerics.Dictionary<TKey, TValue>));
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper()
-                : base() => this.Setup();
+                : base()
+            {
+            }
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper(SystemGenerics.IDictionary<TKey, TValue> dictionary)
-                : base(dictionary) => this.Setup();
+                : base(dictionary)
+            {
+            }
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper(int capacity)
-                : base(capacity) => this.Setup();
+                : base(capacity)
+            {
+            }
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper(int capacity, SystemGenerics.IEqualityComparer<TKey> comparer)
-                : base(capacity, comparer) => this.Setup();
+                : base(capacity, comparer)
+            {
+            }
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper(SystemGenerics.IDictionary<TKey, TValue> dictionary,
                 SystemGenerics.IEqualityComparer<TKey> comparer)
-                : base(dictionary, comparer) => this.Setup();
+                : base(dictionary, comparer)
+            {
+            }
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper(SystemGenerics.IEqualityComparer<TKey> comparer)
-                : base(comparer) => this.Setup();
+                : base(comparer)
+            {
+            }
 
 #if NET
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper(SystemGenerics.IEnumerable<SystemGenerics.KeyValuePair<TKey, TValue>> collection)
-                : base(collection) => this.Setup();
+                : base(collection)
+            {
+            }
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper(SystemGenerics.IEnumerable<SystemGenerics.KeyValuePair<TKey, TValue>> collection,
                 SystemGenerics.IEqualityComparer<TKey> comparer)
-                : base(collection, comparer) => this.Setup();
+                : base(collection, comparer)
+            {
+            }
 #endif
-
-            /// <summary>
-            /// Setups the wrapper.
-            /// </summary>
-            private void Setup()
-            {
-                this.ReaderCount = 0;
-                this.WriterCount = 0;
-            }
-
-            /// <summary>
-            /// Checks for a data race.
-            /// </summary>
-            internal void CheckDataRace(bool isWriteAccess)
-            {
-                var runtime = CoyoteRuntime.Current;
-                if (isWriteAccess)
-                {
-                    runtime.Assert(this.WriterCount is 0,
-                        $"Found write/write data race on '{typeof(SystemGenerics.Dictionary<TKey, TValue>)}'.");
-                    runtime.Assert(this.ReaderCount is 0,
-                        $"Found read/write data race on '{typeof(SystemGenerics.Dictionary<TKey, TValue>)}'.");
-                    SystemInterlocked.Increment(ref this.WriterCount);
-                }
-                else
-                {
-                    runtime.Assert(this.WriterCount is 0,
-                        $"Found read/write data race on '{typeof(SystemGenerics.Dictionary<TKey, TValue>)}'.");
-                    SystemInterlocked.Increment(ref this.ReaderCount);
-                }
-
-                if (runtime.SchedulingPolicy != SchedulingPolicy.None &&
-                    runtime.TryGetExecutingOperation(out ControlledOperation current))
-                {
-                    if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
-                    {
-                        runtime.ScheduleNextOperation(current, SchedulingPointType.Default);
-                    }
-                    else if (runtime.SchedulingPolicy is SchedulingPolicy.Fuzzing)
-                    {
-                        runtime.DelayOperation(current);
-                    }
-                }
-
-                if (isWriteAccess)
-                {
-                    SystemInterlocked.Decrement(ref this.WriterCount);
-                }
-                else
-                {
-                    SystemInterlocked.Decrement(ref this.ReaderCount);
-                }
-            }
         }
     }
 #pragma warning restore CA1000 // Do not declare static members on generic types

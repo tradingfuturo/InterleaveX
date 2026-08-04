@@ -5,7 +5,6 @@ using System;
 using System.Runtime.Serialization;
 using Microsoft.Coyote.Runtime;
 using SystemGenerics = System.Collections.Generic;
-using SystemInterlocked = System.Threading.Interlocked;
 
 namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 {
@@ -78,6 +77,22 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 #endif
 
         /// <summary>
+        /// Opens the data-race guard for one access to the specified hash set, or returns a no-op
+        /// scope when the hash set is not a modelled instance.
+        /// </summary>
+        /// <remarks>
+        /// A helper rather than an inline conditional access, because a scope is a struct and so
+        /// cannot be produced by the null-conditional operator. The scope must be opened and closed
+        /// inside the shim: rewriting replaces call sites, never the surrounding user method, so
+        /// there is nowhere else the guard could span the operation from.
+        /// </remarks>
+        /// <param name="instance">The hash set being accessed.</param>
+        /// <param name="isWriteAccess">True if the access can modify the hash set.</param>
+        /// <returns>The scope guarding this access.</returns>
+        private static DataRaceChecker.Scope Enter(SystemGenerics.HashSet<T> instance, bool isWriteAccess) =>
+            instance is Wrapper wrapper ? wrapper.Checker.Enter(isWriteAccess) : default;
+
+        /// <summary>
         /// Gets the equality comparer object that is used to determine equality for the values in the set.
         /// </summary>
 #pragma warning disable CA1707 // Identifiers should not contain underscores
@@ -88,7 +103,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 #pragma warning restore SA1300 // Element should begin with upper-case letter
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.Comparer;
         }
 
@@ -103,7 +118,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 #pragma warning restore SA1300 // Element should begin with upper-case letter
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.Count;
         }
 
@@ -112,7 +127,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool Add(SystemGenerics.HashSet<T> instance, T item)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             return instance.Add(item);
         }
 
@@ -121,7 +136,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void Clear(SystemGenerics.HashSet<T> instance)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.Clear();
         }
 
@@ -130,7 +145,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool Contains(SystemGenerics.HashSet<T> instance, T item)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.Contains(item);
         }
 
@@ -139,7 +154,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void CopyTo(SystemGenerics.HashSet<T> instance, T[] array)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             instance.CopyTo(array);
         }
 
@@ -148,7 +163,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void CopyTo(SystemGenerics.HashSet<T> instance, T[] array, int arrayIndex)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             instance.CopyTo(array, arrayIndex);
         }
 
@@ -157,7 +172,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void CopyTo(SystemGenerics.HashSet<T> instance, T[] array, int arrayIndex, int count)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             instance.CopyTo(array, arrayIndex, count);
         }
 
@@ -166,7 +181,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void ExceptWith(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.ExceptWith(other);
         }
 
@@ -175,7 +190,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static SystemGenerics.HashSet<T>.Enumerator GetEnumerator(SystemGenerics.HashSet<T> instance)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.GetEnumerator();
         }
 
@@ -189,7 +204,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static void GetObjectData(SystemGenerics.HashSet<T> instance, SerializationInfo info,
             StreamingContext context)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             instance.GetObjectData(info, context);
         }
 
@@ -199,7 +214,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void IntersecWith(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.IntersectWith(other);
         }
 
@@ -208,7 +223,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool IsProperSubsetOf(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.IsProperSubsetOf(other);
         }
 
@@ -217,7 +232,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool IsProperSupersetOf(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.IsProperSupersetOf(other);
         }
 
@@ -226,7 +241,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool IsSubsetOf(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.IsSubsetOf(other);
         }
 
@@ -235,7 +250,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool IsSupersetOf(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.IsSupersetOf(other);
         }
 
@@ -247,7 +262,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void OnDeserialization(SystemGenerics.HashSet<T> instance, object sender)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             instance.OnDeserialization(sender);
         }
 
@@ -256,7 +271,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool Overlaps(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.Overlaps(other);
         }
 
@@ -265,7 +280,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool Remove(SystemGenerics.HashSet<T> instance, T item)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             return instance.Remove(item);
         }
 
@@ -274,7 +289,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int RemoveWhere(SystemGenerics.HashSet<T> instance, Predicate<T> match)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             return instance.RemoveWhere(match);
         }
 
@@ -283,7 +298,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool SetEquals(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.SetEquals(other);
         }
 
@@ -293,7 +308,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void SymmetricExceptWith(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.SymmetricExceptWith(other);
         }
 
@@ -303,7 +318,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void TrimExcess(SystemGenerics.HashSet<T> instance)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             instance.TrimExcess();
         }
 
@@ -313,7 +328,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void UnionWith(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.UnionWith(other);
         }
 
@@ -323,7 +338,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int EnsureCapacity(SystemGenerics.HashSet<T> instance, int capacity)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.EnsureCapacity(capacity);
         }
 
@@ -332,7 +347,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool TryGetValue(SystemGenerics.HashSet<T> instance, T equalValue, out T actualValue)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.TryGetValue(equalValue, out actualValue);
         }
 #endif
@@ -343,38 +358,42 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         private class Wrapper : SystemGenerics.HashSet<T>
         {
             /// <summary>
-            /// Count of read accesses to the dictionary.
+            /// Detects unsynchronized concurrent access to this hash set.
             /// </summary>
-            private volatile int ReaderCount;
-
-            /// <summary>
-            /// Count of write accesses to the dictionary.
-            /// </summary>
-            private volatile int WriterCount;
+            internal readonly DataRaceChecker Checker =
+                new DataRaceChecker(typeof(SystemGenerics.HashSet<T>));
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper()
-                : base() => this.Setup();
+                : base()
+            {
+            }
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper(SystemGenerics.IEnumerable<T> collection)
-                : base(collection) => this.Setup();
+                : base(collection)
+            {
+            }
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper(SystemGenerics.IEnumerable<T> collection, SystemGenerics.IEqualityComparer<T> comparer)
-                : base(collection, comparer) => this.Setup();
+                : base(collection, comparer)
+            {
+            }
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper(SystemGenerics.IEqualityComparer<T> comparer)
-                : base(comparer) => this.Setup();
+                : base(comparer)
+            {
+            }
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
@@ -383,74 +402,28 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
             [Obsolete("Marking obsolete", DiagnosticId = "SYSLIB0051")]
             #endif
             internal Wrapper(SerializationInfo info, StreamingContext context)
-                : base(info, context) => this.Setup();
+                : base(info, context)
+            {
+            }
 
 #if NET
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper(int capacity)
-                : base(capacity) => this.Setup();
+                : base(capacity)
+            {
+            }
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper(int capacity, SystemGenerics.IEqualityComparer<T> comparer)
-                : base(capacity, comparer) => this.Setup();
+                : base(capacity, comparer)
+            {
+            }
 #endif
 
-            /// <summary>
-            /// Setups the wrapper.
-            /// </summary>
-            private void Setup()
-            {
-                this.ReaderCount = 0;
-                this.WriterCount = 0;
-            }
-
-            /// <summary>
-            /// Checks for a data race.
-            /// </summary>
-            internal void CheckDataRace(bool isWriteAccess)
-            {
-                var runtime = CoyoteRuntime.Current;
-                if (isWriteAccess)
-                {
-                    runtime.Assert(this.WriterCount is 0,
-                        $"Found write/write data race on '{typeof(SystemGenerics.HashSet<T>)}'.");
-                    runtime.Assert(this.ReaderCount is 0,
-                        $"Found read/write data race on '{typeof(SystemGenerics.HashSet<T>)}'.");
-                    SystemInterlocked.Increment(ref this.WriterCount);
-                }
-                else
-                {
-                    runtime.Assert(this.WriterCount is 0,
-                        $"Found read/write data race on '{typeof(SystemGenerics.HashSet<T>)}'.");
-                    SystemInterlocked.Increment(ref this.ReaderCount);
-                }
-
-                if (runtime.SchedulingPolicy != SchedulingPolicy.None &&
-                    runtime.TryGetExecutingOperation(out ControlledOperation current))
-                {
-                    if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
-                    {
-                        runtime.ScheduleNextOperation(current, SchedulingPointType.Default);
-                    }
-                    else if (runtime.SchedulingPolicy is SchedulingPolicy.Fuzzing)
-                    {
-                        runtime.DelayOperation(current);
-                    }
-                }
-
-                if (isWriteAccess)
-                {
-                    SystemInterlocked.Decrement(ref this.WriterCount);
-                }
-                else
-                {
-                    SystemInterlocked.Decrement(ref this.ReaderCount);
-                }
-            }
         }
     }
 #pragma warning restore CA1000 // Do not declare static members on generic types

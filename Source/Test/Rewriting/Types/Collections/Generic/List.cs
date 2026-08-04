@@ -4,7 +4,6 @@
 using System;
 using Microsoft.Coyote.Runtime;
 using SystemGenerics = System.Collections.Generic;
-using SystemInterlocked = System.Threading.Interlocked;
 
 namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 {
@@ -42,6 +41,24 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
             new SystemGenerics.List<T>(collection);
 
         /// <summary>
+        /// Opens the data-race guard for one access to the specified list, or returns a no-op scope
+        /// when the list is not a modelled instance.
+        /// </summary>
+        /// <remarks>
+        /// A helper rather than an inline conditional access, because a scope is a struct and so
+        /// cannot be produced by the null-conditional operator. The scope must be opened and closed
+        /// inside the shim: rewriting replaces call sites, never the surrounding user method, so
+        /// there is nowhere else the guard could span the operation from. It stays open across the
+        /// user delegates that <c>Sort</c>, <c>ForEach</c>, <c>FindAll</c> and friends invoke, which
+        /// is why a delegate that touches this same list re-enters and is exempted.
+        /// </remarks>
+        /// <param name="instance">The list being accessed.</param>
+        /// <param name="isWriteAccess">True if the access can modify the list.</param>
+        /// <returns>The scope guarding this access.</returns>
+        private static DataRaceChecker.Scope Enter(SystemGenerics.List<T> instance, bool isWriteAccess) =>
+            instance is Wrapper wrapper ? wrapper.Checker.Enter(isWriteAccess) : default;
+
+        /// <summary>
         /// Gets the element at the specified index.
         /// </summary>
 #pragma warning disable CA1707 // Identifiers should not contain underscores
@@ -52,7 +69,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 #pragma warning restore SA1300 // Element should begin with upper-case letter
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance[index];
         }
 
@@ -67,7 +84,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 #pragma warning restore SA1300 // Element should begin with upper-case letter
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance[index] = value;
         }
 
@@ -82,7 +99,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 #pragma warning restore SA1300 // Element should begin with upper-case letter
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.Count;
         }
 
@@ -97,7 +114,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 #pragma warning restore SA1300 // Element should begin with upper-case letter
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.Capacity;
         }
 
@@ -112,7 +129,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
 #pragma warning restore SA1300 // Element should begin with upper-case letter
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.Capacity = value;
         }
 
@@ -121,7 +138,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void Add(SystemGenerics.List<T> instance, T item)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.Add(item);
         }
 
@@ -130,7 +147,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void AddRange(SystemGenerics.List<T> instance, SystemGenerics.IEnumerable<T> collection)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.AddRange(collection);
         }
 
@@ -140,7 +157,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void BinarySearch(SystemGenerics.List<T> instance, T item)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             instance.BinarySearch(item);
         }
 
@@ -150,7 +167,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void BinarySearch(SystemGenerics.List<T> instance, T item, SystemGenerics.IComparer<T> comparer)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             instance.BinarySearch(item, comparer);
         }
 
@@ -160,7 +177,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void BinarySearch(SystemGenerics.List<T> instance, int index, int count, T item, SystemGenerics.IComparer<T> comparer)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             instance.BinarySearch(index, count, item, comparer);
         }
 
@@ -169,7 +186,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void Clear(SystemGenerics.List<T> instance)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.Clear();
         }
 
@@ -178,7 +195,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool Contains(SystemGenerics.List<T> instance, T item)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.Contains(item);
         }
 
@@ -189,7 +206,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static SystemGenerics.List<TOutput> ConvertAll<TOutput>(
             SystemGenerics.List<T> instance, Converter<T, TOutput> converter)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.ConvertAll(converter);
         }
 
@@ -199,7 +216,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void CopyTo(SystemGenerics.List<T> instance, T[] array)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             instance.CopyTo(array);
         }
 
@@ -209,7 +226,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void CopyTo(SystemGenerics.List<T> instance, T[] array, int arrayIndex)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             instance.CopyTo(array, arrayIndex);
         }
 
@@ -219,7 +236,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void CopyTo(SystemGenerics.List<T> instance, int index, T[] array, int arrayIndex, int count)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             instance.CopyTo(index, array, arrayIndex, count);
         }
 
@@ -229,7 +246,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool Exists(SystemGenerics.List<T> instance, Predicate<T> match)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.Exists(match);
         }
 
@@ -239,7 +256,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static T Find(SystemGenerics.List<T> instance, Predicate<T> match)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.Find(match);
         }
 
@@ -248,7 +265,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static SystemGenerics.List<T> FindAll(SystemGenerics.List<T> instance, Predicate<T> match)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.FindAll(match);
         }
 
@@ -260,7 +277,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int FindIndex(SystemGenerics.List<T> instance, int startIndex, int count, Predicate<T> match)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.FindIndex(startIndex, count, match);
         }
 
@@ -271,7 +288,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int FindIndex(SystemGenerics.List<T> instance, int startIndex, Predicate<T> match)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.FindIndex(startIndex, match);
         }
 
@@ -282,7 +299,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int FindIndex(SystemGenerics.List<T> instance, Predicate<T> match)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.FindIndex(match);
         }
 
@@ -292,7 +309,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static T FindLast(SystemGenerics.List<T> instance, Predicate<T> match)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.FindLast(match);
         }
 
@@ -304,7 +321,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int FindLastIndex(SystemGenerics.List<T> instance, int startIndex, int count, Predicate<T> match)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.FindLastIndex(startIndex, count, match);
         }
 
@@ -316,7 +333,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int FindLastIndex(SystemGenerics.List<T> instance, int startIndex, Predicate<T> match)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.FindLastIndex(startIndex, match);
         }
 
@@ -327,7 +344,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int FindLastIndex(SystemGenerics.List<T> instance, Predicate<T> match)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.FindLastIndex(match);
         }
 
@@ -336,7 +353,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void ForEach(SystemGenerics.List<T> instance, Action<T> action)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             instance.ForEach(action);
         }
 
@@ -345,7 +362,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static SystemGenerics.List<T>.Enumerator GetEnumerator(SystemGenerics.List<T> instance)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.GetEnumerator();
         }
 
@@ -354,7 +371,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static SystemGenerics.List<T> GetRange(SystemGenerics.List<T> instance, int index, int count)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.GetRange(index, count);
         }
 
@@ -365,7 +382,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int IndexOf(SystemGenerics.List<T> instance, T item, int index, int count)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.IndexOf(item, index, count);
         }
 
@@ -376,7 +393,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int IndexOf(SystemGenerics.List<T> instance, T item, int index)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.IndexOf(item, index);
         }
 
@@ -386,7 +403,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int IndexOf(SystemGenerics.List<T> instance, T item)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.IndexOf(item);
         }
 
@@ -395,7 +412,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void Insert(SystemGenerics.List<T> instance, int index, T item)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.Insert(index, item);
         }
 
@@ -406,7 +423,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static void InsertRange(SystemGenerics.List<T> instance, int index,
             SystemGenerics.IEnumerable<T> collection)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.InsertRange(index, collection);
         }
 
@@ -416,7 +433,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int LastIndexOf(SystemGenerics.List<T> instance, T item)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.LastIndexOf(item);
         }
 
@@ -427,7 +444,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int LastIndexOf(SystemGenerics.List<T> instance, T item, int index)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.LastIndexOf(item, index);
         }
 
@@ -438,7 +455,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int LastIndexOf(SystemGenerics.List<T> instance, T item, int index, int count)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.LastIndexOf(item, index, count);
         }
 
@@ -447,7 +464,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool Remove(SystemGenerics.List<T> instance, T item)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             return instance.Remove(item);
         }
 
@@ -456,7 +473,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int RemoveAll(SystemGenerics.List<T> instance, Predicate<T> match)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             return instance.RemoveAll(match);
         }
 
@@ -465,7 +482,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void RemoveAt(SystemGenerics.List<T> instance, int index)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.RemoveAt(index);
         }
 
@@ -474,7 +491,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void RemoveRange(SystemGenerics.List<T> instance, int index, int count)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.RemoveRange(index, count);
         }
 
@@ -483,7 +500,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void Reverse(SystemGenerics.List<T> instance, int index, int count)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.Reverse(index, count);
         }
 
@@ -492,7 +509,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void Reverse(SystemGenerics.List<T> instance)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.Reverse();
         }
 
@@ -501,7 +518,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void Sort(SystemGenerics.List<T> instance, Comparison<T> comparison)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.Sort(comparison);
         }
 
@@ -511,7 +528,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static void Sort(SystemGenerics.List<T> instance, int index, int count,
             SystemGenerics.IComparer<T> comparer)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.Sort(index, count, comparer);
         }
 
@@ -520,7 +537,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void Sort(SystemGenerics.List<T> instance)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.Sort();
         }
 
@@ -529,7 +546,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void Sort(SystemGenerics.List<T> instance, SystemGenerics.IComparer<T> comparer)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.Sort(comparer);
         }
 
@@ -538,7 +555,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static T[] ToArray(SystemGenerics.List<T> instance)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.ToArray();
         }
 
@@ -548,7 +565,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void TrimExcess(SystemGenerics.List<T> instance)
         {
-            (instance as Wrapper)?.CheckDataRace(true);
+            using var scope = Enter(instance, true);
             instance.TrimExcess();
         }
 
@@ -558,7 +575,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static bool TrueForAll(SystemGenerics.List<T> instance, Predicate<T> match)
         {
-            (instance as Wrapper)?.CheckDataRace(false);
+            using var scope = Enter(instance, false);
             return instance.TrueForAll(match);
         }
 
@@ -568,84 +585,33 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         private class Wrapper : SystemGenerics.List<T>
         {
             /// <summary>
-            /// Count of read accesses to the list.
+            /// Detects unsynchronized concurrent access to this list.
             /// </summary>
-            private volatile int ReaderCount;
-
-            /// <summary>
-            /// Count of write accesses to the list.
-            /// </summary>
-            private volatile int WriterCount;
+            internal readonly DataRaceChecker Checker =
+                new DataRaceChecker(typeof(SystemGenerics.List<T>));
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper()
-                : base() => this.Setup();
+                : base()
+            {
+            }
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper(SystemGenerics.IEnumerable<T> collection)
-                : base(collection) => this.Setup();
+                : base(collection)
+            {
+            }
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
             /// </summary>
             internal Wrapper(int capacity)
-                : base(capacity) => this.Setup();
-
-            /// <summary>
-            /// Setups the wrapper.
-            /// </summary>
-            private void Setup()
+                : base(capacity)
             {
-                this.ReaderCount = 0;
-                this.WriterCount = 0;
-            }
-
-            /// <summary>
-            /// Checks for a data race.
-            /// </summary>
-            internal void CheckDataRace(bool isWriteAccess)
-            {
-                var runtime = CoyoteRuntime.Current;
-                if (isWriteAccess)
-                {
-                    runtime.Assert(this.WriterCount is 0,
-                        $"Found write/write data race on '{typeof(SystemGenerics.List<T>)}'.");
-                    runtime.Assert(this.ReaderCount is 0,
-                        $"Found read/write data race on '{typeof(SystemGenerics.List<T>)}'.");
-                    SystemInterlocked.Increment(ref this.WriterCount);
-                }
-                else
-                {
-                    runtime.Assert(this.WriterCount is 0,
-                        $"Found read/write data race on '{typeof(SystemGenerics.List<T>)}'.");
-                    SystemInterlocked.Increment(ref this.ReaderCount);
-                }
-
-                if (runtime.SchedulingPolicy != SchedulingPolicy.None &&
-                    runtime.TryGetExecutingOperation(out ControlledOperation current))
-                {
-                    if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
-                    {
-                        runtime.ScheduleNextOperation(current, SchedulingPointType.Default);
-                    }
-                    else if (runtime.SchedulingPolicy is SchedulingPolicy.Fuzzing)
-                    {
-                        runtime.DelayOperation(current);
-                    }
-                }
-
-                if (isWriteAccess)
-                {
-                    SystemInterlocked.Decrement(ref this.WriterCount);
-                }
-                else
-                {
-                    SystemInterlocked.Decrement(ref this.ReaderCount);
-                }
             }
         }
     }
