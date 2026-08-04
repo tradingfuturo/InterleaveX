@@ -74,6 +74,20 @@ namespace Microsoft.Coyote.Runtime
         internal static bool IsExecutionControlled => ExecutionControlledUseCount > 0;
 
         /// <summary>
+        /// If true, collections are constructed as modelled instances, so that accesses to them can be
+        /// observed, else false.
+        /// </summary>
+        /// <remarks>
+        /// Separate from <see cref="IsExecutionControlled"/> because the two answer different questions.
+        /// That one asks whether the runtime owns the schedule, which only interleaving does, and things
+        /// that reshape execution to suit an explored schedule are right to ask it. This one asks only
+        /// whether accesses are observed at all, which fuzzing does too, by perturbing them. Reading the
+        /// interleaving-only answer here is what left every collection in a fuzzing run an ordinary
+        /// instance: no race was reportable, and no delay was injected at any access.
+        /// </remarks>
+        internal static bool IsCollectionModellingEnabled => ModelledRuntimeUseCount > 0;
+
+        /// <summary>
         /// If true, the currently executing thread is inside the synchronized section of the runtime.
         /// </summary>
         internal static bool IsExecutionSynchronized => SynchronizedSection.IsSynchronized();
@@ -82,6 +96,11 @@ namespace Microsoft.Coyote.Runtime
         /// Count of controlled execution runtimes that have been used in this process.
         /// </summary>
         private static int ExecutionControlledUseCount;
+
+        /// <summary>
+        /// Count of runtimes that have been used in this process and observe execution under any policy.
+        /// </summary>
+        private static int ModelledRuntimeUseCount;
 
         /// <summary>
         /// The unique id of this runtime.
@@ -437,9 +456,13 @@ namespace Microsoft.Coyote.Runtime
             this.UncontrolledInvocations = new HashSet<string>();
             this.CompletionSource = new TaskCompletionSource<bool>();
 
-            if (this.SchedulingPolicy is SchedulingPolicy.Interleaving)
+            if (this.SchedulingPolicy != SchedulingPolicy.None)
             {
-                Interlocked.Increment(ref ExecutionControlledUseCount);
+                Interlocked.Increment(ref ModelledRuntimeUseCount);
+                if (this.SchedulingPolicy is SchedulingPolicy.Interleaving)
+                {
+                    Interlocked.Increment(ref ExecutionControlledUseCount);
+                }
             }
 
             this.Extension = extension ?? NullRuntimeExtension.Instance;
@@ -3537,12 +3560,16 @@ namespace Microsoft.Coyote.Runtime
                     this.LogWriter.Dispose();
                 }
 
-                if (this.SchedulingPolicy is SchedulingPolicy.Interleaving)
+                if (this.SchedulingPolicy != SchedulingPolicy.None)
                 {
-                    // Note: this makes it possible to run a Controlled unit test followed by a production
-                    // unit test, whereas before that would throw "Uncontrolled Task" exceptions.
-                    // This does not solve mixing unit test type in parallel.
-                    Interlocked.Decrement(ref ExecutionControlledUseCount);
+                    Interlocked.Decrement(ref ModelledRuntimeUseCount);
+                    if (this.SchedulingPolicy is SchedulingPolicy.Interleaving)
+                    {
+                        // Note: this makes it possible to run a Controlled unit test followed by a production
+                        // unit test, whereas before that would throw "Uncontrolled Task" exceptions.
+                        // This does not solve mixing unit test type in parallel.
+                        Interlocked.Decrement(ref ExecutionControlledUseCount);
+                    }
                 }
             }
         }
