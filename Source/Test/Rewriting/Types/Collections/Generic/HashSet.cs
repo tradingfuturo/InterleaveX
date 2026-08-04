@@ -266,7 +266,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void OnDeserialization(SystemGenerics.HashSet<T> instance, object sender)
         {
-            using var scope = Enter(instance, false);
+            using var scope = Enter(instance, true);
             instance.OnDeserialization(sender);
         }
 
@@ -322,7 +322,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static void TrimExcess(SystemGenerics.HashSet<T> instance)
         {
-            using var scope = Enter(instance, false);
+            using var scope = Enter(instance, true);
             instance.TrimExcess();
         }
 
@@ -342,7 +342,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static int EnsureCapacity(SystemGenerics.HashSet<T> instance, int capacity)
         {
-            using var scope = Enter(instance, false);
+            using var scope = Enter(instance, true);
             return instance.EnsureCapacity(capacity);
         }
 
