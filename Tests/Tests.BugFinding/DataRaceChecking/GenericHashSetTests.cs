@@ -214,5 +214,71 @@ namespace Microsoft.Coyote.BugFinding.Tests.DataRaceChecking
             expectedError: $"Found write/write data race on '{typeof(HashSet<int>)}'.",
             replay: true);
         }
+
+        /// <summary>
+        /// A set operation reads the set it is given as well as the one it is called on, so a writer to
+        /// that other set races it.
+        /// </summary>
+        [Fact(Timeout = 5000)]
+        public void TestGenericHashSetUnionWithSourceDataRace()
+        {
+            this.TestWithError(async () =>
+            {
+                var source = new HashSet<int>
+                {
+                    1, 2, 3
+                };
+
+                var target = new HashSet<int>();
+
+                Task t1 = Task.Run(() =>
+                {
+                    target.UnionWith(source);
+                });
+
+                Task t2 = Task.Run(() =>
+                {
+                    source.Add(4);
+                });
+
+                await Task.WhenAll(t1, t2);
+            },
+            configuration: this.GetConfiguration().WithTestingIterations(100),
+            expectedError: $"Found read/write data race on '{typeof(HashSet<int>)}'.",
+            replay: true);
+        }
+
+#if NET9_0_OR_GREATER
+        /// <summary>
+        /// The capacity-taking overload of trimming, which arrived after the replacements were written
+        /// and so never had one, leaving it unguarded while its parameterless sibling was guarded.
+        /// </summary>
+        [Fact(Timeout = 5000)]
+        public void TestGenericHashSetTrimExcessWithCapacityDataRace()
+        {
+            this.TestWithError(async () =>
+            {
+                var hashSet = new HashSet<int>
+                {
+                    1, 2, 3
+                };
+
+                Task t1 = Task.Run(() =>
+                {
+                    hashSet.TrimExcess(8);
+                });
+
+                Task t2 = Task.Run(() =>
+                {
+                    hashSet.TrimExcess(16);
+                });
+
+                await Task.WhenAll(t1, t2);
+            },
+            configuration: this.GetConfiguration().WithTestingIterations(100),
+            expectedError: $"Found write/write data race on '{typeof(HashSet<int>)}'.",
+            replay: true);
+        }
+#endif
     }
 }

@@ -57,10 +57,38 @@ namespace Microsoft.Coyote.Rewriting.Tests
                     "has no such method to replace.",
                 ["Microsoft.Coyote.Runtime.CompilerServices.ValueTaskAwaiter::Wrap"] =
                     "Injected by name from InterAssemblyInvocationRewritingPass, as TaskAwaiter.Wrap is.",
-                ["Microsoft.Coyote.Rewriting.Types.Threading.Tasks.ValueTask`1::get_Factory"] =
-                    "Models a factory that ValueTask<TResult> does not have; the property is unreachable " +
-                    "rather than wrong, and is left in place because removing public surface from a " +
-                    "replacement type is a separate change.",
+            };
+
+        /// <summary>
+        /// Methods of a guarded collection that knowingly have no replacement, keyed by declaring type
+        /// and signature. Each entry is an access that runs unguarded, so each needs a reason.
+        /// </summary>
+        /// <remarks>
+        /// An entry naming a member that the running target framework does not declare is simply never
+        /// consulted, and is not reported as stale: alternate lookup and the capacity-taking overload of
+        /// TrimExcess arrived in .NET 9, and this runs on .NET 8 as well.
+        /// </remarks>
+        private static readonly IReadOnlyDictionary<string, string> UnguardedMembers =
+            new Dictionary<string, string>
+            {
+                // Reads. A concurrent write overlapping one of these is not reported, which is a
+                // narrower loss than an unguarded write, and each is a single field or a copy.
+                ["Dictionary`2::get_Capacity()"] = "Read of a single field.",
+                ["Dictionary`2::get_Comparer()"] = "Read of a single field.",
+                ["HashSet`1::get_Capacity()"] = "Read of a single field.",
+                ["List`1::AsReadOnly()"] = "Read that hands back a view; the view itself is not modelled.",
+                ["List`1::Slice(Int32, Int32)"] = "Read that copies out; the copy itself is not modelled.",
+
+                // Alternate lookup, .NET 9 and later. Not one missing replacement each but a door: the
+                // returned struct is a view over the same storage, and every operation performed through
+                // it reaches the collection without passing a replacement. Closing this means modelling
+                // the view type, which is a feature rather than a fix, and is tracked as one.
+                ["Dictionary`2::GetAlternateLookup()"] = "Returns an unmodelled view over the storage.",
+                ["Dictionary`2::TryGetAlternateLookup(AlternateLookup`1&)"] =
+                    "Returns an unmodelled view over the storage.",
+                ["HashSet`1::GetAlternateLookup()"] = "Returns an unmodelled view over the storage.",
+                ["HashSet`1::TryGetAlternateLookup(AlternateLookup`1&)"] =
+                    "Returns an unmodelled view over the storage.",
             };
 
         /// <summary>
@@ -99,6 +127,42 @@ namespace Microsoft.Coyote.Rewriting.Tests
                 $"Found {divergences.Count} replacement method(s) that the rewriter cannot match to the " +
                 "method they replace:" + Environment.NewLine +
                 string.Join(Environment.NewLine, divergences));
+        }
+
+        /// <summary>
+        /// The other direction: a method of a guarded collection that has no replacement at all is not
+        /// drift, so nothing above can see it, and every call to it runs unguarded.
+        /// </summary>
+        /// <remarks>
+        /// Confined to the guarded collections, because those are the ones where a missing replacement
+        /// costs correctness rather than fidelity: an unguarded mutator is a write the checker cannot
+        /// see, and every race through it goes unreported. The rest of the replaced types are modelled
+        /// selectively by design and would drown this in noise.
+        /// </remarks>
+        [Fact(Timeout = 60000)]
+        public void TestEveryGuardedCollectionMethodHasAReplacement()
+        {
+            var unguarded = new List<string>();
+            IReadOnlyDictionary<Type, List<Type>> replacements = GetReplacedTypes();
+
+            foreach (var replacement in replacements.OrderBy(entry => entry.Key.Name))
+            {
+                if (!IsGuardedCollection(replacement.Key))
+                {
+                    continue;
+                }
+
+                foreach (Type modelledType in replacement.Value
+                    .Select(modelledType => Close(modelledType, replacement.Key)))
+                {
+                    CheckModelledType(replacement.Key, modelledType, replacements, unguarded);
+                }
+            }
+
+            Assert.True(unguarded.Count is 0,
+                $"Found {unguarded.Count} method(s) of a guarded collection with no replacement, so " +
+                "calls to them are not guarded:" + Environment.NewLine +
+                string.Join(Environment.NewLine, unguarded));
         }
 
         [Fact(Timeout = 60000)]
@@ -162,6 +226,43 @@ namespace Microsoft.Coyote.Rewriting.Tests
                 }
             }
         }
+
+        /// <summary>
+        /// Checks that every method of the specified modelled type has a replacement.
+        /// </summary>
+        private static void CheckModelledType(Type replacement, Type modelledType,
+            IReadOnlyDictionary<Type, List<Type>> replacements, List<string> unguarded)
+        {
+            MethodInfo[] candidates = replacement.GetMethods(BindingFlags.Public | BindingFlags.Static |
+                BindingFlags.DeclaredOnly);
+
+            foreach (MethodInfo method in modelledType.GetMethods(BindingFlags.Public |
+                BindingFlags.Instance | BindingFlags.DeclaredOnly).OrderBy(m => m.Name))
+            {
+                if (method.GetBaseDefinition().DeclaringType == typeof(object))
+                {
+                    continue;
+                }
+
+                if (UnguardedMembers.ContainsKey($"{modelledType.Name}::{DescribeSignature(method)}"))
+                {
+                    continue;
+                }
+
+                if (!candidates.Any(candidate => candidate.Name == method.Name &&
+                    CheckParametersMatch(candidate, method, modelledType, replacements)))
+                {
+                    unguarded.Add($"{modelledType.Name}::{DescribeSignature(method)} has no replacement.");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Checks if the specified replacement type is one whose accesses are guarded against races,
+        /// as opposed to one that is modelled for some other reason.
+        /// </summary>
+        private static bool IsGuardedCollection(Type replacement) =>
+            replacement.Namespace == "Microsoft.Coyote.Rewriting.Types.Collections.Generic";
 
         /// <summary>
         /// Returns a description of why the rewriter cannot match the specified replacement method to
@@ -437,6 +538,14 @@ namespace Microsoft.Coyote.Rewriting.Tests
 
             return null;
         }
+
+        /// <summary>
+        /// Describes the specified method by name and parameter types, which is what identifies it
+        /// within its own declaring type and so is what the allow-list is keyed on.
+        /// </summary>
+        private static string DescribeSignature(MethodInfo method) =>
+            $"{method.Name}(" +
+            string.Join(", ", method.GetParameters().Select(p => p.ParameterType.Name)) + ")";
 
         /// <summary>
         /// Describes the specified method the way this test's failures read best.
