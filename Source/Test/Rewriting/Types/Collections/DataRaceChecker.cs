@@ -46,6 +46,31 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections
     /// overlapping that instant is not reported. Reaching it requires a comparer that mutates the very
     /// collection it is comparing for, which is already undefined behaviour.
     /// </para>
+    /// <para>
+    /// Three further gaps are accepted rather than closed, and all three share a shape: the guard spans
+    /// a call, so an access that outlives the call, or never passes through one, is invisible.
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description>
+    /// ENUMERATION is guarded only where the enumerator is handed out. <c>MoveNext</c> and
+    /// <c>Current</c> read the storage afterwards with no frame open, because the enumerator structs
+    /// are not themselves modelled, so a <c>foreach</c> racing a writer is not reported. This is the
+    /// largest remaining false negative, and closing it means modelling those structs.
+    /// </description></item>
+    /// <item><description>
+    /// COLLECTIONS HANDED BACK by <c>GetRange</c>, <c>FindAll</c>, <c>ConvertAll</c> and friends are
+    /// ordinary instances rather than modelled ones, so races on them are invisible. They are fresh
+    /// copies, so the risk is confined to what the caller does with them afterwards.
+    /// </description></item>
+    /// <item><description>
+    /// INTERFACE DISPATCH is never redirected: rewriting matches on the type a call site names, and a
+    /// call through <c>IList&lt;T&gt;</c> names the interface. Making the wrappers re-implement those
+    /// interfaces was considered and rejected — the base types implement several members explicitly, so
+    /// a re-implementation cannot delegate to them and would recurse, and it would put scheduling
+    /// points inside collection code reached from the framework itself, which was never examined for
+    /// re-entrancy.
+    /// </description></item>
+    /// </list>
     /// </remarks>
     internal sealed class DataRaceChecker
     {
@@ -108,6 +133,39 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections
         {
             this.CollectionType = collectionType;
         }
+
+        /// <summary>
+        /// Declares that the calling frame is about to access the specified collection, and returns the
+        /// scope that must be disposed once the access completes, or a scope that guards nothing when
+        /// the collection is not a modelled one.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// For the collection an operation READS rather than the one it was called on: the source a list
+        /// is constructed from, the enumerable a set is united with. The type of such a collection is
+        /// whatever the caller passed, so it is recognized through <see cref="IModelledCollection"/>
+        /// rather than by the receiving shim's own wrapper type.
+        /// </para>
+        /// <para>
+        /// A source frame cannot deadlock against the frame already held on the receiver, because a
+        /// frame is not a lock and <see cref="Enter(bool)"/> never waits for one: the checker's own lock
+        /// is released before the scheduling point, so two operations taking frames on the same pair of
+        /// collections in opposite orders can report a race but can never wait on each other.
+        /// </para>
+        /// <para>
+        /// When the source IS the receiver — <c>list.AddRange(list)</c> — the second frame belongs to an
+        /// owner that already holds one and is therefore exempt. That exemption is what keeps this from
+        /// reporting a collection as racing against itself, so it is load-bearing here and not merely a
+        /// convenience for reentrant comparers.
+        /// </para>
+        /// </remarks>
+        /// <param name="collection">The collection being accessed, of any type.</param>
+        /// <param name="isWriteAccess">True if the access can modify the collection.</param>
+        /// <returns>The scope guarding this access.</returns>
+        internal static Scope EnterSource(object collection, bool isWriteAccess) =>
+            collection is IModelledCollection modelled ?
+            modelled.Checker.Enter(isWriteAccess) :
+            default;
 
         /// <summary>
         /// Declares that the calling frame is about to access the collection, and returns the scope
@@ -271,17 +329,25 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections
         /// Checks whether frames belonging to the specified runtime can be accounted for at all.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// Two callers cannot be: one whose iteration has already been torn down, and one that reached
         /// a modelled collection with no controlled execution behind it, which resolves the process-wide
         /// default runtime. The default runtime is the reason liveness alone is not enough to ask —
         /// it is created once, stays <see cref="ExecutionStatus.Running"/> forever, and is what any
         /// genuinely uncontrolled thread reports, so every such thread would otherwise look like the
         /// arrival of a new iteration.
+        /// </para>
+        /// <para>
+        /// Asked here rather than where a collection is constructed, so that turning race checking off
+        /// costs one field read per access instead of deciding, once and for all at construction, that a
+        /// collection can never be watched.
+        /// </para>
         /// </remarks>
         /// <param name="runtime">The runtime the calling frame belongs to.</param>
         /// <returns>True if that runtime may own frames here.</returns>
         private static bool IsAccountable(CoyoteRuntime runtime) =>
-            !runtime.HasExecutionEnded && runtime.SchedulingPolicy != SchedulingPolicy.None;
+            !runtime.HasExecutionEnded && runtime.SchedulingPolicy != SchedulingPolicy.None &&
+            runtime.Configuration.IsCollectionAccessRaceCheckingEnabled;
 
         /// <summary>
         /// Gives the scheduler the opportunity to switch to another operation.
