@@ -385,6 +385,64 @@ namespace Microsoft.Coyote.Rewriting
         }
 
         /// <summary>
+        /// Checks whether the specified parameter can be the instance that the replaced method would
+        /// have run on.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The parameter is written in the replacement's terms and the declaring type in the original's,
+        /// so the two are never the same reference and there is nothing to compare but the name of what
+        /// they ultimately denote. This is why the check that used to be here did nothing: it compared
+        /// the two references for identity, which no pair of them can ever satisfy, so the receiver was
+        /// never validated at all. Inverting it, as the shape of the code invites, would reject every
+        /// instance-to-static replacement in existence.
+        /// </para>
+        /// <para>
+        /// A replacement legitimately writes the receiver as a constructed instance of the type that
+        /// declares the original, by reference, or as an 'in' parameter, which is a required modifier
+        /// over a reference — so those wrappers are peeled. An array is NOT peeled: a first parameter
+        /// that is an array of receivers is taking a collection, as <c>WaitHandle.WaitAll</c> does, and
+        /// accepting it would redirect an instance call site onto a method that consumes something else.
+        /// </para>
+        /// <para>
+        /// A parameter that will not resolve is accepted rather than rejected. The point of this check
+        /// is to catch a replacement that names the wrong type, not to re-verify the assembly graph, and
+        /// failing closed would silently drop replacements that work today whenever a reference cannot
+        /// be followed.
+        /// </para>
+        /// </remarks>
+        internal static bool IsReceiverParameter(TypeReference parameterType, TypeReference declaringType)
+        {
+            TypeReference receiver = parameterType;
+            while (receiver is RequiredModifierType || receiver is OptionalModifierType ||
+                receiver is ByReferenceType)
+            {
+                receiver = ((TypeSpecification)receiver).ElementType;
+            }
+
+            if (receiver is GenericInstanceType genericReceiver)
+            {
+                receiver = genericReceiver.ElementType;
+            }
+
+            if (receiver.FullName == declaringType.FullName)
+            {
+                return true;
+            }
+
+            if (receiver is TypeSpecification)
+            {
+                // Whatever is left after peeling is something built out of a type rather than the type:
+                // an array of it, or a pointer to it. Resolving one answers for its element type, which
+                // would accept exactly the shapes peeling deliberately left alone.
+                return false;
+            }
+
+            TypeDefinition resolvedReceiver = receiver.Resolve();
+            return resolvedReceiver is null || resolvedReceiver.FullName == declaringType.FullName;
+        }
+
+        /// <summary>
         /// Checks if the parameters of the two specified methods match.
         /// </summary>
         private static bool CheckMethodParametersMatch(MethodDefinition left, MethodDefinition right)
@@ -454,7 +512,8 @@ namespace Microsoft.Coyote.Rewriting
             {
                 // We are expecting one extra parameter in the static method in index '0', and the type
                 // of this parameter must be the same as the declaring type of the original method.
-                if (parameterCountDiff != 1 || newMethod.Parameters[0].ParameterType == originalMethod.DeclaringType)
+                if (parameterCountDiff != 1 ||
+                    !IsReceiverParameter(newMethod.Parameters[0].ParameterType, originalMethod.DeclaringType))
                 {
                     return false;
                 }
