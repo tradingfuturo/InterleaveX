@@ -83,30 +83,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
     public static class ValueTask<TResult>
     {
 #pragma warning disable CA1000 // Do not declare static members on generic types
-        /// <summary>
-        /// The default generic task factory.
-        /// </summary>
-        private static SystemTasks.TaskFactory<TResult> DefaultFactory = new SystemTasks.TaskFactory<TResult>();
-
-        /// <summary>
-        /// Provides access to factory methods for creating controlled generic task instances.
-        /// </summary>
-        public static SystemTasks.TaskFactory<TResult> Factory
-        {
-            get
-            {
-                var runtime = CoyoteRuntime.Current;
-                if (runtime.SchedulingPolicy is SchedulingPolicy.None)
-                {
-                    return DefaultFactory;
-                }
-
-                // TODO: cache this per runtime.
-                return new SystemTasks.TaskFactory<TResult>(SystemCancellationToken.None,
-                    SystemTaskCreationOptions.HideScheduler, SystemTaskContinuationOptions.HideScheduler,
-                    runtime.ControlledTaskScheduler);
-            }
-        }
+        // Deliberately no 'Factory' here, unlike the replacement for a generic task: a value task has
+        // no factory to model, so a replacement for one could never be found and only read as though
+        // something were being modelled.
 
         /// <summary>
         /// Gets the result value of the specified generic task.
