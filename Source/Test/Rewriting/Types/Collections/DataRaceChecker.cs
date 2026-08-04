@@ -1,5 +1,9 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+//
+// Modifications Copyright (c) 2026 pipflow.com <https://pipflow.com>
+// Modifications are licensed under the GNU General Public License v3.0 or
+// later. See LICENSE-GPL for the full text.
 
 using System;
 using Microsoft.Coyote.Runtime;
@@ -76,15 +80,25 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections
         private int WriterCount;
 
         /// <summary>
-        /// Id of the runtime that owns the current counts.
+        /// Generation of the runtime that owns the current counts.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// A collection cached in a static field outlives the iteration that created it, and an
         /// iteration that detaches part way through an operation abandons its frame without disposing
         /// the scope. Stamping the owning runtime lets the next iteration discard both rather than
         /// inherit a permanently non-zero count. Mirrors how a synchronized block heals itself.
+        /// </para>
+        /// <para>
+        /// Stamped with the generation rather than the identifier, because taking the state over must
+        /// be something only a YOUNGER runtime can do. A thread left behind by an iteration that has
+        /// already ended still resolves its own, dead runtime, so under an identifier it is
+        /// indistinguishable from a new iteration arriving: it would clear the frames the live
+        /// iteration is holding, and the live frames would then release counts they no longer own,
+        /// leaving real races unreported for as long as it kept running.
+        /// </para>
         /// </remarks>
-        private Guid RuntimeId;
+        private long Generation;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="DataRaceChecker"/> class.
@@ -104,23 +118,55 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections
         internal Scope Enter(bool isWriteAccess)
         {
             CoyoteRuntime runtime = CoyoteRuntime.Current;
+            return this.Enter(runtime, runtime.Generation, IsAccountable(runtime), isWriteAccess);
+        }
+
+        /// <summary>
+        /// Declares that the calling frame is about to access the collection on behalf of the runtime
+        /// of the specified generation, and returns the scope that must be disposed once the access
+        /// completes.
+        /// </summary>
+        /// <remarks>
+        /// The identity and the standing of the calling runtime are passed in rather than read here,
+        /// so that what this method does with a caller that has no business touching the state can be
+        /// stated directly, instead of only through a race that has to be provoked.
+        /// </remarks>
+        /// <param name="runtime">The runtime the calling frame belongs to.</param>
+        /// <param name="generation">The generation of that runtime.</param>
+        /// <param name="isAccountable">True if that runtime may own frames here.</param>
+        /// <param name="isWriteAccess">True if the access can modify the collection.</param>
+        /// <returns>The scope guarding this access.</returns>
+        internal Scope Enter(CoyoteRuntime runtime, long generation, bool isAccountable, bool isWriteAccess)
+        {
+            if (!isAccountable)
+            {
+                return default;
+            }
 
             // The unsynchronized accessor deliberately: this is only an identity lookup, and unlike
             // TryGetExecutingOperation it performs no uncontrolled-thread notification. The notifying
             // accessor is still used below, where that side effect is part of the existing behaviour.
             object owner = (object)CoyoteRuntime.GetExecutingOperationUnsynchronized() ??
                 SystemThread.CurrentThread;
-            Guid runtimeId = runtime.Id;
             bool isExempt;
 
             lock (this.SyncObject)
             {
-                if (this.RuntimeId != runtimeId)
+                if (generation < this.Generation)
+                {
+                    // Left over from an iteration that a younger one has already taken the state over
+                    // from. It owns nothing here and must disturb nothing: no frame, no count, and no
+                    // scheduling point, which is also why it takes the no-op scope rather than one that
+                    // would release a frame it never took.
+                    return default;
+                }
+
+                if (generation > this.Generation)
                 {
                     this.ActiveFrames.Clear();
                     this.ReaderCount = 0;
                     this.WriterCount = 0;
-                    this.RuntimeId = runtimeId;
+                    this.Generation = generation;
                 }
 
                 if (this.ActiveFrames.TryGetValue(owner, out int depth))
@@ -153,7 +199,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections
                 }
             }
 
-            var scope = new Scope(this, owner, runtimeId, isWriteAccess, isExempt);
+            var scope = new Scope(this, owner, generation, isWriteAccess, isExempt);
             if (!isExempt)
             {
                 try
@@ -174,19 +220,21 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections
         }
 
         /// <summary>
-        /// Releases a frame previously taken by <see cref="Enter"/>.
+        /// Releases a frame previously taken by <see cref="Enter(bool)"/>.
         /// </summary>
         /// <param name="owner">The frame owner.</param>
-        /// <param name="runtimeId">The runtime that owned the counts when the frame was taken.</param>
+        /// <param name="generation">The generation that owned the counts when the frame was taken.</param>
         /// <param name="isWriteAccess">True if the frame was a write access.</param>
         /// <param name="isExempt">True if the frame was re-entrant and took no count.</param>
-        private void Exit(object owner, Guid runtimeId, bool isWriteAccess, bool isExempt)
+        private void Exit(object owner, long generation, bool isWriteAccess, bool isExempt)
         {
             lock (this.SyncObject)
             {
-                if (this.RuntimeId != runtimeId)
+                if (this.Generation != generation)
                 {
-                    // A later iteration already reset the counts; this frame belongs to a dead one.
+                    // A younger iteration already took the counts over; this frame belongs to an older
+                    // one. Releasing here would decrement a count that now belongs to somebody else and
+                    // hide the very race this type exists to report.
                     return;
                 }
 
@@ -218,6 +266,22 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections
                 }
             }
         }
+
+        /// <summary>
+        /// Checks whether frames belonging to the specified runtime can be accounted for at all.
+        /// </summary>
+        /// <remarks>
+        /// Two callers cannot be: one whose iteration has already been torn down, and one that reached
+        /// a modelled collection with no controlled execution behind it, which resolves the process-wide
+        /// default runtime. The default runtime is the reason liveness alone is not enough to ask —
+        /// it is created once, stays <see cref="ExecutionStatus.Running"/> forever, and is what any
+        /// genuinely uncontrolled thread reports, so every such thread would otherwise look like the
+        /// arrival of a new iteration.
+        /// </remarks>
+        /// <param name="runtime">The runtime the calling frame belongs to.</param>
+        /// <returns>True if that runtime may own frames here.</returns>
+        private static bool IsAccountable(CoyoteRuntime runtime) =>
+            !runtime.HasExecutionEnded && runtime.SchedulingPolicy != SchedulingPolicy.None;
 
         /// <summary>
         /// Gives the scheduler the opportunity to switch to another operation.
@@ -255,9 +319,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections
             private readonly object Owner;
 
             /// <summary>
-            /// The runtime that owned the counts when this frame was taken.
+            /// The generation that owned the counts when this frame was taken.
             /// </summary>
-            private readonly Guid RuntimeId;
+            private readonly long Generation;
 
             /// <summary>
             /// True if this frame is a write access.
@@ -272,12 +336,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections
             /// <summary>
             /// Initializes a new instance of the <see cref="Scope"/> struct.
             /// </summary>
-            internal Scope(DataRaceChecker checker, object owner, Guid runtimeId, bool isWriteAccess,
+            internal Scope(DataRaceChecker checker, object owner, long generation, bool isWriteAccess,
                 bool isExempt)
             {
                 this.Checker = checker;
                 this.Owner = owner;
-                this.RuntimeId = runtimeId;
+                this.Generation = generation;
                 this.IsWriteAccess = isWriteAccess;
                 this.IsExempt = isExempt;
             }
@@ -295,7 +359,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections
 
                 try
                 {
-                    this.Checker.Exit(this.Owner, this.RuntimeId, this.IsWriteAccess, this.IsExempt);
+                    this.Checker.Exit(this.Owner, this.Generation, this.IsWriteAccess, this.IsExempt);
                 }
                 catch (Exception)
                 {

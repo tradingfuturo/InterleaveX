@@ -89,6 +89,25 @@ namespace Microsoft.Coyote.Runtime
         internal readonly Guid Id;
 
         /// <summary>
+        /// Counts the runtimes constructed in this process, so that each can be told apart from the
+        /// ones before it by age as well as by identity.
+        /// </summary>
+        private static long GenerationCounter;
+
+        /// <summary>
+        /// How many runtimes had been constructed in this process when this one was, which orders this
+        /// runtime against every other.
+        /// </summary>
+        /// <remarks>
+        /// State shared across iterations is stamped with the generation that owns it, and only a
+        /// strictly younger runtime may take it over. An identifier alone cannot express that: it says
+        /// two runtimes differ, not which of them the state belongs to, so a thread left over from an
+        /// iteration that has ended looks exactly like the arrival of a new one and takes ownership of
+        /// state that a live iteration is in the middle of using.
+        /// </remarks>
+        internal readonly long Generation;
+
+        /// <summary>
         /// The configuration used by the runtime.
         /// </summary>
         internal readonly Configuration Configuration;
@@ -392,6 +411,7 @@ namespace Microsoft.Coyote.Runtime
         {
             // Registers the runtime with the provider which in return assigns a unique identifier.
             this.Id = RuntimeProvider.Register(this);
+            this.Generation = Interlocked.Increment(ref GenerationCounter);
 
             this.Configuration = configuration;
             this.Scheduler = scheduler;
