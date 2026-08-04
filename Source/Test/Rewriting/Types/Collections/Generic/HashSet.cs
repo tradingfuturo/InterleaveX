@@ -25,7 +25,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// default equality comparer for the set type.
         /// </summary>
         public static SystemGenerics.HashSet<T> Create() =>
-            CoyoteRuntime.IsExecutionControlled ?
+            CoyoteRuntime.IsCollectionModellingEnabled ?
             new Wrapper() :
             new SystemGenerics.HashSet<T>();
 
@@ -34,17 +34,27 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// for the set type, contains elements copied from the specified collection, and
         /// has sufficient capacity to accommodate the number of elements copied.
         /// </summary>
-        public static SystemGenerics.HashSet<T> Create(SystemGenerics.IEnumerable<T> collection) =>
-            CoyoteRuntime.IsExecutionControlled ?
-            new Wrapper(collection) :
-            new SystemGenerics.HashSet<T>(collection);
+        /// <remarks>
+        /// The frame spans the construction rather than preceding it, because copying the source IS the
+        /// access: it is the base constructor that enumerates it.
+        /// </remarks>
+        public static SystemGenerics.HashSet<T> Create(SystemGenerics.IEnumerable<T> collection)
+        {
+            if (!CoyoteRuntime.IsCollectionModellingEnabled)
+            {
+                return new SystemGenerics.HashSet<T>(collection);
+            }
+
+            using var scope = DataRaceChecker.EnterSource(collection, false);
+            return new Wrapper(collection);
+        }
 
         /// <summary>
         /// Initializes a hash set instance class that is empty and uses the default
         /// equality comparer for the set type.
         /// </summary>
         public static SystemGenerics.HashSet<T> Create(SystemGenerics.IEqualityComparer<T> comparer) =>
-            CoyoteRuntime.IsExecutionControlled ?
+            CoyoteRuntime.IsCollectionModellingEnabled ?
             new Wrapper(comparer) :
             new SystemGenerics.HashSet<T>(comparer);
 
@@ -54,10 +64,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// capacity to accommodate the number of elements copied.
         /// </summary>
         public static SystemGenerics.HashSet<T> Create(SystemGenerics.IEnumerable<T> collection,
-            SystemGenerics.IEqualityComparer<T> comparer) =>
-            CoyoteRuntime.IsExecutionControlled ?
-            new Wrapper(collection, comparer) :
-            new SystemGenerics.HashSet<T>(collection, comparer);
+            SystemGenerics.IEqualityComparer<T> comparer)
+        {
+            if (!CoyoteRuntime.IsCollectionModellingEnabled)
+            {
+                return new SystemGenerics.HashSet<T>(collection, comparer);
+            }
+
+            using var scope = DataRaceChecker.EnterSource(collection, false);
+            return new Wrapper(collection, comparer);
+        }
 
 #if NET
         /// <summary>
@@ -65,7 +81,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// space for 'capacity' items and and uses the default equality comparer for the set type.
         /// </summary>
         public static SystemGenerics.HashSet<T> Create(int capacity) =>
-            CoyoteRuntime.IsExecutionControlled ?
+            CoyoteRuntime.IsCollectionModellingEnabled ?
             new Wrapper(capacity) :
             new SystemGenerics.HashSet<T>(capacity);
 
@@ -75,7 +91,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static SystemGenerics.HashSet<T> Create(int capacity,
             SystemGenerics.IEqualityComparer<T> comparer) =>
-            CoyoteRuntime.IsExecutionControlled ?
+            CoyoteRuntime.IsCollectionModellingEnabled ?
             new Wrapper(capacity, comparer) :
             new SystemGenerics.HashSet<T>(capacity, comparer);
 #endif
@@ -186,6 +202,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static void ExceptWith(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
             using var scope = Enter(instance, true);
+            using var sourceScope = DataRaceChecker.EnterSource(other, false);
             instance.ExceptWith(other);
         }
 
@@ -219,6 +236,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static void IntersectWith(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
             using var scope = Enter(instance, true);
+            using var sourceScope = DataRaceChecker.EnterSource(other, false);
             instance.IntersectWith(other);
         }
 
@@ -228,6 +246,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static bool IsProperSubsetOf(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
             using var scope = Enter(instance, false);
+            using var sourceScope = DataRaceChecker.EnterSource(other, false);
             return instance.IsProperSubsetOf(other);
         }
 
@@ -237,6 +256,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static bool IsProperSupersetOf(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
             using var scope = Enter(instance, false);
+            using var sourceScope = DataRaceChecker.EnterSource(other, false);
             return instance.IsProperSupersetOf(other);
         }
 
@@ -246,6 +266,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static bool IsSubsetOf(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
             using var scope = Enter(instance, false);
+            using var sourceScope = DataRaceChecker.EnterSource(other, false);
             return instance.IsSubsetOf(other);
         }
 
@@ -255,6 +276,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static bool IsSupersetOf(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
             using var scope = Enter(instance, false);
+            using var sourceScope = DataRaceChecker.EnterSource(other, false);
             return instance.IsSupersetOf(other);
         }
 
@@ -276,6 +298,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static bool Overlaps(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
             using var scope = Enter(instance, false);
+            using var sourceScope = DataRaceChecker.EnterSource(other, false);
             return instance.Overlaps(other);
         }
 
@@ -303,6 +326,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static bool SetEquals(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
             using var scope = Enter(instance, false);
+            using var sourceScope = DataRaceChecker.EnterSource(other, false);
             return instance.SetEquals(other);
         }
 
@@ -313,6 +337,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static void SymmetricExceptWith(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
             using var scope = Enter(instance, true);
+            using var sourceScope = DataRaceChecker.EnterSource(other, false);
             instance.SymmetricExceptWith(other);
         }
 
@@ -333,8 +358,21 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static void UnionWith(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
             using var scope = Enter(instance, true);
+            using var sourceScope = DataRaceChecker.EnterSource(other, false);
             instance.UnionWith(other);
         }
+
+#if NET9_0_OR_GREATER
+        /// <summary>
+        /// Sets the capacity of a hash set object to the specified number of elements, rounded up to a
+        /// nearby, implementation-specific value.
+        /// </summary>
+        public static void TrimExcess(SystemGenerics.HashSet<T> instance, int capacity)
+        {
+            using var scope = Enter(instance, true);
+            instance.TrimExcess(capacity);
+        }
+#endif
 
 #if NET
         /// <summary>
@@ -359,13 +397,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// <summary>
         /// Wraps a hash set so that it can be controlled during testing.
         /// </summary>
-        private class Wrapper : SystemGenerics.HashSet<T>
+        private class Wrapper : SystemGenerics.HashSet<T>, IModelledCollection
         {
             /// <summary>
             /// Detects unsynchronized concurrent access to this hash set.
             /// </summary>
             internal readonly DataRaceChecker Checker =
                 new DataRaceChecker(typeof(SystemGenerics.HashSet<T>));
+
+            /// <inheritdoc/>
+            DataRaceChecker IModelledCollection.Checker => this.Checker;
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
