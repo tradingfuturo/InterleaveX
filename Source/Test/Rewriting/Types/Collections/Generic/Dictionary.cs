@@ -25,7 +25,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// capacity, and uses the default equality comparer for the key type.
         /// </summary>
         public static SystemGenerics.Dictionary<TKey, TValue> Create() =>
-            CoyoteRuntime.IsExecutionControlled ?
+            CoyoteRuntime.IsCollectionModellingEnabled ?
             new Wrapper() :
             new SystemGenerics.Dictionary<TKey, TValue>();
 
@@ -33,11 +33,21 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// Initializes a new dictionary instance class that contains elements copied from the
         /// specified dictionary and uses the default equality comparer for the key type.
         /// </summary>
+        /// <remarks>
+        /// The frame spans the construction rather than preceding it, because copying the source IS the
+        /// access: it is the base constructor that reads it.
+        /// </remarks>
         public static SystemGenerics.Dictionary<TKey, TValue> Create(
-            SystemGenerics.IDictionary<TKey, TValue> dictionary) =>
-            CoyoteRuntime.IsExecutionControlled ?
-            new Wrapper(dictionary) :
-            new SystemGenerics.Dictionary<TKey, TValue>(dictionary);
+            SystemGenerics.IDictionary<TKey, TValue> dictionary)
+        {
+            if (!CoyoteRuntime.IsCollectionModellingEnabled)
+            {
+                return new SystemGenerics.Dictionary<TKey, TValue>(dictionary);
+            }
+
+            using var scope = DataRaceChecker.EnterSource(dictionary, false);
+            return new Wrapper(dictionary);
+        }
 
         /// <summary>
         /// Initializes a new dictionary instance class that is empty, has the default
@@ -45,7 +55,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static SystemGenerics.Dictionary<TKey, TValue> Create(
             SystemGenerics.IEqualityComparer<TKey> comparer) =>
-            CoyoteRuntime.IsExecutionControlled ?
+            CoyoteRuntime.IsCollectionModellingEnabled ?
             new Wrapper(comparer) :
             new SystemGenerics.Dictionary<TKey, TValue>(comparer);
 
@@ -54,7 +64,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// capacity, and uses the default equality comparer for the key type.
         /// </summary>
         public static SystemGenerics.Dictionary<TKey, TValue> Create(int capacity) =>
-            CoyoteRuntime.IsExecutionControlled ?
+            CoyoteRuntime.IsCollectionModellingEnabled ?
             new Wrapper(capacity) :
             new SystemGenerics.Dictionary<TKey, TValue>(capacity);
 
@@ -64,10 +74,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static SystemGenerics.Dictionary<TKey, TValue> Create(
             SystemGenerics.IDictionary<TKey, TValue> dictionary,
-            SystemGenerics.IEqualityComparer<TKey> comparer) =>
-            CoyoteRuntime.IsExecutionControlled ?
-            new Wrapper(dictionary, comparer) :
-            new SystemGenerics.Dictionary<TKey, TValue>(dictionary, comparer);
+            SystemGenerics.IEqualityComparer<TKey> comparer)
+        {
+            if (!CoyoteRuntime.IsCollectionModellingEnabled)
+            {
+                return new SystemGenerics.Dictionary<TKey, TValue>(dictionary, comparer);
+            }
+
+            using var scope = DataRaceChecker.EnterSource(dictionary, false);
+            return new Wrapper(dictionary, comparer);
+        }
 
         /// <summary>
         /// Initializes a new dictionary instance class that is empty, has the specified initial
@@ -75,7 +91,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static SystemGenerics.Dictionary<TKey, TValue> Create(
             int capacity, SystemGenerics.IEqualityComparer<TKey> comparer) =>
-            CoyoteRuntime.IsExecutionControlled ?
+            CoyoteRuntime.IsCollectionModellingEnabled ?
             new Wrapper(capacity, comparer) :
             new SystemGenerics.Dictionary<TKey, TValue>(capacity, comparer);
 
@@ -85,10 +101,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// from the specified enumerable.
         /// </summary>
         public static SystemGenerics.Dictionary<TKey, TValue> Create(
-            SystemGenerics.IEnumerable<SystemGenerics.KeyValuePair<TKey, TValue>> collection) =>
-            CoyoteRuntime.IsExecutionControlled ?
-            new Wrapper(collection) :
-            new SystemGenerics.Dictionary<TKey, TValue>(collection);
+            SystemGenerics.IEnumerable<SystemGenerics.KeyValuePair<TKey, TValue>> collection)
+        {
+            if (!CoyoteRuntime.IsCollectionModellingEnabled)
+            {
+                return new SystemGenerics.Dictionary<TKey, TValue>(collection);
+            }
+
+            using var scope = DataRaceChecker.EnterSource(collection, false);
+            return new Wrapper(collection);
+        }
 
         /// <summary>
         /// Initializes a new dictionary instance class that contains elements copied
@@ -96,10 +118,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// </summary>
         public static SystemGenerics.Dictionary<TKey, TValue> Create(
             SystemGenerics.IEnumerable<SystemGenerics.KeyValuePair<TKey, TValue>> collection,
-            SystemGenerics.IEqualityComparer<TKey> comparer) =>
-            CoyoteRuntime.IsExecutionControlled ?
-            new Wrapper(collection, comparer) :
-            new SystemGenerics.Dictionary<TKey, TValue>(collection, comparer);
+            SystemGenerics.IEqualityComparer<TKey> comparer)
+        {
+            if (!CoyoteRuntime.IsCollectionModellingEnabled)
+            {
+                return new SystemGenerics.Dictionary<TKey, TValue>(collection, comparer);
+            }
+
+            using var scope = DataRaceChecker.EnterSource(collection, false);
+            return new Wrapper(collection, comparer);
+        }
 #endif
 
         /// <summary>
@@ -280,7 +308,10 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static void GetObjectData(SystemGenerics.Dictionary<TKey, TValue> instance,
             SerializationInfo info, StreamingContext context)
         {
-            using var scope = Enter(instance, true);
+            // A read: what it writes to is the serialization store, never the dictionary. Declared as a
+            // write it excluded everything, so two operations serializing at once reported a race that
+            // is not one, and legal reader overlap was suppressed for the duration.
+            using var scope = Enter(instance, false);
             instance.GetObjectData(info, context);
         }
 
@@ -347,13 +378,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// <summary>
         /// Wraps a dictionary so that it can be controlled during testing.
         /// </summary>
-        private class Wrapper : SystemGenerics.Dictionary<TKey, TValue>
+        private class Wrapper : SystemGenerics.Dictionary<TKey, TValue>, IModelledCollection
         {
             /// <summary>
             /// Detects unsynchronized concurrent access to this dictionary.
             /// </summary>
             internal readonly DataRaceChecker Checker =
                 new DataRaceChecker(typeof(SystemGenerics.Dictionary<TKey, TValue>));
+
+            /// <inheritdoc/>
+            DataRaceChecker IModelledCollection.Checker => this.Checker;
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
