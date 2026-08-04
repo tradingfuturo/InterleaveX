@@ -23,7 +23,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// Creates a new list instance that is empty and has the default initial capacity.
         /// </summary>
         public static SystemGenerics.List<T> Create() =>
-            CoyoteRuntime.IsExecutionControlled ?
+            CoyoteRuntime.IsCollectionModellingEnabled ?
             new Wrapper() :
             new SystemGenerics.List<T>();
 
@@ -31,7 +31,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// Creates a new list instance that is empty and has the specified initial capacity.
         /// </summary>
         public static SystemGenerics.List<T> Create(int capacity) =>
-            CoyoteRuntime.IsExecutionControlled ?
+            CoyoteRuntime.IsCollectionModellingEnabled ?
             new Wrapper(capacity) :
             new SystemGenerics.List<T>(capacity);
 
@@ -39,10 +39,20 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// Creates a new list instance that contains elements copied from the specified collection
         /// and has sufficient capacity to accommodate the number of elements copied.
         /// </summary>
-        public static SystemGenerics.List<T> Create(SystemGenerics.IEnumerable<T> collection) =>
-            CoyoteRuntime.IsExecutionControlled ?
-            new Wrapper(collection) :
-            new SystemGenerics.List<T>(collection);
+        /// <remarks>
+        /// The frame spans the construction rather than preceding it, because copying the source IS the
+        /// access: it is the base constructor that enumerates it.
+        /// </remarks>
+        public static SystemGenerics.List<T> Create(SystemGenerics.IEnumerable<T> collection)
+        {
+            if (!CoyoteRuntime.IsCollectionModellingEnabled)
+            {
+                return new SystemGenerics.List<T>(collection);
+            }
+
+            using var scope = DataRaceChecker.EnterSource(collection, false);
+            return new Wrapper(collection);
+        }
 
         /// <summary>
         /// Opens the data-race guard for one access to the specified list, or returns a no-op scope
@@ -152,6 +162,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         public static void AddRange(SystemGenerics.List<T> instance, SystemGenerics.IEnumerable<T> collection)
         {
             using var scope = Enter(instance, true);
+            using var sourceScope = DataRaceChecker.EnterSource(collection, false);
             instance.AddRange(collection);
         }
 
@@ -428,6 +439,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
             SystemGenerics.IEnumerable<T> collection)
         {
             using var scope = Enter(instance, true);
+            using var sourceScope = DataRaceChecker.EnterSource(collection, false);
             instance.InsertRange(index, collection);
         }
 
@@ -573,6 +585,18 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
             instance.TrimExcess();
         }
 
+#if NET
+        /// <summary>
+        /// Ensures that the capacity of the list is at least the specified capacity,
+        /// growing the list if it is not.
+        /// </summary>
+        public static int EnsureCapacity(SystemGenerics.List<T> instance, int capacity)
+        {
+            using var scope = Enter(instance, true);
+            return instance.EnsureCapacity(capacity);
+        }
+#endif
+
         /// <summary>
         /// Determines whether every element in the list matches
         /// the conditions defined by the specified predicate.
@@ -586,13 +610,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// <summary>
         /// Wraps a list so that it can be controlled during testing.
         /// </summary>
-        private class Wrapper : SystemGenerics.List<T>
+        private class Wrapper : SystemGenerics.List<T>, IModelledCollection
         {
             /// <summary>
             /// Detects unsynchronized concurrent access to this list.
             /// </summary>
             internal readonly DataRaceChecker Checker =
                 new DataRaceChecker(typeof(SystemGenerics.List<T>));
+
+            /// <inheritdoc/>
+            DataRaceChecker IModelledCollection.Checker => this.Checker;
 
             /// <summary>
             /// Initializes a new instance of the <see cref="Wrapper"/> class.
