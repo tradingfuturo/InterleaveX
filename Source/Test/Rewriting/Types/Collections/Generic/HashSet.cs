@@ -1,5 +1,9 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+//
+// Modifications Copyright (c) 2026 pipflow.com <https://pipflow.com>
+// Modifications are licensed under the GNU General Public License v3.0 or
+// later. See LICENSE-GPL for the full text.
 
 using System;
 using System.Runtime.Serialization;
@@ -212,7 +216,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// Modifies the current hash set object to contain only elements that are present
         /// in that object and in the specified collection.
         /// </summary>
-        public static void IntersecWith(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
+        public static void IntersectWith(SystemGenerics.HashSet<T> instance, SystemGenerics.IEnumerable<T> other)
         {
             using var scope = Enter(instance, true);
             instance.IntersectWith(other);

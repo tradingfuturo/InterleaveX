@@ -1,5 +1,9 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+//
+// Modifications Copyright (c) 2026 pipflow.com <https://pipflow.com>
+// Modifications are licensed under the GNU General Public License v3.0 or
+// later. See LICENSE-GPL for the full text.
 
 using System;
 using Microsoft.Coyote.Runtime;
@@ -155,30 +159,30 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// Searches the entire sorted list for an element using the default
         /// comparer and returns the zero-based index of the element.
         /// </summary>
-        public static void BinarySearch(SystemGenerics.List<T> instance, T item)
+        public static int BinarySearch(SystemGenerics.List<T> instance, T item)
         {
             using var scope = Enter(instance, false);
-            instance.BinarySearch(item);
+            return instance.BinarySearch(item);
         }
 
         /// <summary>
         /// Searches the entire sorted list for an element using the specified
         /// comparer and returns the zero-based index of the element.
         /// </summary>
-        public static void BinarySearch(SystemGenerics.List<T> instance, T item, SystemGenerics.IComparer<T> comparer)
+        public static int BinarySearch(SystemGenerics.List<T> instance, T item, SystemGenerics.IComparer<T> comparer)
         {
             using var scope = Enter(instance, false);
-            instance.BinarySearch(item, comparer);
+            return instance.BinarySearch(item, comparer);
         }
 
         /// <summary>
         /// Searches a range of elements in the sorted list for an element using the
         /// specified comparer and returns the zero-based index of the element.
         /// </summary>
-        public static void BinarySearch(SystemGenerics.List<T> instance, int index, int count, T item, SystemGenerics.IComparer<T> comparer)
+        public static int BinarySearch(SystemGenerics.List<T> instance, int index, int count, T item, SystemGenerics.IComparer<T> comparer)
         {
             using var scope = Enter(instance, false);
-            instance.BinarySearch(index, count, item, comparer);
+            return instance.BinarySearch(index, count, item, comparer);
         }
 
         /// <summary>

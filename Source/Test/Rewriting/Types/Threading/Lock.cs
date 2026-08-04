@@ -215,7 +215,17 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// <summary>
         /// Determines whether the lock is held by the current thread.
         /// </summary>
-        public static bool IsHeldByCurrentThread(SystemThreading.Lock lockObj)
+        /// <remarks>
+        /// Named after the property getter rather than the property, because rewriting replaces call
+        /// sites, and what a call site names is the getter.
+        /// </remarks>
+#pragma warning disable CA1707 // Identifiers should not contain underscores
+#pragma warning disable SA1300 // Element should begin with upper-case letter
+#pragma warning disable IDE1006 // Naming Styles
+        public static bool get_IsHeldByCurrentThread(SystemThreading.Lock lockObj)
+#pragma warning restore IDE1006 // Naming Styles
+#pragma warning restore SA1300 // Element should begin with upper-case letter
+#pragma warning restore CA1707 // Identifiers should not contain underscores
         {
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&

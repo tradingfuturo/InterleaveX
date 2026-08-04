@@ -1,5 +1,9 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+//
+// Modifications Copyright (c) 2026 pipflow.com <https://pipflow.com>
+// Modifications are licensed under the GNU General Public License v3.0 or
+// later. See LICENSE-GPL for the full text.
 
 using System;
 using System.Runtime.Serialization;
@@ -295,10 +299,10 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// Ensures that the dictionary can hold up to a specified number of entries without
         /// any further expansion of its backing storage.
         /// </summary>
-        public static void EnsureCapacity(SystemGenerics.Dictionary<TKey, TValue> instance, int size)
+        public static int EnsureCapacity(SystemGenerics.Dictionary<TKey, TValue> instance, int capacity)
         {
             using var scope = Enter(instance, true);
-            instance.EnsureCapacity(size);
+            return instance.EnsureCapacity(capacity);
         }
 
         /// <summary>
@@ -324,10 +328,10 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Generic
         /// Sets the capacity of this dictionary to hold up a specified number of entries
         /// without any further expansion of its backing storage.
         /// </summary>
-        public static void TrimExcess(SystemGenerics.Dictionary<TKey, TValue> instance, int size)
+        public static void TrimExcess(SystemGenerics.Dictionary<TKey, TValue> instance, int capacity)
         {
             using var scope = Enter(instance, true);
-            instance.TrimExcess(size);
+            instance.TrimExcess(capacity);
         }
 
         /// <summary>
