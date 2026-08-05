@@ -39,6 +39,18 @@ namespace Microsoft.Coyote.Runtime
         PausedOnAllResources,
 
         /// <summary>
+        /// The operation is paused until it gets signaled by any awaited resource OR its delay completes,
+        /// whichever happens first. This is what a resource wait with a finite timeout is: it can be woken
+        /// by a signal, and it can also give up on its own.
+        /// <para>SELF-RESOLVING, exactly like <see cref="PausedOnDelay"/>: the scheduler decrements its
+        /// delay each step and enables it once the delay elapses or nothing else can run. It is therefore
+        /// deliberately excluded from the deadlock detector's paused lists — an operation that will
+        /// re-enable itself is not deadlocked, and listing it there would report a bug where the real
+        /// program would simply have timed out.</para>
+        /// </summary>
+        PausedOnResourceOrDelay,
+
+        /// <summary>
         /// The operation is paused until receives an event.
         /// </summary>
         PausedOnReceive,

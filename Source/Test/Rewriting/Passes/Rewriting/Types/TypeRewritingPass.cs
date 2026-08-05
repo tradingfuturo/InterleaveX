@@ -109,6 +109,15 @@ namespace Microsoft.Coyote.Rewriting
             this.KnownTypes[NameCache.EventWaitHandle] = typeof(Types.Threading.EventWaitHandle);
             this.KnownTypes[NameCache.WaitHandle] = typeof(Types.Threading.WaitHandle);
 
+            // BlockingCollection is registered HERE, unconditionally, rather than with the concurrent
+            // collections below. It lives in the System.Collections.Concurrent namespace, but it is a
+            // synchronization primitive: its adds and takes park the calling thread. Leaving that park
+            // unmodelled makes it invisible to the scheduler, so no scheduling step happens and the
+            // periodic hang monitor reports a deadlock on every schedule. Gating that behind the
+            // concurrent-collections option — which exists to add data-race scheduling points to lock-free
+            // collections, a different purpose — would leave the DEFAULT configuration hanging.
+            this.KnownTypes[NameCache.BlockingCollection] = typeof(Types.Collections.Concurrent.BlockingCollection<>);
+
 #if NET
             // Populate the map with the known channel factory. Only the static 'Channel' factory is
             // redirected; the returned ControlledChannel<T> derives from the abstract Channel<T>, so every

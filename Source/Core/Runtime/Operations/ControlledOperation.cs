@@ -181,6 +181,7 @@ namespace Microsoft.Coyote.Runtime
             this.Status is OperationStatus.PausedOnDelay ||
             this.Status is OperationStatus.PausedOnAnyResource ||
             this.Status is OperationStatus.PausedOnAllResources ||
+            this.Status is OperationStatus.PausedOnResourceOrDelay ||
             this.Status is OperationStatus.PausedOnReceive;
 
         /// <summary>
@@ -278,6 +279,36 @@ namespace Microsoft.Coyote.Runtime
         }
 
         /// <summary>
+        /// Pauses this operation until any of the specified resources is released OR the delay completes,
+        /// whichever happens first. This is a resource wait with a finite timeout: it can be signaled, and
+        /// it can also give up on its own.
+        /// <para><paramref name="delay"/> is an ABSTRACT step budget, not milliseconds — the caller draws it
+        /// from <c>Configuration.TimeoutDelay</c> via a nondeterministic choice, the same way
+        /// <c>Thread.Sleep</c> and <c>Task.Delay</c> do. A budget of 0 means the timeout has already
+        /// elapsed, so the caller must not pause at all.</para>
+        /// </summary>
+        internal void PauseWithResourcesOrDelay(IEnumerable<Guid> resourceIds, uint delay)
+        {
+            this.Status = OperationStatus.PausedOnResourceOrDelay;
+            this.AwaitedResources.UnionWith(resourceIds);
+            this.DelayedStepsCount = delay > int.MaxValue ? int.MaxValue : (int)delay;
+        }
+
+        /// <summary>
+        /// Enables this operation because its delay elapsed, rather than because a resource signaled it.
+        /// <para>Clearing the awaited resources is what distinguishes the two wakes for a
+        /// <see cref="OperationStatus.PausedOnResourceOrDelay"/> waiter: a resource wake leaves the
+        /// remaining budget intact, while this one zeroes it, so the waiter can tell a signal from a
+        /// timeout without the runtime having to report a reason.</para>
+        /// </summary>
+        internal void EnableAfterDelay()
+        {
+            this.DelayedStepsCount = 0;
+            this.AwaitedResources.Clear();
+            this.Status = OperationStatus.Enabled;
+        }
+
+        /// <summary>
         /// Tries to enable this operation if its dependency has been resolved.
         /// </summary>
         internal bool TryEnable()
@@ -300,8 +331,16 @@ namespace Microsoft.Coyote.Runtime
             bool enabled = false;
             if (this.AwaitedResources.Contains(resourceId))
             {
-                if (this.Status is OperationStatus.PausedOnAnyResource)
+                if (this.Status is OperationStatus.PausedOnAnyResource ||
+                    this.Status is OperationStatus.PausedOnResourceOrDelay)
                 {
+                    // PausedOnResourceOrDelay is enabled by ANY resource, like PausedOnAnyResource — but its
+                    // DelayedStepsCount is deliberately LEFT ALONE. That remaining budget is how a timed
+                    // waiter knows it was woken by a signal rather than by its timeout, and how much of the
+                    // timeout it has left. Zeroing it here would silently restart the timeout every time a
+                    // waiter is woken and then loses the item to someone else, turning a finite wait into an
+                    // unbounded one. The delay path in CoyoteRuntime.TryEnableOperation is the only place
+                    // that clears it, precisely because there the timeout really has elapsed.
                     this.AwaitedResources.Clear();
                     this.Status = OperationStatus.Enabled;
                     enabled = true;

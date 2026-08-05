@@ -3,7 +3,7 @@ message: "InterleaveX is a fork of Microsoft Coyote. If you cite this software, 
 authors:
 - name: "InterleaveX maintainers"
 title: "InterleaveX (a fork of Microsoft Coyote)"
-version: 1.8.0
+version: 1.8.1
 date-released: 2026-07-26
 url: "https://github.com/tradingfuturo/interleavex"
 references:

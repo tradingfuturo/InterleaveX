@@ -99,6 +99,7 @@ namespace Microsoft.Coyote.Rewriting.Types
         internal static string GenericDictionary { get; } = typeof(SystemGenericCollections.Dictionary<,>).FullName;
         internal static string GenericHashSet { get; } = typeof(SystemGenericCollections.HashSet<>).FullName;
 
+        internal static string BlockingCollection { get; } = typeof(SystemConcurrentCollections.BlockingCollection<>).FullName;
         internal static string ConcurrentBag { get; } = typeof(SystemConcurrentCollections.ConcurrentBag<>).FullName;
         internal static string ConcurrentDictionary { get; } = typeof(SystemConcurrentCollections.ConcurrentDictionary<,>).FullName;
         internal static string ConcurrentQueue { get; } = typeof(SystemConcurrentCollections.ConcurrentQueue<>).FullName;

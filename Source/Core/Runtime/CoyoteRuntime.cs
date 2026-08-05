@@ -2074,7 +2074,8 @@ namespace Microsoft.Coyote.Runtime
         /// <param name="isAnyOperationEnabled">True if some operation is currently enabled, else false.</param>
         private static bool TryEnableOperation(ControlledOperation op, bool isAnyOperationEnabled)
         {
-            if (op.Status is OperationStatus.PausedOnDelay)
+            if (op.Status is OperationStatus.PausedOnDelay ||
+                op.Status is OperationStatus.PausedOnResourceOrDelay)
             {
                 if (op.DelayedStepsCount > 0)
                 {
@@ -2083,10 +2084,16 @@ namespace Microsoft.Coyote.Runtime
 
                 // The operation is delayed, so it is enabled either if the delay completes
                 // or if no other operation is enabled.
+                //
+                // PausedOnResourceOrDelay takes the SAME path: it is a resource wait carrying a finite
+                // timeout, so reaching here means the timeout fired rather than a signal arriving. Clearing
+                // the awaited resources is what tells the waiter apart from a resource wake — it observes a
+                // zero budget and reports a timeout. The "no other operation is enabled" escape is what
+                // makes a real timeout fire instead of the program deadlocking, and it is also what keeps
+                // the scheduler's step count advancing so the periodic hang monitor stays satisfied.
                 if (op.DelayedStepsCount is 0 || !isAnyOperationEnabled)
                 {
-                    op.DelayedStepsCount = 0;
-                    op.Status = OperationStatus.Enabled;
+                    op.EnableAfterDelay();
                     return true;
                 }
 
@@ -2644,6 +2651,12 @@ namespace Microsoft.Coyote.Runtime
                 return;
             }
 
+            // OperationStatus.PausedOnDelay and OperationStatus.PausedOnResourceOrDelay are deliberately
+            // ABSENT from every list below, and must stay absent. Both carry a delay that
+            // TryEnableOperation decrements each step and that self-enables once it elapses or once nothing
+            // else can run, so such an operation is never deadlocked — it is waiting for a timeout that is
+            // guaranteed to fire. Adding either here would report a bug on a program that, in reality,
+            // simply times out and carries on.
             var pausedOperations = ops.Where(op => op.Status is OperationStatus.Paused).ToList();
             var pausedOnResources = ops.Where(op =>
                 op.Status is OperationStatus.PausedOnAnyResource ||

@@ -299,7 +299,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         runtime.LogWriter.LogDebug(
                             "[coyote::debug] Operation {0} is waiting for '{1}' to get signaled on thread '{2}'.",
                             current.DebugInfo, this.DebugName, SystemThread.CurrentThread.ManagedThreadId);
-                        // TODO: consider introducing the notion of a PausedOnResourceOrDelay to model timeouts!
+                        // TODO: model the timeout here using OperationStatus.PausedOnResourceOrDelay, which
+                        // now exists (see ControlledOperation.PauseWithResourcesOrDelay). This wait still
+                        // treats any non-zero timeout as infinite; BlockingCollection shows the shape.
                         current.PauseWithResource(this.ResourceId);
                         this.PausedOperations.Add(current);
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
@@ -342,7 +344,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                             "[coyote::debug] Operation {0} is waiting for all 'WaitHandles' to get signaled on thread '{1}'.",
                             current.DebugInfo, SystemThread.CurrentThread.ManagedThreadId);
 
-                        // TODO: consider introducing the notion of a PausedOnResourceOrDelay to model timeouts!
+                        // TODO: model the timeout here using OperationStatus.PausedOnResourceOrDelay, which
+                        // now exists (see ControlledOperation.PauseWithResourcesOrDelay). This wait still
+                        // treats any non-zero timeout as infinite; BlockingCollection shows the shape.
                         var nonSignaled = resources.Where(r => !r.IsSignaled);
                         current.PauseWithResources(nonSignaled.Select(r => r.ResourceId), true);
                         foreach (Resource resource in nonSignaled)
@@ -395,7 +399,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
                         try
                         {
-                            // TODO: consider introducing the notion of a PausedOnResourceOrDelay to model timeouts!
+                            // TODO: model the timeout here using OperationStatus.PausedOnResourceOrDelay, which
+                        // now exists (see ControlledOperation.PauseWithResourcesOrDelay). This wait still
+                        // treats any non-zero timeout as infinite; BlockingCollection shows the shape.
                             current.PauseWithResources(resources.Select(r => r.ResourceId), false);
                             foreach (Resource resource in resources)
                             {

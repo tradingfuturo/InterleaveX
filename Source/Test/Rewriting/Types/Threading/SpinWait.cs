@@ -109,7 +109,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
             {
-                // TODO: consider introducing the notion of a PausedOnResourceOrDelay to model timeouts!
+                // TODO: model the timeout here using OperationStatus.PausedOnResourceOrDelay, which now
+                // exists (see ControlledOperation.PauseWithResourcesOrDelay). This wait still treats any
+                // non-zero timeout as infinite; BlockingCollection shows the shape.
                 runtime.PauseOperationUntil(current, condition);
                 return true;
             }
@@ -128,7 +130,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
             {
-                // TODO: consider introducing the notion of a PausedOnResourceOrDelay to model timeouts!
+                // TODO: model the timeout here using OperationStatus.PausedOnResourceOrDelay, which now
+                // exists (see ControlledOperation.PauseWithResourcesOrDelay). This wait still treats any
+                // non-zero timeout as infinite; BlockingCollection shows the shape.
                 runtime.PauseOperationUntil(current, condition);
                 return true;
             }

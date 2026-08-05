@@ -15,7 +15,34 @@ concurrency defects across our codebase.
 
 PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
 
-### v1.8.0 (InterleaveX)
+### v1.8.1 (InterleaveX)
+- `System.Collections.Concurrent.BlockingCollection<T>` is now modelled, so its adds
+  and takes are controlled pauses rather than invisible framework parks. It lives in
+  the concurrent-collections namespace but is a synchronization primitive, so it is
+  registered UNCONDITIONALLY alongside `SemaphoreSlim` rather than behind
+  `IsRewritingConcurrentCollections` — gating it would have left the default
+  configuration hanging. A thread parked in the real type still looks `Enabled` to
+  the scheduler while its thread has left for native code, so no scheduling step
+  occurs and the PERIODIC hang monitor reports "Potential deadlock or hang detected"
+  on every schedule; the status-based deadlock detector was never the mechanism.
+  Storage is delegated to the base type through its non-blocking operations only, so
+  bounded-capacity accounting, ordering, completion timing and exception behaviour
+  remain the BCL's. The take-any and add-any statics are modelled separately because
+  their contracts differ: take-any scans in index order and skips a completed input,
+  while add-any prefers an unbounded collection through its fast path and throws if
+  ANY input has completed adding.
+- Added the `PausedOnResourceOrDelay` operation status, so a resource wait can carry
+  a finite timeout. Previously `PauseWithDelay` and `PauseWithResources` were
+  mutually exclusive and a timed wait had to be modelled as one or the other, which
+  is what the long-standing "consider introducing the notion of a
+  PausedOnResourceOrDelay to model timeouts" TODO in `WaitHandle` and `SpinWait`
+  refers to. Like `PausedOnDelay` it is self-resolving — the scheduler decrements its
+  delay and enables it once that elapses or once nothing else can run — and is
+  therefore deliberately excluded from the deadlock detector's paused lists. A
+  resource wake preserves the remaining budget while a delay wake zeroes it, which is
+  how a waiter tells a signal from a timeout without the runtime reporting a reason,
+  and what stops a waiter that is repeatedly woken and then beaten to the item from
+  restarting its timeout and waiting forever.
 - Whether the output directory folds case is read from that directory rather than
   inferred from one above it. Windows keeps case sensitivity per directory, so an
   insensitive parent can hold a sensitive child, and the probe flipped the case of
