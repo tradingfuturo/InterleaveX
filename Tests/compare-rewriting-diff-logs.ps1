@@ -78,12 +78,31 @@ $targets = [ordered]@{
 # leaves it unchanged -- adding a string to a frozen list in the rewriting tests did -- while adding
 # a method moves it. A mismatch is therefore about what rewriting does, which is why it is worth
 # checking that the projects the change did not add methods to are all still unchanged.
+#
+# All five rebaselined, for two separate reasons that are worth keeping apart.
+#
+# The three this change adds no methods to -- 'rewriting-helpers', 'actors' and 'actors-testing' --
+# had been stale since 'Model BlockingCollection, and let a resource wait carry a timeout', which
+# moved injected IL across every rewritten assembly through the runtime and rewriting-pass edits it
+# carries, and did not regenerate these. Their new values were reproduced twice and identically:
+# once from that commit's tree with nothing else applied, and once with the change shipping here on
+# top. Three assemblies landing on the same hash from both trees is what says this change moves no
+# injected IL of its own, which is the property this check exists to report.
+#
+# 'rewriting' and 'testing' moved a second time on top of that, because the change shipping with
+# this adds test methods to both: the red tests for the controlled BlockingCollection's lock
+# discipline, its uncontrolled callers, its runtime-ownership checks and its unbounded capacity, and
+# two more asserting that the completeness gate rejects a replacement whose return type or parameter
+# name would stop the rewriter ever matching it. New test methods are new IL to diff. Their
+# pre-change values at that commit were 7E2B7C610C7275A257FB4F9A1708D82C3CE4F4B4B60C807E586805DC1C8EA9AD
+# and FE3C6D2916CC379F363568AAC0FB1FCBD6B25C6D03FB505A7F09173DBAFBCDC6, which is how the two causes
+# were told apart. All values reproduced from a deleted 'obj' and 'bin'.
 $expected_hashes = [ordered]@{
-    "rewriting" = "6B1D1A07F149880EE7667F0B4676C2F241AF15887AB3CB363A288DCA6764D374"
-    "rewriting-helpers" = "6C25B8F64593309BD37E258A2C59683FB56B63B281AA20A9B41015D2BFDD2D85"
-    "testing" = "294902AE22C9E30EBDEA231984C29C81D883A146998D2E82514A84B56FE72865"
-    "actors" = "531E0CC7818CC9B5B23C2DACF1B0DF4570C13BD45DB018E964AEE28E08179FF9"
-    "actors-testing" = "8A3F2C008BB108C5C587DECF3205B10817E316D489CB670332119C460460AC4D"
+    "rewriting" = "48092595B5510BFF8834F9B0991057DAC66F2F7C2849541503AEDB2422892F8B"
+    "rewriting-helpers" = "2D54DD5023184C89BCCDCE5BC445B2AFCDF9F5CCF685CAD6F81DE1EC3BA4A7B2"
+    "testing" = "5C5583AF6E39D57D064EB85FA7648FB711A1A4BDEF54CC88B3D695B4931AC053"
+    "actors" = "50B2A95CFD2D066CC848A9DF42B444C75C90C65A379247A36F8D82BADE41A725"
+    "actors-testing" = "A9DC1841549EA73A47B274528C8908EC92598A965F7E3CBFB168954042CEC53E"
 }
 
 Write-Comment -prefix "." -text "Comparing the test rewriting diff logs" -color "yellow"
