@@ -55,10 +55,12 @@ namespace Microsoft.Coyote.Rewriting.Tests
 
             var missing = new List<string>();
 
-            // Constructors are rewritten to a static 'Create' whose parameters match the constructor's.
+            // Constructors are rewritten to a static 'Create' whose parameters match the constructor's. The
+            // expected return type has to be supplied rather than read off the member: a constructor's own
+            // return type is void, while its replacement hands back the constructed collection.
             foreach (ConstructorInfo ctor in real.GetConstructors(BindingFlags.Public | BindingFlags.Instance))
             {
-                if (!HasMatchingStatic(mock, "Create", ctor.GetParameters(), instanceFirst: false))
+                if (!HasMatchingStatic(mock, "Create", ctor.GetParameters(), real, instanceFirst: false))
                 {
                     missing.Add($".ctor({DescribeParameters(ctor.GetParameters())})");
                 }
@@ -79,7 +81,8 @@ namespace Microsoft.Coyote.Rewriting.Tests
                     continue;
                 }
 
-                if (!HasMatchingStatic(mock, method.Name, method.GetParameters(), instanceFirst: true))
+                if (!HasMatchingStatic(mock, method.Name, method.GetParameters(), method.ReturnType,
+                    instanceFirst: true))
                 {
                     missing.Add($"{method.Name}({DescribeParameters(method.GetParameters())})");
                 }
@@ -94,7 +97,8 @@ namespace Microsoft.Coyote.Rewriting.Tests
                     continue;
                 }
 
-                if (!HasMatchingStatic(mock, method.Name, method.GetParameters(), instanceFirst: false))
+                if (!HasMatchingStatic(mock, method.Name, method.GetParameters(), method.ReturnType,
+                    instanceFirst: false))
                 {
                     missing.Add($"static {method.Name}({DescribeParameters(method.GetParameters())})");
                 }
@@ -128,11 +132,85 @@ namespace Microsoft.Coyote.Rewriting.Tests
                 string.Join(", ", stale));
         }
 
-        private static bool HasMatchingStatic(Type mock, string name, ParameterInfo[] parameters, bool instanceFirst)
+        /// <summary>
+        /// The gate is only worth its name if it rejects what the REWRITER rejects. The rewriter matches a
+        /// replacement on its return type as well as its parameters
+        /// (<c>CheckMethodSignaturesMatch</c>), and a replacement it declines to match is not an error —
+        /// the call site is simply left alone, which is the exact silent hole this file exists to close.
+        /// So an interceptor with the wrong return type is every bit as invisible as a missing one, and a
+        /// gate that overlooks it reports full coverage over a member that is never rewritten.
+        /// </summary>
+        [Fact(Timeout = 15000)]
+        public void TestGateRejectsAnInterceptorWithTheWrongReturnType()
+        {
+            MethodInfo real = typeof(BlockingCollection<int>).GetProperty(nameof(BlockingCollection<int>.Count))
+                .GetGetMethod();
+
+            Assert.False(
+                HasMatchingStatic(typeof(WrongReturnTypeMock), real.Name, real.GetParameters(),
+                    real.ReturnType, instanceFirst: true),
+                "The gate accepted an interceptor whose return type does not match the member it replaces, so " +
+                "a call to that member would be left unrewritten with the gate still green.");
+        }
+
+        /// <summary>
+        /// The same hole on the other axis. The rewriter compares parameter NAMES, not just their types
+        /// (<c>CheckMethodSignaturesMatch</c>), so renaming a parameter in a replacement is enough to stop
+        /// it ever being found.
+        /// </summary>
+        [Fact(Timeout = 15000)]
+        public void TestGateRejectsAnInterceptorWithARenamedParameter()
+        {
+            MethodInfo real = typeof(BlockingCollection<int>).GetMethod(
+                nameof(BlockingCollection<int>.TryAdd), new[] { typeof(int) });
+
+            Assert.False(
+                HasMatchingStatic(typeof(RenamedParameterMock), real.Name, real.GetParameters(),
+                    real.ReturnType, instanceFirst: true),
+                "The gate accepted an interceptor whose parameter name differs from the member it replaces, so " +
+                "a call to that member would be left unrewritten with the gate still green.");
+        }
+
+        /// <summary>
+        /// The real <see cref="BlockingCollection{T}.Count"/> getter returns an <see cref="int"/>.
+        /// </summary>
+        private static class WrongReturnTypeMock
+        {
+#pragma warning disable CA1707 // Identifiers should not contain underscores
+#pragma warning disable SA1300 // Element should begin with upper-case letter
+#pragma warning disable IDE1006 // Naming Styles
+            public static bool get_Count(BlockingCollection<int> instance) => instance.Count > 0;
+#pragma warning restore IDE1006 // Naming Styles
+#pragma warning restore SA1300 // Element should begin with upper-case letter
+#pragma warning restore CA1707 // Identifiers should not contain underscores
+        }
+
+        /// <summary>
+        /// The BCL names this parameter <c>item</c>.
+        /// </summary>
+        private static class RenamedParameterMock
+        {
+            public static bool TryAdd(BlockingCollection<int> instance, int value) => instance.TryAdd(value);
+        }
+
+        /// <summary>
+        /// Mirrors what the rewriter's own <c>CheckMethodSignaturesMatch</c> requires of a replacement:
+        /// the name, the return type, and the parameters by both type AND name.
+        /// </summary>
+        /// <remarks>
+        /// The last two are not pedantry. A replacement that differs from the member it replaces in its
+        /// return type or in a parameter name is simply never matched, and an unmatched call site is left
+        /// calling the real, blocking BCL method with no error and no warning — the same silent hole as a
+        /// replacement that was never written. A gate that ignored either would report full coverage over
+        /// a member that is never actually rewritten, which is the one failure it exists to prevent.
+        /// </remarks>
+        private static bool HasMatchingStatic(Type mock, string name, ParameterInfo[] parameters,
+            Type expectedReturnType, bool instanceFirst)
         {
             foreach (MethodInfo candidate in mock.GetMethods(BindingFlags.Public | BindingFlags.Static))
             {
-                if (!string.Equals(candidate.Name, name, StringComparison.Ordinal))
+                if (!string.Equals(candidate.Name, name, StringComparison.Ordinal) ||
+                    !SameShape(candidate.ReturnType, expectedReturnType))
                 {
                     continue;
                 }
@@ -147,7 +225,9 @@ namespace Microsoft.Coyote.Rewriting.Tests
                 bool match = true;
                 for (int idx = 0; idx < parameters.Length; ++idx)
                 {
-                    if (!SameShape(candidateParameters[idx + offset].ParameterType, parameters[idx].ParameterType))
+                    ParameterInfo candidateParameter = candidateParameters[idx + offset];
+                    if (!SameShape(candidateParameter.ParameterType, parameters[idx].ParameterType) ||
+                        !string.Equals(candidateParameter.Name, parameters[idx].Name, StringComparison.Ordinal))
                     {
                         match = false;
                         break;

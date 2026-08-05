@@ -4,10 +4,13 @@
 // Public License v3.0 or later. See LICENSE-GPL for the full text.
 
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Coyote.Rewriting;
+using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Specifications;
 using Xunit;
 using Xunit.Abstractions;
@@ -55,6 +58,29 @@ namespace Microsoft.Coyote.BugFinding.Tests
                         "BlockingCollection constructor was not redirected to the controlled mock: '{0}'.",
                         name);
                 }
+            });
+        }
+
+        // The BCL reports an unbounded collection as -1, NOT as a very large bound. The distinction is not
+        // cosmetic: code that branches on BoundedCapacity to decide whether back-pressure exists reads
+        // int.MaxValue as "bounded, enormous" and takes the wrong branch. The bounded case is asserted
+        // alongside it so that a fix cannot satisfy this by reporting -1 for everything.
+        [Fact(Timeout = 5000)]
+        public void TestUnboundedCollectionReportsNoBound()
+        {
+            this.Test(() =>
+            {
+                var parameterless = new BlockingCollection<int>();
+                var overBackingStore = new BlockingCollection<int>(new ConcurrentQueue<int>());
+                var bounded = new BlockingCollection<int>(4);
+
+                Specification.Assert(parameterless.BoundedCapacity is -1,
+                    "An unbounded collection reported a bound of {0} instead of -1.", parameterless.BoundedCapacity);
+                Specification.Assert(overBackingStore.BoundedCapacity is -1,
+                    "An unbounded collection over a backing store reported a bound of {0} instead of -1.",
+                    overBackingStore.BoundedCapacity);
+                Specification.Assert(bounded.BoundedCapacity is 4,
+                    "A bounded collection reported a bound of {0} instead of 4.", bounded.BoundedCapacity);
             });
         }
 
@@ -592,6 +618,282 @@ namespace Microsoft.Coyote.BugFinding.Tests
                     "The periodic hang monitor fired, which means the wait was never modelled: {0}", e);
             },
             replay: true);
+        }
+
+        // THE LOCK DISCIPLINE. Every other modelled primitive mutates its waiter set and calls
+        // ControlledOperation.TryEnable inside the runtime's synchronized section — WaitHandle.SignalNext
+        // and SignalAll say so in as many words, and SemaphoreSlim.Exit holds the section across the whole
+        // release. Neither the operation's Status nor its awaited-resource set is volatile or interlocked,
+        // so the section is the only thing that orders them against the scheduler and against the periodic
+        // deadlock monitor, which reads that state from its own thread.
+        //
+        // This asserts the invariant directly rather than trying to win the race that violating it opens,
+        // which is what makes it deterministic. The backing store is the observation point because it is
+        // the one piece of test code that runs INSIDE a controlled add or take, immediately before the
+        // signal that follows it.
+        //
+        // It also stands in for a defect that has no reproducer of its own: the failed immediate attempt
+        // and the waiter registration currently sit in different critical sections, so a completion or a
+        // competing take that lands between them signals an empty waiter set and parks the operation
+        // forever. That window contains no user-reachable code — no scheduling point, no callback, not
+        // even a rewritten call — so only an uncontrolled thread can land in it, and a test that has to
+        // race for it could not tell the fix from its absence. Holding one section across the whole
+        // attempt-register-park cycle is what closes it, and this test is what pins that section down.
+        [Fact(Timeout = 5000)]
+        public void TestImmediateOperationsHoldTheRuntimeLock()
+        {
+            this.Test(() =>
+            {
+                var store = new ObservingStore();
+                var collection = new BlockingCollection<int>(store, 4);
+
+                collection.Add(1);
+                collection.TryTake(out int _, 0);
+
+                Specification.Assert(store.WasSynchronizedDuringAdd is true,
+                    "The add mutated storage outside the runtime's synchronized section, so the signal that " +
+                    "follows it is unsynchronized too.");
+                Specification.Assert(store.WasSynchronizedDuringTake is true,
+                    "The take mutated storage outside the runtime's synchronized section, so the signal that " +
+                    "follows it is unsynchronized too.");
+            });
+        }
+
+        // THE UNCONTROLLED BLOCKING CALLER, take side. A timer callback runs on a thread the scheduler does
+        // not control, but with the execution context flowed — so the runtime it resolves IS this test's
+        // runtime, the ownership check passes, and the wait reaches the point where it discovers it has no
+        // operation to park. Partial control is allowed here, which is the configuration in which the
+        // runtime explicitly says to "stay attached and let the caller finish the operation".
+        //
+        // The collection is open and empty, so the honest outcomes are "block until an item arrives" or
+        // "report that this thread cannot be parked". Reporting that the collection has been marked
+        // complete is neither: it is a false statement about program state, handed to the caller as the
+        // BCL's own exception type.
+        [Fact(Timeout = 10000)]
+        public void TestUncontrolledTakeDoesNotFabricateCompletion()
+        {
+            this.Test(async () =>
+            {
+                var collection = new BlockingCollection<int>(4);
+                var reached = new TaskCompletionSource<bool>();
+                var finished = new TaskCompletionSource<bool>();
+                Exception failure = null;
+                int taken = -1;
+
+                using var timer = new Timer(
+                    _ =>
+                    {
+                        reached.TrySetResult(true);
+                        try
+                        {
+                            taken = collection.Take();
+                        }
+                        catch (Exception ex)
+                        {
+                            failure = ex;
+                        }
+
+                        finished.TrySetResult(true);
+                    }, null, 1, Timeout.Infinite);
+
+                await reached.Task;
+                collection.Add(7);
+                await finished.Task;
+
+                Specification.Assert(!collection.IsAddingCompleted,
+                    "The collection was never marked complete, so nothing may claim that it was.");
+                Specification.Assert(failure is null,
+                    "An uncontrolled take on an open collection threw '{0}'.", failure?.Message);
+                Specification.Assert(taken is 7, "The uncontrolled take returned {0} instead of 7.", taken);
+            },
+            configuration: this.GetConfiguration()
+                .WithPartiallyControlledConcurrencyAllowed()
+                .WithTestingIterations(10));
+        }
+
+        // The add side of the same defect, and the more damaging one: the take at least fails loudly, while
+        // this one succeeds. Add is TryAdd with an infinite timeout and its result is discarded, on the
+        // stated grounds that it "either succeeds or throws" — which stops being true the moment the wait
+        // can fail without either. The item is then gone, and nothing anywhere says so.
+        [Fact(Timeout = 10000)]
+        public void TestUncontrolledAddDoesNotSilentlyDropAnItem()
+        {
+            this.Test(async () =>
+            {
+                var collection = new BlockingCollection<int>(1);
+                collection.Add(1);
+
+                var reached = new TaskCompletionSource<bool>();
+                var finished = new TaskCompletionSource<bool>();
+
+                using var timer = new Timer(
+                    _ =>
+                    {
+                        reached.TrySetResult(true);
+                        collection.Add(2);
+                        finished.TrySetResult(true);
+                    }, null, 1, Timeout.Infinite);
+
+                // Freeing the slot is what lets a blocking add complete; the callback is already committed
+                // to its add by then.
+                await reached.Task;
+                int first = collection.Take();
+                await finished.Task;
+
+                // A ZERO timeout, deliberately: the callback has already returned from its add, so a correct
+                // implementation has the item in hand and an incorrect one never will. Waiting for it
+                // instead would turn a dropped item into a hang report, which says far less than the
+                // assertion below.
+                bool tookSecond = collection.TryTake(out int second, 0);
+
+                Specification.Assert(first is 1, "Took {0} instead of the queued 1.", first);
+                Specification.Assert(tookSecond && second is 2,
+                    "The item added from an uncontrolled thread was silently dropped.");
+            },
+            configuration: this.GetConfiguration()
+                .WithPartiallyControlledConcurrencyAllowed()
+                .WithTestingIterations(10));
+        }
+
+        /// <summary>
+        /// A collection that outlives the iteration that created it, which is what a process-lifetime
+        /// singleton amounts to.
+        /// </summary>
+        private static BlockingCollection<int> SharedCollection;
+
+        // THE OWNERSHIP CHECK, and everything it currently walks past. A wrapper carries the id of the
+        // runtime that built it, and touching it from a later iteration is reported — but only from the
+        // handful of members that bothered to ask. Every member below reaches the same wrapper, holding
+        // waiter sets and resource ids belonging to a runtime that no longer exists.
+        //
+        // The last case is the one that is not about a forgotten call at all: the take-any and add-any
+        // paths do ask, but they ask 'wrappers[0]' and then use the answer for the whole array, so a stale
+        // collection is invisible for as long as it is not the first element.
+        [Theory(Timeout = 10000)]
+        [InlineData("Count")]
+        [InlineData("BoundedCapacity")]
+        [InlineData("IsAddingCompleted")]
+        [InlineData("IsCompleted")]
+        [InlineData("CompleteAdding")]
+        [InlineData("CopyTo")]
+        [InlineData("ToArray")]
+        [InlineData("Dispose")]
+        [InlineData("TakeFromAnyAtIndexOne")]
+        public void TestStaleCollectionIsDetected(string operation)
+        {
+            SharedCollection = null;
+            try
+            {
+                this.TestWithError(() =>
+                {
+                    if (SharedCollection is null)
+                    {
+                        // The first iteration only creates it. Everything below runs against a wrapper
+                        // built by a runtime that has since been torn down.
+                        SharedCollection = new BlockingCollection<int>(4);
+                        return;
+                    }
+
+                    BlockingCollection<int> stale = SharedCollection;
+                    switch (operation)
+                    {
+                        case "Count":
+                            _ = stale.Count;
+                            break;
+                        case "BoundedCapacity":
+                            _ = stale.BoundedCapacity;
+                            break;
+                        case "IsAddingCompleted":
+                            _ = stale.IsAddingCompleted;
+                            break;
+                        case "IsCompleted":
+                            _ = stale.IsCompleted;
+                            break;
+                        case "CompleteAdding":
+                            stale.CompleteAdding();
+                            break;
+                        case "CopyTo":
+                            stale.CopyTo(new int[4], 0);
+                            break;
+                        case "ToArray":
+                            _ = stale.ToArray();
+                            break;
+                        case "Dispose":
+                            stale.Dispose();
+                            break;
+                        case "TakeFromAnyAtIndexOne":
+                            var fresh = new BlockingCollection<int>(4);
+                            BlockingCollection<int>.TryTakeFromAny(new[] { fresh, stale }, out int _, 0);
+                            break;
+                        default:
+                            throw new ArgumentOutOfRangeException(nameof(operation));
+                    }
+                },
+                configuration: this.GetConfiguration().WithTestingIterations(2),
+                errorChecker: (e) =>
+                {
+                    Assert.Contains("was created in a previous test iteration", e, StringComparison.Ordinal);
+                });
+            }
+            finally
+            {
+                SharedCollection = null;
+            }
+        }
+
+        /// <summary>
+        /// A backing store that records whether the runtime lock was held when the controlled collection
+        /// reached it.
+        /// </summary>
+        /// <remarks>
+        /// Not rewritten: this measures the runtime state of the operation that called it, and
+        /// instrumenting it would add scheduling points and collection guards to the very window being
+        /// measured. The base type consults a backing store only on the paths that actually move an item,
+        /// so a recorded observation always corresponds to a real storage mutation.
+        /// </remarks>
+        [SkipRewriting("Observes runtime state from inside a controlled operation; rewriting it would perturb what it measures.")]
+        private sealed class ObservingStore : IProducerConsumerCollection<int>
+        {
+            private readonly Queue<int> Items = new Queue<int>();
+
+            internal bool? WasSynchronizedDuringAdd;
+            internal bool? WasSynchronizedDuringTake;
+
+            public int Count => this.Items.Count;
+
+            public bool IsSynchronized => false;
+
+            public object SyncRoot => this;
+
+            public bool TryAdd(int item)
+            {
+                this.WasSynchronizedDuringAdd ??= CoyoteRuntime.IsExecutionSynchronized;
+                this.Items.Enqueue(item);
+                return true;
+            }
+
+            public bool TryTake(out int item)
+            {
+                this.WasSynchronizedDuringTake ??= CoyoteRuntime.IsExecutionSynchronized;
+                if (this.Items.Count is 0)
+                {
+                    item = default;
+                    return false;
+                }
+
+                item = this.Items.Dequeue();
+                return true;
+            }
+
+            public void CopyTo(int[] array, int index) => this.Items.CopyTo(array, index);
+
+            public void CopyTo(Array array, int index) => ((ICollection)this.Items).CopyTo(array, index);
+
+            public int[] ToArray() => this.Items.ToArray();
+
+            public IEnumerator<int> GetEnumerator() => this.Items.GetEnumerator();
+
+            IEnumerator IEnumerable.GetEnumerator() => this.Items.GetEnumerator();
         }
     }
 }
