@@ -108,6 +108,13 @@ namespace Microsoft.Coyote.Rewriting
             this.KnownTypes[NameCache.ManualResetEvent] = typeof(Types.Threading.ManualResetEvent);
             this.KnownTypes[NameCache.EventWaitHandle] = typeof(Types.Threading.EventWaitHandle);
             this.KnownTypes[NameCache.WaitHandle] = typeof(Types.Threading.WaitHandle);
+#if NET
+            // A periodic timer is a synchronization primitive as much as a clock: a loop driven by
+            // WaitForNextTickAsync only advances when the tick arrives, and an unmodelled tick arrives
+            // from a thread the scheduler has no record of, so the loop is never interleaved with
+            // anything and a test over it explores nothing.
+            this.KnownTypes[NameCache.PeriodicTimer] = typeof(Types.Threading.PeriodicTimer);
+#endif
 
             // BlockingCollection is registered HERE, unconditionally, rather than with the concurrent
             // collections below. It lives in the System.Collections.Concurrent namespace, but it is a
@@ -275,7 +282,17 @@ namespace Microsoft.Coyote.Rewriting
         /// <summary>
         /// Checks if the specified type is a supported type.
         /// </summary>
-        protected virtual bool IsSupportedType(TypeDefinition type) => false;
+        /// <remarks>
+        /// A type that has a model is rewritable wherever it lives. Every model used to be over a
+        /// <c>System.*</c> type, so <see cref="IsRewritableType"/> got there through
+        /// <see cref="Pass.IsSystemType"/> and this hook was never reached; a model over a type from
+        /// anywhere else — <see cref="Types.Hosting.BackgroundService"/> is the first — would otherwise
+        /// be refused here before the map is ever consulted, and the call site would be left alone with
+        /// no error and no warning. Registration in <see cref="KnownTypes"/> IS the decision that a type
+        /// is modelled, so nothing unregistered becomes eligible by this.
+        /// </remarks>
+        protected virtual bool IsSupportedType(TypeDefinition type) =>
+            type != null && this.KnownTypes.ContainsKey(type.FullName);
 
         /// <summary>
         /// Options for rewriting a type.
