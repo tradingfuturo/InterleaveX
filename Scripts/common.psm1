@@ -116,29 +116,50 @@ function Invoke-TestTargetShard([hashtable]$Context, [String]$Name, [String]$Pro
 
         if ($f -eq "net10.0" -or $f -eq "net9.0" -or $f -eq "net8.0") {
             $assembly_name = GetAssemblyName($target)
-            $command = [IO.Path]::Combine($Context.ScriptRoot, "..", "Tests", $Project, "bin", `
+            $references = @(
+                [IO.Path]::Combine($Context.ScriptRoot, "..", "Tests", $Project, "bin", $configuration, $f, "*.dll"),
+                [IO.Path]::Combine($Context.ScriptRoot, "..", "bin", $configuration, $f, "*.dll"),
+                [IO.Path]::Combine($Context.DotnetRuntimePath, $Context.RuntimeVersion, "*.dll"),
+                [IO.Path]::Combine($Context.AspnetRuntimePath, $Context.RuntimeVersion, "*.dll"))
+
+            $rewritten = [IO.Path]::Combine($Context.ScriptRoot, "..", "Tests", $Project, "bin", `
                 $configuration, $f, "$assembly_name.dll")
-            $command = $command + ' -r "' + [IO.Path]::Combine( `
-                $Context.ScriptRoot, "..", "Tests", $Project, "bin", $configuration, $f, "*.dll") + '"'
-            $command = $command + ' -r "' + [IO.Path]::Combine( `
-                $Context.ScriptRoot, "..", "bin", $configuration, $f, "*.dll") + '"'
-            $command = $command + ' -r "' + [IO.Path]::Combine( `
-                $Context.DotnetRuntimePath, $Context.RuntimeVersion, "*.dll") + '"'
-            $command = $command + ' -r "' + [IO.Path]::Combine( `
-                $Context.AspnetRuntimePath, $Context.RuntimeVersion, "*.dll") + '"'
-            # Exclude the compiler-generated <PrivateImplementationDetails>.InlineArrayAsReadOnlySpan
-            # helper. ilverify (10.0.0) raises a false-positive ReturnPtrToStack on it because it does
-            # not model [InlineArray] ref semantics. This helper is emitted by Roslyn for collection
-            # expressions and is unrelated to the binary rewriter: the identical error is present in the
-            # pre-rewrite (obj) assembly, so excluding it does not weaken corruption detection.
-            $command = $command + ' -e "InlineArrayAsReadOnlySpan"'
 
             [void]$output.AppendLine("... Verifying '$Project' ($f)")
-            $verified = Invoke-ToolCommandWithResult -tool $Context.Ilverify -cmd $command
+            $verified = Invoke-Ilverify -Context $Context -Assembly $rewritten -References $references
             [void]$output.AppendLine($verified.Output)
             if ($verified.ExitCode -ne 0) {
-                [void]$output.AppendLine("Error: found corrupted assembly rewriting in '$Project' ($f).")
-                return New-Result "ilverify" $verified.ExitCode
+                # What this gate is for is that REWRITING introduced no unverifiable IL, which is not
+                # the same thing as the assembly being verifiable. Roslyn emits IL that ECMA-335
+                # verification does not cover: a constant ReadOnlySpan<T> hands back a ref struct over
+                # RVA data, and ilverify (10.0.0) reports InitOnly, StackUnexpected and ReturnPtrToStack
+                # on every one of them (SpanDataRewritingTests exists to exercise exactly that pattern,
+                # so it cannot simply stop using it). Those errors are already in the compiler's own
+                # output, so they are SUBTRACTED rather than exempted by name: an exemption list goes
+                # stale in silence and takes the next member that starts failing for a real reason with
+                # it, whereas a baseline that is recomputed every run cannot drift from the compiler.
+                # It is also strictly stronger — it covers every member rather than the listed ones.
+                $original = [IO.Path]::Combine($Context.ScriptRoot, "..", "Tests", $Project, "obj", `
+                    $configuration, $f, "$assembly_name.dll")
+                $introduced = $verified.Errors
+                if (($verified.Errors.Count -gt 0) -and (Test-Path $original)) {
+                    $baseline = Invoke-Ilverify -Context $Context -Assembly $original -References $references
+                    $introduced = @($verified.Errors | Where-Object { $baseline.Errors -notcontains $_ })
+                    $inherited = $verified.Errors.Count - $introduced.Count
+                    [void]$output.AppendLine("... $inherited of $($verified.Errors.Count) error(s) are the " +
+                        "compiler's own and are present before rewriting.")
+                }
+
+                # An exit code with no error we could parse is the verifier itself failing, and that
+                # stays fatal: nothing has been shown about the rewrite either way.
+                if ($introduced.Count -gt 0 -or $verified.Errors.Count -eq 0) {
+                    [void]$output.AppendLine("Error: found corrupted assembly rewriting in '$Project' ($f).")
+                    foreach ($e in $introduced) {
+                        [void]$output.AppendLine("  introduced by rewriting: $e")
+                    }
+
+                    return New-Result "ilverify" $verified.ExitCode
+                }
             }
         }
 
@@ -236,6 +257,30 @@ function Invoke-ToolCommand([String]$tool, [String]$cmd, [String]$error_msg) {
 # console interleave into something no one can read, so each shard's output is held and printed as a
 # block once it finishes. Both streams are captured, because a tool that fails usually explains
 # itself on standard error.
+# Verifies one assembly and returns the errors it reported alongside the exit code.
+#
+# The error lines name the assembly they came from, and the two copies of an assembly this is used to
+# compare — the compiler's output in 'obj' and the rewritten one in 'bin' — differ only in that path,
+# so it is dropped before the sets are compared. Everything that identifies the error is kept: the
+# code, the member, the IL offset and the message.
+function Invoke-Ilverify([hashtable]$Context, [String]$Assembly, [String[]]$References) {
+    $cmd = '"' + $Assembly + '"'
+    foreach ($reference in $References) {
+        $cmd = $cmd + ' -r "' + $reference + '"'
+    }
+
+    $result = Invoke-ToolCommandWithResult -tool $Context.Ilverify -cmd $cmd
+    $errors = @($result.Output -split "`n" |
+        Where-Object { $_ -match '^\[IL\]: Error' } |
+        ForEach-Object { ($_ -replace '\[[^\]]*\.dll : ', '[').Trim() })
+
+    return [pscustomobject]@{
+        ExitCode = $result.ExitCode
+        Errors = $errors
+        Output = $result.Output
+    }
+}
+
 function Invoke-ToolCommandWithResult([String]$tool, [String]$cmd) {
     $output = Invoke-Expression "$tool $cmd 2>&1" | Out-String
     return [pscustomobject]@{

@@ -15,6 +15,56 @@ concurrency defects across our codebase.
 
 PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
 
+### v1.8.2 (InterleaveX)
+- `Microsoft.Extensions.Hosting.BackgroundService` is now modelled, so a hosted
+  service can be started and stopped under the scheduler. Its `StopAsync` waits on
+  `WhenAny(executeTask, Delay(Infinite, token))` inside
+  `Microsoft.Extensions.Hosting.Abstractions` — an assembly the rewriter does not
+  visit — so shutdown hung off a task the runtime had no record of, whose completion
+  in turn depended on a controlled one. The scheduler cannot resolve that cycle and
+  reported a deadlock on code that was merely stopping;
+  `WithPartiallyControlledConcurrencyAllowed` does not help, because polling resolves
+  a slow dependency and not a circular one. The practical effect was that a test
+  could not wait for a background service at all, so the whole `ExecuteAsync` half of
+  one went unexplored. The model owns the linked token source, the execute task and
+  the wait, which becomes a single dependency rather than a delay: `ScheduleDelay`
+  ignores its token and draws a finite budget from `Configuration.TimeoutDelay`, so
+  an "infinite" delay would resolve on its own and let shutdown walk past a loop that
+  is still running. A service that never observes its stopping token now leaves that
+  dependency unresolved, which is a hang and is reported as one.
+- The intercepted members are virtual, and a rewritten `callvirt` is re-emitted as a
+  static `call`, so a call through a variable typed as the base class would have
+  skipped a derived override. That shape is indistinguishable from the `base.X(...)`
+  call inside the override itself, so the model resolves the most derived slot and
+  re-dispatches behind a per-instance re-entrancy flag, cleared in a `finally` since
+  an override is under no obligation to call base.
+- `TypeRewritingPass.IsSupportedType` now answers from the known-types map instead of
+  always `false`. Every model until now was over a `System.*` type, so
+  `IsRewritableType` was satisfied by `IsSystemType` and this hook — which has existed
+  unused since upstream — was never reached. A model over a type from anywhere else
+  was refused before the map was consulted, and the call site was left alone with no
+  error and no warning. Registration in the map is what decides a type is modelled, so
+  nothing unregistered becomes eligible by this.
+- `Microsoft.Coyote.Test` now references `Microsoft.Extensions.Hosting.Abstractions`
+  per target framework. It is a package reference rather than a `FrameworkReference`,
+  matching `Microsoft.AspNetCore.Http.Abstractions`: this assembly is loaded by every
+  rewritten test host, and a framework reference would restrict where it can load.
+- The `ilverify` gate in `run-tests.ps1` now verifies the compiler's own output as well
+  and fails only on errors the REWRITE introduced. It was asserting that the rewritten
+  assembly is verifiable, which is a stronger claim than the one it exists to make and
+  not one Roslyn's output supports: a constant `ReadOnlySpan<T>` hands back a ref struct
+  over RVA data, and ilverify (10.0.0) reports `InitOnly`, `StackUnexpected` and
+  `ReturnPtrToStack` on every one. `SpanDataRewritingTests` exists to exercise exactly
+  that pattern — it is how the Cecil 0.11.4 RVA-alignment bug is pinned — so it cannot
+  stop using it, and the target had been failing at the `ilverify` stage before running
+  a single test. Subtracting a baseline replaces the `InlineArrayAsReadOnlySpan`
+  exemption rather than adding another beside it: an exemption list goes stale in
+  silence and takes the next member that starts failing for a real reason with it, and
+  it covers only the members someone thought to list. A verifier failure with no error
+  we could parse stays fatal, since nothing has been shown about the rewrite either way.
+  Rewriting turns out to REMOVE three errors in `Tests.Rewriting` (an async `MoveNext`
+  Roslyn emits unverifiably) and introduce none anywhere.
+
 ### v1.8.1 (InterleaveX)
 - `System.Collections.Concurrent.BlockingCollection<T>` is now modelled, so its adds
   and takes are controlled pauses rather than invisible framework parks. It lives in

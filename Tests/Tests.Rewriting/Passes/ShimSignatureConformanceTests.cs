@@ -103,7 +103,10 @@ namespace Microsoft.Coyote.Rewriting.Tests
             typeof(System.Threading.Tasks.Task),
             typeof(System.Threading.Tasks.Parallel),
             typeof(System.Net.Http.HttpClient),
-            typeof(System.Threading.Channels.Channel)
+            typeof(System.Threading.Channels.Channel),
+
+            // The one modelled type that is not from the BCL, so no other anchor's assembly can resolve it.
+            typeof(Microsoft.Extensions.Hosting.BackgroundService)
         };
 
         [Fact(Timeout = 60000)]

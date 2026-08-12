@@ -11,6 +11,7 @@ using SystemConcurrentCollections = System.Collections.Concurrent;
 using SystemGenericCollections = System.Collections.Generic;
 #if NET
 using SystemChannels = System.Threading.Channels;
+using SystemHosting = Microsoft.Extensions.Hosting;
 using SystemNetHttp = System.Net.Http;
 #endif
 using SystemTasks = System.Threading.Tasks;
@@ -113,6 +114,8 @@ namespace Microsoft.Coyote.Rewriting.Types
 
         internal static string HttpClient { get; } = typeof(SystemNetHttp.HttpClient).FullName;
         internal static string HttpRequestMessage { get; } = typeof(SystemNetHttp.HttpRequestMessage).FullName;
+
+        internal static string BackgroundService { get; } = typeof(SystemHosting.BackgroundService).FullName;
 #endif
 
 #if NET9_0_OR_GREATER

@@ -114,6 +114,13 @@ namespace Microsoft.Coyote.Rewriting
             // from a thread the scheduler has no record of, so the loop is never interleaved with
             // anything and a test over it explores nothing.
             this.KnownTypes[NameCache.PeriodicTimer] = typeof(Types.Threading.PeriodicTimer);
+
+            // A hosted service's StopAsync waits on WhenAny over an infinite Task.Delay, and it does so
+            // inside Microsoft.Extensions.Hosting.Abstractions — an assembly the rewriter does not visit.
+            // Shutdown then hangs off a task the scheduler has no record of, whose completion depends on a
+            // controlled one, and the cycle is reported as a deadlock on code that is merely stopping. This
+            // is also the first model over a type outside the System namespace; see IsSupportedType.
+            this.KnownTypes[NameCache.BackgroundService] = typeof(Types.Hosting.BackgroundService);
 #endif
 
             // BlockingCollection is registered HERE, unconditionally, rather than with the concurrent
@@ -286,10 +293,10 @@ namespace Microsoft.Coyote.Rewriting
         /// A type that has a model is rewritable wherever it lives. Every model used to be over a
         /// <c>System.*</c> type, so <see cref="IsRewritableType"/> got there through
         /// <see cref="Pass.IsSystemType"/> and this hook was never reached; a model over a type from
-        /// anywhere else — <see cref="Types.Hosting.BackgroundService"/> is the first — would otherwise
-        /// be refused here before the map is ever consulted, and the call site would be left alone with
-        /// no error and no warning. Registration in <see cref="KnownTypes"/> IS the decision that a type
-        /// is modelled, so nothing unregistered becomes eligible by this.
+        /// anywhere else — the hosted <c>BackgroundService</c> is the first — would otherwise be refused
+        /// here before the map is ever consulted, and the call site would be left alone with no error and
+        /// no warning. Registration in <see cref="KnownTypes"/> IS the decision that a type is modelled,
+        /// so nothing unregistered becomes eligible by this.
         /// </remarks>
         protected virtual bool IsSupportedType(TypeDefinition type) =>
             type != null && this.KnownTypes.ContainsKey(type.FullName);

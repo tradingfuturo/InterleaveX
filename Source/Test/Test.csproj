@@ -24,17 +24,27 @@
     <PackageReference Include="System.IO.Hashing" Version="10.0.2" />
     <PackageReference Include="xunit.abstractions" Version="2.0.3" />
   </ItemGroup>
+  <!-- Microsoft.Extensions.Hosting.Abstractions carries BackgroundService, which the hosting model in
+       Rewriting/Types/Hosting replaces. It is referenced as a PACKAGE rather than through the
+       Microsoft.AspNetCore.App shared framework, matching Microsoft.AspNetCore.Http.Abstractions above:
+       a FrameworkReference would make this assembly loadable only on a machine with that framework
+       installed, and it is loaded by every rewritten test host. The netstandard2.0 target needs neither,
+       since the model is #if NET. -->
   <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
     <PackageReference Include="Microsoft.Extensions.DependencyModel" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.0" />
   </ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
     <PackageReference Include="Microsoft.Extensions.DependencyModel" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="9.0.0" />
   </ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
     <PackageReference Include="Microsoft.Extensions.DependencyModel" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.0" />
   </ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)' == 'net6.0'">
     <PackageReference Include="Microsoft.Extensions.DependencyModel" Version="6.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="6.0.0" />
   </ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
