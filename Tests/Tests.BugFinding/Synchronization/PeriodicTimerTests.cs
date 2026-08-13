@@ -130,7 +130,6 @@ namespace Microsoft.Coyote.BugFinding.Tests
         {
             this.Test(async () =>
             {
-                using CancellationTokenSource stopping = new CancellationTokenSource();
                 using PeriodicTimer timer = new PeriodicTimer(UntestablyLongCadence);
 
                 bool stopped = false;
@@ -139,7 +138,7 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 {
                     try
                     {
-                        while (await timer.WaitForNextTickAsync(stopping.Token))
+                        while (await timer.WaitForNextTickAsync(CancellationToken.None))
                         {
                             // A loop the scheduler cannot preempt satisfies this for free, which is exactly
                             // why the tick has to be a scheduling point.
@@ -154,8 +153,10 @@ namespace Microsoft.Coyote.BugFinding.Tests
 
                 var stopper = Task.Run(() =>
                 {
+                    // Disposal, unlike cancellation, voids a tick that was signaled but not consumed. It
+                    // therefore gives this assertion an unambiguous stop boundary under every schedule.
+                    timer.Dispose();
                     stopped = true;
-                    stopping.Cancel();
                 });
 
                 await Task.WhenAll(loop, stopper);

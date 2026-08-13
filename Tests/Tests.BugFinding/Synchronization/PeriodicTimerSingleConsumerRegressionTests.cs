@@ -116,6 +116,30 @@ namespace Microsoft.Coyote.BugFinding.Tests
                     "Disposal did not void a tick that had not yet been consumed.");
             });
         }
+
+        [Fact(Timeout = 5000)]
+        public void TestCancellationRacingWaitConsumptionDoesNotDeadlock()
+        {
+            this.Test(async () =>
+            {
+                using var timer = new PeriodicTimer(TimeSpan.FromMinutes(10));
+                using var source = new CancellationTokenSource();
+
+                Task waiter = Task.Run(async () =>
+                {
+                    try
+                    {
+                        _ = await timer.WaitForNextTickAsync(source.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+                });
+                Task cancel = Task.Run(source.Cancel);
+
+                await Task.WhenAll(waiter, cancel);
+            }, this.GetConfiguration().WithTestingIterations(100));
+        }
     }
 }
 #endif

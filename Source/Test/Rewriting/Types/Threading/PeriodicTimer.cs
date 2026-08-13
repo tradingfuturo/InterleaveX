@@ -218,6 +218,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     state => ((State)((object[])state)[0]).Cancel((short)((object[])state)[1],
                         (SystemCancellationToken)((object[])state)[2]),
                     new object[] { this, version, cancellationToken });
+                bool disposeRegistration = false;
                 lock (this.SyncObject)
                 {
                     if (this.IsActive && version == this.Source.Version)
@@ -226,8 +227,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     }
                     else
                     {
-                        registration.Dispose();
+                        disposeRegistration = true;
                     }
+                }
+
+                if (disposeRegistration)
+                {
+                    registration.Unregister();
                 }
 
                 return new SystemTasks.ValueTask<bool>(this, version);
@@ -295,6 +301,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
             bool IValueTaskSource<bool>.GetResult(short token)
             {
+                System.Threading.CancellationTokenRegistration registration = default;
                 try
                 {
                     lock (this.SyncObject)
@@ -310,10 +317,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         if (this.IsActive && token == this.Source.Version)
                         {
                             this.IsActive = false;
-                            this.CancellationRegistration.Dispose();
+                            registration = this.CancellationRegistration;
                             this.CancellationRegistration = default;
                         }
                     }
+
+                    registration.Unregister();
                 }
             }
 
