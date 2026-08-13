@@ -22,6 +22,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
     [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public static class Host
     {
+        private static readonly Type FrameworkHostType = typeof(HostBuilder).Assembly.GetType(
+            "Microsoft.Extensions.Hosting.Internal.Host", throwOnError: false);
+
         private static readonly ConditionalWeakTable<IHost, State> Hosts =
             new ConditionalWeakTable<IHost, State>();
 
@@ -32,6 +35,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             where T : IHost => instance.Services;
 
         public static IServiceProvider get_Services(IHost instance) => instance.Services;
+
+        public static bool IsFrameworkHost(IHost instance) =>
+            instance != null && instance.GetType() == FrameworkHostType;
 
         public static Task StartAsync<T>(ref T instance, CancellationToken cancellationToken = default)
             where T : IHost
@@ -46,7 +52,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
 
         public static Task StartAsync(IHost instance, CancellationToken cancellationToken = default)
         {
-            if (CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.None)
+            if (CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.None || !IsFrameworkHost(instance))
             {
                 return instance.StartAsync(cancellationToken);
             }
@@ -56,7 +62,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
 
         public static Task StopAsync(IHost instance, CancellationToken cancellationToken = default)
         {
-            if (CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.None)
+            if (CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.None || !IsFrameworkHost(instance))
             {
                 return instance.StopAsync(cancellationToken);
             }
@@ -77,12 +83,24 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
 
         public static void Dispose(IHost instance)
         {
+            if (CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.None || !IsFrameworkHost(instance))
+            {
+                instance.Dispose();
+                return;
+            }
+
             CancelModelState(instance);
             instance.Dispose();
         }
 
         public static ValueTask DisposeAsync(IHost instance)
         {
+            if (CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.None || !IsFrameworkHost(instance))
+            {
+                return instance is IAsyncDisposable customAsyncDisposable ?
+                    customAsyncDisposable.DisposeAsync() : DisposeSynchronously(instance);
+            }
+
             CancelModelState(instance);
             return instance is IAsyncDisposable asyncDisposable ?
                 asyncDisposable.DisposeAsync() : DisposeSynchronously(instance);

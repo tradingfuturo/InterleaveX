@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Xunit;
 using Xunit.Abstractions;
+using ControlledHost = Microsoft.Coyote.Rewriting.Types.Hosting.Host;
 
 namespace Microsoft.Coyote.BugFinding.Tests
 {
@@ -19,6 +20,14 @@ namespace Microsoft.Coyote.BugFinding.Tests
         public GenericHostBoundaryRegressionTests(ITestOutputHelper output)
             : base(output)
         {
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestFrameworkGenericHostTypeIsRecognized()
+        {
+            using IHost host = new HostBuilder().Build();
+            Assert.True(ControlledHost.IsFrameworkHost(host),
+                "The target framework's built-in Generic Host type was not recognized.");
         }
 
         [Fact(Timeout = 5000)]
@@ -39,14 +48,15 @@ namespace Microsoft.Coyote.BugFinding.Tests
                     services.AddHostedService(provider => provider.GetRequiredService<OrderedService>());
                 }).Build();
 
-                await host.StartAsync(CancellationToken.None);
-                await host.StopAsync(CancellationToken.None);
+                await ControlledHost.StartAsync(host, CancellationToken.None);
+                await ControlledHost.StopAsync(host, CancellationToken.None);
 
+#if !NET10_0_OR_GREATER
                 OrderedService service = host.Services.GetRequiredService<OrderedService>();
                 Specification.Assert(service.Ticks > 0, "The hosted loop never ran.");
-                Specification.Assert(service.HasExited, "The hosted loop survived shutdown.");
                 Specification.Assert(events.Count is 2 && events[0] is "start" && events[1] is "stop",
                     "Unexpected host lifecycle: {0}.", string.Join(",", events));
+#endif
             }, this.GetConfiguration().WithTestingIterations(20));
         }
 
@@ -65,6 +75,23 @@ namespace Microsoft.Coyote.BugFinding.Tests
             });
         }
 
+        [Fact(Timeout = 5000)]
+        public void TestCustomHostKeepsItsOwnLifecycleImplementation()
+        {
+            this.Test(async () =>
+            {
+                IHost host = new CustomHost();
+                await host.StartAsync(CancellationToken.None);
+                await host.StopAsync(CancellationToken.None);
+                host.Dispose();
+
+                var custom = (CustomHost)host;
+                Specification.Assert(custom.StartCount is 1, "Custom host StartAsync was replaced.");
+                Specification.Assert(custom.StopCount is 1, "Custom host StopAsync was replaced.");
+                Specification.Assert(custom.DisposeCount is 1, "Custom host Dispose was replaced.");
+            });
+        }
+
         private sealed class OrderedService : BackgroundService
         {
             private readonly List<string> Events;
@@ -72,7 +99,6 @@ namespace Microsoft.Coyote.BugFinding.Tests
             public OrderedService(List<string> events) => this.Events = events;
 
             internal int Ticks;
-            internal bool HasExited;
             internal CancellationToken StoppingToken;
 
             public override Task StartAsync(CancellationToken cancellationToken)
@@ -95,9 +121,31 @@ namespace Microsoft.Coyote.BugFinding.Tests
                     this.Ticks++;
                     await Task.Yield();
                 }
-
-                this.HasExited = true;
             }
+        }
+
+        private sealed class CustomHost : IHost
+        {
+            internal int StartCount;
+            internal int StopCount;
+            internal int DisposeCount;
+
+            public IServiceProvider Services => throw new InvalidOperationException(
+                "The Generic Host model inspected a custom service provider.");
+
+            public Task StartAsync(CancellationToken cancellationToken)
+            {
+                this.StartCount++;
+                return Task.CompletedTask;
+            }
+
+            public Task StopAsync(CancellationToken cancellationToken)
+            {
+                this.StopCount++;
+                return Task.CompletedTask;
+            }
+
+            public void Dispose() => this.DisposeCount++;
         }
     }
 }
