@@ -141,33 +141,27 @@ function Invoke-TestTargetShard([hashtable]$Context, [String]$Name, [String]$Pro
                 # It is also strictly stronger — it covers every member rather than the listed ones.
                 $original = [IO.Path]::Combine($Context.ScriptRoot, "..", "Tests", $Project, "obj", `
                     $configuration, $f, "$assembly_name.dll")
-                $introduced = $verified.Errors
-                $introducedUnparsed = $verified.Unparsed
-                $baselineWasUsable = $true
+                $comparison = Compare-IlverifyDiagnostics -Candidate $verified -Baseline $null
                 if ((($verified.Errors.Count -gt 0) -or ($verified.Unparsed.Count -gt 0)) -and (Test-Path $original)) {
                     $baseline = Invoke-Ilverify -Context $Context -Assembly $original -References $references
-                    $introduced = @($verified.Errors | Where-Object { $baseline.Errors -notcontains $_ })
-                    $introducedUnparsed = @($verified.Unparsed | Where-Object { $baseline.Unparsed -notcontains $_ })
-                    $baselineWasUsable = $baseline.ExitCode -eq 0 -or
-                        $baseline.Errors.Count -gt 0 -or $baseline.Unparsed.Count -gt 0
-                    $inherited = $verified.Errors.Count - $introduced.Count
+                    $comparison = Compare-IlverifyDiagnostics -Candidate $verified -Baseline $baseline
+                    $inherited = $verified.Errors.Count - $comparison.Introduced.Count
                     [void]$output.AppendLine("... $inherited of $($verified.Errors.Count) parsed error(s) are the " +
                         "compiler's own and are present before rewriting.")
                 }
 
-                # An exit code with no error we could parse is the verifier itself failing, and that
-                # stays fatal: nothing has been shown about the rewrite either way.
-                if ($introduced.Count -gt 0 -or $introducedUnparsed.Count -gt 0 -or
-                    -not $baselineWasUsable -or
-                    ($verified.Errors.Count -eq 0 -and $verified.Unparsed.Count -eq 0)) {
+                if ($comparison.IsFatal) {
                     [void]$output.AppendLine("Error: found corrupted assembly rewriting in '$Project' ($f).")
-                    foreach ($e in $introduced) {
+                    foreach ($e in $comparison.Introduced) {
                         [void]$output.AppendLine("  introduced by rewriting: $e")
                     }
-                    foreach ($e in $introducedUnparsed) {
+                    foreach ($e in $comparison.CandidateUnparsed) {
                         [void]$output.AppendLine("  unclassified verifier failure: $e")
                     }
-                    if (-not $baselineWasUsable) {
+                    foreach ($e in $comparison.BaselineUnparsed) {
+                        [void]$output.AppendLine("  unclassified baseline verifier failure: $e")
+                    }
+                    if (-not $comparison.BaselineWasUsable) {
                         [void]$output.AppendLine("  the compiler baseline verifier failed without a classifiable diagnostic")
                     }
 
@@ -301,6 +295,41 @@ function Invoke-Ilverify([hashtable]$Context, [String]$Assembly, [String[]]$Refe
         Errors = $errors
         Unparsed = $unparsed
         Output = $result.Output
+    }
+}
+
+# Compares only parsed diagnostic identities. Unclassified output is never baseline-subtracted: it
+# can represent transport failure, a crash, or a verifier diagnostic whose format changed.
+function Compare-IlverifyDiagnostics($Candidate, $Baseline) {
+    if ($Candidate.ExitCode -eq 0) {
+        return [pscustomobject]@{
+            IsFatal = $false
+            Introduced = @()
+            CandidateUnparsed = @()
+            BaselineUnparsed = @()
+            BaselineWasUsable = $true
+        }
+    }
+
+    $hasBaseline = $null -ne $Baseline
+    $introduced = if ($hasBaseline) {
+        @($Candidate.Errors | Where-Object { $Baseline.Errors -notcontains $_ })
+    } else {
+        @($Candidate.Errors)
+    }
+    $candidateUnparsed = @($Candidate.Unparsed)
+    $baselineUnparsed = if ($hasBaseline) { @($Baseline.Unparsed) } else { @() }
+    $baselineWasUsable = $hasBaseline -and $baselineUnparsed.Count -eq 0 -and
+        ($Baseline.ExitCode -eq 0 -or $Baseline.Errors.Count -gt 0)
+    $candidateInvocationFailed = $Candidate.Errors.Count -eq 0 -and $candidateUnparsed.Count -eq 0
+
+    return [pscustomobject]@{
+        IsFatal = $introduced.Count -gt 0 -or $candidateUnparsed.Count -gt 0 -or
+            $baselineUnparsed.Count -gt 0 -or -not $baselineWasUsable -or $candidateInvocationFailed
+        Introduced = $introduced
+        CandidateUnparsed = $candidateUnparsed
+        BaselineUnparsed = $baselineUnparsed
+        BaselineWasUsable = $baselineWasUsable
     }
 }
 

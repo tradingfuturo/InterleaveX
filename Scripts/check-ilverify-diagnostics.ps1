@@ -30,6 +30,41 @@ exit 1
         $result.Unparsed[0] -ne "fatal verifier transport failure") {
         throw "Invoke-Ilverify did not retain an unclassified nonzero failure."
     }
+
+    function New-DiagnosticResult($exitCode, $errors, $unparsed) {
+        return [pscustomobject]@{
+            ExitCode = $exitCode
+            Errors = @($errors)
+            Unparsed = @($unparsed)
+        }
+    }
+
+    $candidate = New-DiagnosticResult 1 @() @("same unparsed failure")
+    $baseline = New-DiagnosticResult 1 @() @("same unparsed failure")
+    $comparison = Compare-IlverifyDiagnostics -Candidate $candidate -Baseline $baseline
+    if (-not $comparison.IsFatal) {
+        throw "Identical unparsed failures were incorrectly baseline-subtracted."
+    }
+
+    $candidate = New-DiagnosticResult 1 @("[M()] StackUnexpected") @()
+    $baseline = New-DiagnosticResult 1 @("[M()] StackUnexpected") @()
+    $comparison = Compare-IlverifyDiagnostics -Candidate $candidate -Baseline $baseline
+    if ($comparison.IsFatal) {
+        throw "A matching parsed compiler diagnostic was not baseline-subtracted."
+    }
+
+    $candidate = New-DiagnosticResult 0 @() @()
+    $comparison = Compare-IlverifyDiagnostics -Candidate $candidate -Baseline $null
+    if ($comparison.IsFatal) {
+        throw "A clean verifier success was classified as fatal."
+    }
+
+    $candidate = New-DiagnosticResult 1 @("[M()] StackUnexpected", "[N()] ThisMismatch") @()
+    $baseline = New-DiagnosticResult 1 @("[M()] StackUnexpected") @()
+    $comparison = Compare-IlverifyDiagnostics -Candidate $candidate -Baseline $baseline
+    if (-not $comparison.IsFatal -or $comparison.Introduced.Count -ne 1) {
+        throw "A newly introduced parsed diagnostic was not classified as fatal."
+    }
 }
 finally {
     Remove-Item -LiteralPath $temp -Recurse -Force
