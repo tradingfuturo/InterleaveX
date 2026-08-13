@@ -185,8 +185,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
                 using System.Threading.CancellationTokenRegistration registration = cancellationToken.Register(
                     () => cancellationSource.TrySetCanceled(cancellationToken));
                 SystemTask cancellation = cancellationSource.Task;
-                SystemTask winner = await Types.Threading.Tasks.Task.WhenAny(execute, cancellation);
-                await winner;
+                _ = await Types.Threading.Tasks.Task.WhenAny(execute, cancellation);
             }
 
             await SystemTask.CompletedTask;

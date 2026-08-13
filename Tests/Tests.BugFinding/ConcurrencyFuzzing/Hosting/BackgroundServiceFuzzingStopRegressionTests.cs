@@ -2,6 +2,7 @@
 // Licensed under the GNU General Public License v3.0 or later.
 
 #if NET
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Coyote.Runtime;
@@ -36,6 +37,39 @@ namespace Microsoft.Coyote.BugFinding.Tests.SystematicFuzzing
                 Specification.Assert(!stop.IsCompleted, "StopAsync completed while ExecuteAsync was live.");
                 service.Release.TrySetResult(true);
                 await stop;
+            }, this.GetConfiguration());
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestFuzzingStopSuppressesExecuteTaskFault()
+        {
+            this.Test(async () =>
+            {
+                var service = new GatedService();
+                await service.StartAsync(CancellationToken.None);
+                await service.Started.Task;
+                Task stop = service.StopAsync(CancellationToken.None);
+                service.Release.TrySetException(new InvalidOperationException("execute failed"));
+                await stop;
+                Specification.Assert(stop.IsCompletedSuccessfully,
+                    "StopAsync propagated the winning execution task's fault.");
+            }, this.GetConfiguration());
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestFuzzingStopSuppressesShutdownCancellation()
+        {
+            this.Test(async () =>
+            {
+                var service = new GatedService();
+                await service.StartAsync(CancellationToken.None);
+                await service.Started.Task;
+                using var source = new CancellationTokenSource();
+                Task stop = service.StopAsync(source.Token);
+                source.Cancel();
+                await stop;
+                Specification.Assert(stop.IsCompletedSuccessfully,
+                    "StopAsync propagated shutdown cancellation.");
             }, this.GetConfiguration());
         }
 
