@@ -45,6 +45,24 @@ namespace Microsoft.Coyote.BugFinding.Tests
             });
         }
 
+        [Fact(Timeout = 5000)]
+        public void TestHiddenLifecycleMembersAreNotTreatedAsOverrides()
+        {
+            this.Test(async () =>
+            {
+                var service = new HidingService();
+                BackgroundService asBase = service;
+
+                await asBase.StartAsync(CancellationToken.None);
+                _ = asBase.ExecuteTask;
+                await asBase.StopAsync(CancellationToken.None);
+                asBase.Dispose();
+
+                Specification.Assert(service.HiddenCallCount is 0,
+                    "A hidden lifecycle member was invoked through a base-typed call.");
+            });
+        }
+
         private sealed class VirtualService : BackgroundService
         {
             internal readonly Task Marker = Task.FromResult(true);
@@ -73,6 +91,36 @@ namespace Microsoft.Coyote.BugFinding.Tests
 
                 this.ModelTask = Task.CompletedTask;
             }
+        }
+
+        private sealed class HidingService : BackgroundService
+        {
+            internal int HiddenCallCount;
+
+            public new Task StartAsync(CancellationToken cancellationToken)
+            {
+                this.HiddenCallCount++;
+                return Task.CompletedTask;
+            }
+
+            public new Task StopAsync(CancellationToken cancellationToken)
+            {
+                this.HiddenCallCount++;
+                return Task.CompletedTask;
+            }
+
+            public new Task ExecuteTask
+            {
+                get
+                {
+                    this.HiddenCallCount++;
+                    return Task.CompletedTask;
+                }
+            }
+
+            public new void Dispose() => this.HiddenCallCount++;
+
+            protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.CompletedTask;
         }
     }
 }

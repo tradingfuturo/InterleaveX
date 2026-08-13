@@ -286,7 +286,14 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
                 MethodInfo method = key.Item1.GetMethod(
                     key.Item2, BindingFlags.Public | BindingFlags.Instance, null,
                     parameters, null);
-                return method?.DeclaringType == typeof(SystemBackgroundService) ? null : method;
+                if (method is null || !method.IsVirtual ||
+                    method.DeclaringType == typeof(SystemBackgroundService) ||
+                    method.GetBaseDefinition().DeclaringType != typeof(SystemBackgroundService))
+                {
+                    return null;
+                }
+
+                return method;
             });
 
         private static MethodInfo ExecuteMethod(Type serviceType) => ExecuteMethods.GetOrAdd(serviceType, type =>
