@@ -91,11 +91,20 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             State state = Services.GetValue(instance, _ => new State());
             state.StoppingSource = SystemCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
+#if NET10_0_OR_GREATER
+            // .NET 10 deliberately queues ExecuteAsync. This preserves the host's immediate startup
+            // contract and lets a token canceled before the queued operation runs suppress execution.
+            SystemTask execute = Types.Threading.Tasks.Task.Run(
+                () => InvokeTask(ExecuteMethod(instance.GetType()), instance,
+                    new object[] { state.StoppingSource.Token }),
+                state.StoppingSource.Token);
+#else
             // The real StartAsync invokes ExecuteAsync on the calling thread and only then decides what to
             // hand back, so the model does the same: a service that completes synchronously must surface its
             // outcome to the host through the returned task rather than swallow it.
             SystemTask execute = InvokeTask(ExecuteMethod(instance.GetType()), instance,
                 new object[] { state.StoppingSource.Token });
+#endif
 
             state.ExecuteTask = execute;
             if (execute is null)
@@ -104,7 +113,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             }
 
             runtime.RegisterKnownControlledTask(execute);
+#if NET10_0_OR_GREATER
+            return SystemTask.CompletedTask;
+#else
             return execute.IsCompleted ? execute : SystemTask.CompletedTask;
+#endif
         }
 
         /// <summary>
