@@ -199,6 +199,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
                     Task task = action(item) ?? throw new InvalidOperationException("A host lifecycle callback returned null.");
                     if (concurrently)
                     {
+#if !NET10_0_OR_GREATER
+                        if (task.IsCanceled)
+                        {
+                            continue;
+                        }
+#endif
                         tasks.Add(task);
                     }
                     else
