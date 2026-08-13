@@ -63,6 +63,29 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             return new SystemPeriodicTimer(period);
         }
 
+#if NET8_0_OR_GREATER
+        /// <summary>
+        /// Initializes a timer using the specified provider while keeping cadence scheduler-owned
+        /// during systematic interleaving.
+        /// </summary>
+        public static SystemPeriodicTimer Create(TimeSpan period, TimeProvider timeProvider)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
+            {
+                // Match the framework's validation order without consulting the provider. The real
+                // timer only exists as an identity key and is prevented from producing native ticks.
+                ValidatePeriod(period);
+                ArgumentNullException.ThrowIfNull(timeProvider);
+                var timer = new SystemPeriodicTimer(SystemTimeout.InfiniteTimeSpan);
+                Timers.Add(timer, new State(period));
+                return timer;
+            }
+
+            return new SystemPeriodicTimer(period, timeProvider);
+        }
+#endif
+
         /// <summary>
         /// Gets the period between ticks.
         /// </summary>

@@ -399,7 +399,8 @@ namespace Microsoft.Coyote.Rewriting
             // Computed once per lookup rather than per candidate: rewriting a type imports it into
             // the module, so doing this inside the loop would grow the type reference table with
             // every method that is considered and then rejected.
-            TypeReference expectedReturnType = this.RewriteType(originalMethod.ReturnType, Options.None);
+            TypeReference expectedReturnType = originalMethod.IsConstructor ?
+                originalMethod.DeclaringType : this.RewriteType(originalMethod.ReturnType, Options.None);
 
             match = null;
             foreach (var method in declaringType.Methods)
@@ -528,8 +529,10 @@ namespace Microsoft.Coyote.Rewriting
             // TODO: make sure all necessary checks are in place!
             // Check if the method properties match. We check 'IsStatic' later as we need to do additional checks
             // in cases where we are replacing an instance method with a static method.
+            bool isFactoryReplacement = ignoreName && originalMethod.IsConstructor &&
+                newMethod.IsStatic && newMethod.Name == "Create";
             if ((!ignoreName && originalMethod.Name != newMethod.Name) ||
-                originalMethod.IsConstructor != newMethod.IsConstructor ||
+                (originalMethod.IsConstructor != newMethod.IsConstructor && !isFactoryReplacement) ||
                 expectedReturnType.FullName != newMethod.ReturnType.FullName ||
                 originalMethod.IsPublic != newMethod.IsPublic ||
                 originalMethod.IsPrivate != newMethod.IsPrivate ||
@@ -542,7 +545,14 @@ namespace Microsoft.Coyote.Rewriting
             // Check if we are converting the original method into a static method.
             bool isConvertedToStatic = !originalMethod.IsStatic && newMethod.IsStatic;
             int parameterCountDiff = newMethod.Parameters.Count - originalMethod.Parameters.Count;
-            if (isConvertedToStatic)
+            if (isFactoryReplacement)
+            {
+                if (parameterCountDiff != 0)
+                {
+                    return false;
+                }
+            }
+            else if (isConvertedToStatic)
             {
                 // We are expecting one extra parameter in the static method in index '0', and the type
                 // of this parameter must be the same as the declaring type of the original method.
@@ -562,7 +572,7 @@ namespace Microsoft.Coyote.Rewriting
             for (int idx = 0; idx < originalMethod.Parameters.Count; ++idx)
             {
                 // If we are converting to static, we have one extra parameter, so skip it.
-                var newParameter = newMethod.Parameters[isConvertedToStatic ? idx + 1 : idx];
+                var newParameter = newMethod.Parameters[isConvertedToStatic && !isFactoryReplacement ? idx + 1 : idx];
                 var originalParameter = originalMethod.Parameters[idx];
 
                 // TODO: make sure all necessary checks are in place!
