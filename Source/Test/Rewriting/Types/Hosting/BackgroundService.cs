@@ -179,6 +179,30 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
 #pragma warning restore SA1300 // Element should begin with upper-case letter
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return instance.ExecuteTask;
+            }
+
+            MethodInfo overriding = OverrideMethod(instance.GetType(), "get_ExecuteTask", Type.EmptyTypes);
+            if (overriding != null)
+            {
+                return (SystemTask)overriding.Invoke(instance, null);
+            }
+
+            return get_ExecuteTaskBase(instance);
+        }
+
+        /// <summary>Runs the controlled base implementation of the <c>ExecuteTask</c> getter.</summary>
+#pragma warning disable CA1707 // Identifiers should not contain underscores
+#pragma warning disable SA1300 // Element should begin with upper-case letter
+#pragma warning disable IDE1006 // Naming Styles
+        public static SystemTask get_ExecuteTaskBase(SystemBackgroundService instance)
+#pragma warning restore IDE1006 // Naming Styles
+#pragma warning restore SA1300 // Element should begin with upper-case letter
+#pragma warning restore CA1707 // Identifiers should not contain underscores
+        {
             // The model started the service, so the real private field is null and the property that reads it
             // would answer null for a service that is running. Callers use this to tell "the loop has stopped"
             // from "the wait was abandoned", which is exactly the distinction the model exists to keep honest.
@@ -195,12 +219,38 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         /// </summary>
         public static void Dispose(SystemBackgroundService instance)
         {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                instance.Dispose();
+                return;
+            }
+
+            MethodInfo overriding = OverrideMethod(instance.GetType(), nameof(Dispose), Type.EmptyTypes);
+            if (overriding != null)
+            {
+                overriding.Invoke(instance, null);
+                return;
+            }
+
+            DisposeBase(instance);
+        }
+
+        /// <summary>Runs the controlled base implementation of <c>Dispose</c>.</summary>
+        public static void DisposeBase(SystemBackgroundService instance)
+        {
+            if (CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                instance.Dispose();
+                return;
+            }
+
             if (Services.TryGetValue(instance, out State state))
             {
                 state.StoppingSource?.Cancel();
+                state.StoppingSource?.Dispose();
+                state.StoppingSource = null;
             }
-
-            instance.Dispose();
         }
 
         /// <summary>
@@ -211,11 +261,14 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         /// handles genuine virtual entry through <c>callvirt</c>; no reentrancy flag has to survive an await.
         /// </remarks>
         private static MethodInfo OverrideMethod(Type serviceType, string name) =>
+            OverrideMethod(serviceType, name, new[] { typeof(SystemCancellationToken) });
+
+        private static MethodInfo OverrideMethod(Type serviceType, string name, Type[] parameters) =>
             Overrides.GetOrAdd((serviceType, name), key =>
             {
                 MethodInfo method = key.Item1.GetMethod(
                     key.Item2, BindingFlags.Public | BindingFlags.Instance, null,
-                    new[] { typeof(SystemCancellationToken) }, null);
+                    parameters, null);
                 return method?.DeclaringType == typeof(SystemBackgroundService) ? null : method;
             });
 
