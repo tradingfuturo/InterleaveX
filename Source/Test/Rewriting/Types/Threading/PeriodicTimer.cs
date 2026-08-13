@@ -5,7 +5,9 @@
 #if NET
 using System;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks.Sources;
 using Microsoft.Coyote.Runtime;
+using ControlledTask = Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task;
 using SystemCancellationToken = System.Threading.CancellationToken;
 using SystemPeriodicTimer = System.Threading.PeriodicTimer;
 using SystemTasks = System.Threading.Tasks;
@@ -25,12 +27,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
     /// cadence becomes a scheduling point instead, which costs no wall-clock time — a service that renews a
     /// lease every ten seconds is tested at the same speed as one that renews every millisecond.
     /// </para>
-    /// <para>
-    /// The wait completes synchronously at that scheduling point rather than staying outstanding, so the
-    /// state in which two waits overlap — which the real type rejects with an
-    /// <see cref="InvalidOperationException"/> — is one this model never enters. It explores a subset of
-    /// the real behaviours, never a superset, so nothing passes here that the runtime would reject.
-    /// </para>
+    /// <para>The modeled wait is single-consumer and remains active until its result is consumed.</para>
     /// </remarks>
     [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public static class PeriodicTimer
@@ -108,26 +105,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     return SystemTasks.ValueTask.FromCanceled<bool>(cancellationToken);
                 }
 
-                if (runtime.TryGetExecutingOperation(out ControlledOperation current))
-                {
-                    // The tick itself. Modelled as a yield so that every other enabled flow may run between
-                    // one tick and the next, which is the only property a timer-driven loop needs tested and
-                    // the one an unmodelled timer silently denies.
-                    runtime.ScheduleNextOperation(current, SchedulingPointType.Yield, isYielding: true);
-                }
-                else
-                {
-                    runtime.NotifyUncontrolledInvocation(nameof(SystemPeriodicTimer.WaitForNextTickAsync));
-                }
-
-                // Re-read both after the scheduling point: another flow may have cancelled or disposed while
-                // this one was not running, which is exactly the interleaving the yield exists to allow.
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return SystemTasks.ValueTask.FromCanceled<bool>(cancellationToken);
-                }
-
-                return new SystemTasks.ValueTask<bool>(!state.IsDisposed);
+                return state.BeginWait(cancellationToken, out _);
             }
 
             return instance.WaitForNextTickAsync(cancellationToken);
@@ -140,7 +118,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         {
             if (Timers.TryGetValue(instance, out State state))
             {
-                state.IsDisposed = true;
+                state.Dispose();
             }
 
             instance.Dispose();
@@ -158,16 +136,144 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// <summary>
         /// The cadence and lifetime of one controlled timer.
         /// </summary>
-        private sealed class State
+        private sealed class State : IValueTaskSource<bool>
         {
+            private readonly object SyncObject = new object();
+            private ManualResetValueTaskSourceCore<bool> Source;
+            private System.Threading.CancellationTokenRegistration CancellationRegistration;
+            private bool IsActive;
+
             internal State(TimeSpan period)
             {
                 this.Period = period;
+                this.Source.RunContinuationsAsynchronously = true;
             }
 
             internal TimeSpan Period { get; set; }
 
             internal bool IsDisposed { get; set; }
+
+            internal SystemTasks.ValueTask<bool> BeginWait(
+                SystemCancellationToken cancellationToken, out short version)
+            {
+                lock (this.SyncObject)
+                {
+                    if (this.IsDisposed)
+                    {
+                        version = 0;
+                        return new SystemTasks.ValueTask<bool>(false);
+                    }
+
+                    if (this.IsActive)
+                    {
+                        throw new InvalidOperationException(
+                            "Operation is not valid due to the current state of the object.");
+                    }
+
+                    this.Source.Reset();
+                    this.IsActive = true;
+                    version = this.Source.Version;
+                }
+
+                System.Threading.CancellationTokenRegistration registration = cancellationToken.Register(
+                    state => ((State)((object[])state)[0]).Cancel((short)((object[])state)[1],
+                        (SystemCancellationToken)((object[])state)[2]),
+                    new object[] { this, version, cancellationToken });
+                lock (this.SyncObject)
+                {
+                    if (this.IsActive && version == this.Source.Version)
+                    {
+                        this.CancellationRegistration = registration;
+                    }
+                    else
+                    {
+                        registration.Dispose();
+                    }
+                }
+
+                return new SystemTasks.ValueTask<bool>(this, version);
+            }
+
+            internal void Signal(short version, bool result)
+            {
+                lock (this.SyncObject)
+                {
+                    if (this.IsActive && version == this.Source.Version &&
+                        this.Source.GetStatus(version) is ValueTaskSourceStatus.Pending)
+                    {
+                        this.Source.SetResult(result);
+                    }
+                }
+            }
+
+            internal void Dispose()
+            {
+                lock (this.SyncObject)
+                {
+                    this.IsDisposed = true;
+                    if (this.IsActive && this.Source.GetStatus(this.Source.Version) is ValueTaskSourceStatus.Pending)
+                    {
+                        this.Source.SetResult(false);
+                    }
+                }
+            }
+
+            private void Cancel(short version, SystemCancellationToken token)
+            {
+                lock (this.SyncObject)
+                {
+                    if (this.IsActive && version == this.Source.Version &&
+                        this.Source.GetStatus(version) is ValueTaskSourceStatus.Pending)
+                    {
+                        this.Source.SetException(new OperationCanceledException(token));
+                    }
+                }
+            }
+
+            bool IValueTaskSource<bool>.GetResult(short token)
+            {
+                try
+                {
+                    lock (this.SyncObject)
+                    {
+                        return this.Source.GetResult(token);
+                    }
+                }
+                finally
+                {
+                    lock (this.SyncObject)
+                    {
+                        if (this.IsActive && token == this.Source.Version)
+                        {
+                            this.IsActive = false;
+                            this.CancellationRegistration.Dispose();
+                            this.CancellationRegistration = default;
+                        }
+                    }
+                }
+            }
+
+            ValueTaskSourceStatus IValueTaskSource<bool>.GetStatus(short token)
+            {
+                lock (this.SyncObject)
+                {
+                    return this.Source.GetStatus(token);
+                }
+            }
+
+            void IValueTaskSource<bool>.OnCompleted(Action<object> continuation, object state,
+                short token, ValueTaskSourceOnCompletedFlags flags)
+            {
+                lock (this.SyncObject)
+                {
+                    this.Source.OnCompleted(continuation, state, token, flags);
+                }
+
+                // Publish the scheduler-owned tick only once a consumer has actually suspended on
+                // this wait. This leaves a deterministic window for overlap, cancellation and disposal
+                // before the tick, just as the real timer does.
+                _ = ControlledTask.Run(() => this.Signal(token, true));
+            }
         }
     }
 }
