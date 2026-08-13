@@ -346,15 +346,20 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             void IValueTaskSource<bool>.OnCompleted(Action<object> continuation, object state,
                 short token, ValueTaskSourceOnCompletedFlags flags)
             {
+                bool scheduleTick;
                 lock (this.SyncObject)
                 {
                     this.Source.OnCompleted(continuation, state, token, flags);
+                    scheduleTick = this.Period != SystemTimeout.InfiniteTimeSpan;
                 }
 
                 // Publish the scheduler-owned tick only once a consumer has actually suspended on
                 // this wait. This leaves a deterministic window for overlap, cancellation and disposal
                 // before the tick, just as the real timer does.
-                _ = ControlledTask.Run(() => this.Signal(token, true));
+                if (scheduleTick)
+                {
+                    _ = ControlledTask.Run(() => this.Signal(token, true));
+                }
             }
         }
     }

@@ -4,6 +4,8 @@
 #if NET
 using System;
 using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Specifications;
 using Xunit;
 using Xunit.Abstractions;
@@ -57,6 +59,25 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 Specification.Assert(threw, "Setting Period after disposal did not throw.");
                 Specification.Assert(timer.Period == replacement, "The validated value was not published before the exception.");
             });
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestInfinitePeriodWaitsForDisposal()
+        {
+            this.Test(async () =>
+            {
+                var timer = new PeriodicTimer(Timeout.InfiniteTimeSpan);
+                ValueTask<bool> wait = timer.WaitForNextTickAsync(CancellationToken.None);
+                Task disposer = Task.Run(() =>
+                {
+                    SchedulingPoint.Interleave();
+                    Specification.Assert(!wait.IsCompleted, "An infinite-period timer produced a tick.");
+                    timer.Dispose();
+                });
+
+                Specification.Assert(!await wait, "Disposal did not complete the infinite wait as false.");
+                await disposer;
+            }, this.GetConfiguration().WithTestingIterations(20));
         }
     }
 }
