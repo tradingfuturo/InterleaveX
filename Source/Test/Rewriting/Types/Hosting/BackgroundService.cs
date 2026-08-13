@@ -7,6 +7,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Microsoft.Coyote.Runtime;
 using SystemBackgroundService = Microsoft.Extensions.Hosting.BackgroundService;
 using SystemCancellationToken = System.Threading.CancellationToken;
@@ -71,7 +72,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             MethodInfo overriding = OverrideMethod(instance.GetType(), nameof(StartAsync));
             if (overriding != null)
             {
-                return (SystemTask)overriding.Invoke(instance, new object[] { cancellationToken });
+                return InvokeTask(overriding, instance, new object[] { cancellationToken });
             }
 
             return StartAsyncBase(instance, cancellationToken);
@@ -93,8 +94,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             // The real StartAsync invokes ExecuteAsync on the calling thread and only then decides what to
             // hand back, so the model does the same: a service that completes synchronously must surface its
             // outcome to the host through the returned task rather than swallow it.
-            SystemTask execute = (SystemTask)ExecuteMethod(instance.GetType())
-                .Invoke(instance, new object[] { state.StoppingSource.Token });
+            SystemTask execute = InvokeTask(ExecuteMethod(instance.GetType()), instance,
+                new object[] { state.StoppingSource.Token });
 
             state.ExecuteTask = execute;
             if (execute is null)
@@ -120,7 +121,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             MethodInfo overriding = OverrideMethod(instance.GetType(), nameof(StopAsync));
             if (overriding != null)
             {
-                return (SystemTask)overriding.Invoke(instance, new object[] { cancellationToken });
+                return InvokeTask(overriding, instance, new object[] { cancellationToken });
             }
 
             return StopAsyncBase(instance, cancellationToken);
@@ -136,11 +137,18 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
                 return instance.StopAsync(cancellationToken);
             }
 
+            return StopAsyncBaseCore(instance, cancellationToken);
+        }
+
+        private static async SystemTask StopAsyncBaseCore(
+            SystemBackgroundService instance, SystemCancellationToken cancellationToken)
+        {
+            var runtime = CoyoteRuntime.Current;
             if (!Services.TryGetValue(instance, out State state) || state.ExecuteTask is null)
             {
                 // The real StopAsync returns immediately when the service was never started, and a host that
                 // stops a service it did not start relies on that.
-                return SystemTask.CompletedTask;
+                return;
             }
 
             state.StoppingSource?.Cancel();
@@ -165,7 +173,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
                 runtime.DelayOperation(runtime.GetExecutingOperation());
             }
 
-            return SystemTask.CompletedTask;
+            await SystemTask.CompletedTask;
         }
 
         /// <summary>
@@ -188,7 +196,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             MethodInfo overriding = OverrideMethod(instance.GetType(), "get_ExecuteTask", Type.EmptyTypes);
             if (overriding != null)
             {
-                return (SystemTask)overriding.Invoke(instance, null);
+                return InvokeTask(overriding, instance, null);
             }
 
             return get_ExecuteTaskBase(instance);
@@ -229,7 +237,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             MethodInfo overriding = OverrideMethod(instance.GetType(), nameof(Dispose), Type.EmptyTypes);
             if (overriding != null)
             {
-                overriding.Invoke(instance, null);
+                Invoke(overriding, instance, null);
                 return;
             }
 
@@ -288,6 +296,22 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             throw new InvalidOperationException(
                 $"Unable to find 'ExecuteAsync' on background service '{type.FullName}'.");
         });
+
+        private static SystemTask InvokeTask(MethodInfo method, object instance, object[] arguments) =>
+            (SystemTask)Invoke(method, instance, arguments);
+
+        private static object Invoke(MethodInfo method, object instance, object[] arguments)
+        {
+            try
+            {
+                return method.Invoke(instance, arguments);
+            }
+            catch (TargetInvocationException ex) when (ex.InnerException != null)
+            {
+                ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
+                throw;
+            }
+        }
 
         /// <summary>
         /// The lifecycle of one controlled background service.
