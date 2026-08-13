@@ -107,16 +107,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
 #endif
 
             state.ExecuteTask = execute;
-            if (execute is null)
-            {
-                return SystemTask.CompletedTask;
-            }
-
-            runtime.RegisterKnownControlledTask(execute);
 #if NET10_0_OR_GREATER
+            runtime.RegisterKnownControlledTask(execute);
             return SystemTask.CompletedTask;
 #else
-            return execute.IsCompleted ? execute : SystemTask.CompletedTask;
+            // Match the framework's dereference order: a null ExecuteAsync result fails here with
+            // NullReferenceException before the model attempts to register the task.
+            bool isCompleted = execute.IsCompleted;
+            runtime.RegisterKnownControlledTask(execute);
+            return isCompleted ? execute : SystemTask.CompletedTask;
 #endif
         }
 
