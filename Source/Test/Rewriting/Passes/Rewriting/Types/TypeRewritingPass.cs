@@ -121,6 +121,14 @@ namespace Microsoft.Coyote.Rewriting
             // controlled one, and the cycle is reported as a deadlock on code that is merely stopping. This
             // is also the first model over a type outside the System namespace; see IsSupportedType.
             this.KnownTypes[NameCache.BackgroundService] = typeof(Types.Hosting.BackgroundService);
+            this.KnownTypes[NameCache.IHostedService] = typeof(Types.Hosting.HostedService);
+            this.KnownTypes[NameCache.IHost] = typeof(Types.Hosting.Host);
+            this.KnownTypes[NameCache.HostingAbstractionsHostExtensions] =
+                typeof(Types.Hosting.HostingAbstractionsHostExtensions);
+            this.KnownTypes[NameCache.IDisposable] = typeof(Types.Disposable);
+#if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER
+            this.KnownTypes[NameCache.IAsyncDisposable] = typeof(Types.AsyncDisposable);
+#endif
 #endif
 
             // BlockingCollection is registered HERE, unconditionally, rather than with the concurrent

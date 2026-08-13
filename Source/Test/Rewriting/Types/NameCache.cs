@@ -116,6 +116,14 @@ namespace Microsoft.Coyote.Rewriting.Types
         internal static string HttpRequestMessage { get; } = typeof(SystemNetHttp.HttpRequestMessage).FullName;
 
         internal static string BackgroundService { get; } = typeof(SystemHosting.BackgroundService).FullName;
+        internal static string IHostedService { get; } = typeof(SystemHosting.IHostedService).FullName;
+        internal static string IHost { get; } = typeof(SystemHosting.IHost).FullName;
+        internal static string HostingAbstractionsHostExtensions { get; } =
+            typeof(SystemHosting.HostingAbstractionsHostExtensions).FullName;
+        internal static string IDisposable { get; } = typeof(System.IDisposable).FullName;
+#if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER
+        internal static string IAsyncDisposable { get; } = typeof(System.IAsyncDisposable).FullName;
+#endif
 #endif
 
 #if NET9_0_OR_GREATER

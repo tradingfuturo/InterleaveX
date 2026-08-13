@@ -7,6 +7,7 @@
 
 using System.Collections.Generic;
 using Microsoft.Coyote.Logging;
+using Microsoft.Coyote.Rewriting.Types;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 using Mono.Collections.Generic;
@@ -180,6 +181,20 @@ namespace Microsoft.Coyote.Rewriting
         /// <returns>The unmodified instruction, or the newly replaced instruction.</returns>
         private Instruction VisitCallInstruction(Instruction instruction, MethodReference method)
         {
+            if (instruction.Previous?.OpCode == OpCodes.Constrained &&
+                (method.DeclaringType.FullName == NameCache.IDisposable
+#if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER
+                || method.DeclaringType.FullName == NameCache.IAsyncDisposable
+#endif
+                ))
+            {
+                // A constrained interface call consumes the address of a value type. The disposable
+                // router consumes an interface reference, so replacing this call would leave both the
+                // constrained prefix and the wrong stack shape behind. Value types cannot be a modelled
+                // BackgroundService or IHost, so preserving their native dispatch loses no coverage.
+                return instruction;
+            }
+
             MethodReference newMethod = method;
             bool isRewritten = false;
             if (instruction.OpCode == OpCodes.Call && this.TryResolve(method, out MethodDefinition originalMethod) &&
