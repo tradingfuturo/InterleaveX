@@ -130,17 +130,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             await InvokeAsync(state.LifecycleServices, item => item.StartingAsync(token),
                 state.Options.ServicesStartConcurrently, abortOnFirstException: !state.Options.ServicesStartConcurrently);
 #endif
-            await InvokeAsync(state.Services, item => HostedService.StartAsync(item, token),
+            await InvokeAsync(state.Services, item => StartHostedServiceAsync(
+                item, token, applicationLifetime, state.Options),
 #if NET8_0_OR_GREATER
                 state.Options.ServicesStartConcurrently, abortOnFirstException: !state.Options.ServicesStartConcurrently);
 #else
                 false, abortOnFirstException: true);
 #endif
-
-            foreach (SystemBackgroundService service in state.Services.OfType<SystemBackgroundService>())
-            {
-                ObserveBackgroundService(service, applicationLifetime, state.Options);
-            }
 
 #if NET8_0_OR_GREATER
             await InvokeAsync(state.LifecycleServices, item => item.StartedAsync(token),
@@ -240,6 +236,17 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             }
 
             ThrowCollected(exceptions, "One or more hosted services failed to start.");
+        }
+
+        private static async Task StartHostedServiceAsync(
+            IHostedService service, CancellationToken cancellationToken,
+            IHostApplicationLifetime lifetime, HostOptions options)
+        {
+            await HostedService.StartAsync(service, cancellationToken);
+            if (service is SystemBackgroundService backgroundService)
+            {
+                ObserveBackgroundService(backgroundService, lifetime, options);
+            }
         }
 
         private static async Task CaptureAsync(List<Exception> exceptions, Func<Task> action)
