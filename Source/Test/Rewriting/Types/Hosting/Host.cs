@@ -122,6 +122,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             await state.HostLifetime.WaitForStartAsync(token);
             token.ThrowIfCancellationRequested();
             state.Services = GetRequired<IEnumerable<IHostedService>>(instance.Services).ToList();
+            state.Starting = true;
 #if NET8_0_OR_GREATER
             state.LifecycleServices = state.Services.OfType<IHostedLifecycleService>().ToList();
             IStartupValidator validator = GetOptional<IStartupValidator>(instance.Services);
@@ -146,6 +147,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
                 state.Options.ServicesStartConcurrently, abortOnFirstException: !state.Options.ServicesStartConcurrently);
 #endif
             Notify(applicationLifetime, "NotifyStarted");
+            state.Starting = false;
             state.Started = true;
         }
 
@@ -157,7 +159,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             CancellationToken token = linked.Token;
             var exceptions = new List<Exception>();
 
-            if (state.Started && state.Services != null)
+            if ((state.Starting || state.Started) && state.Services != null)
             {
 #if NET8_0_OR_GREATER
                 await CaptureAsync(exceptions, () => InvokeAsync(
@@ -365,6 +367,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             internal List<IHostedLifecycleService> LifecycleServices { get; set; } = new List<IHostedLifecycleService>();
 #endif
             internal bool Started { get; set; }
+            internal bool Starting { get; set; }
             internal bool Stopped { get; set; }
         }
 
