@@ -14,6 +14,17 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
     [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public static class HostedService
     {
+        public static Task StartAsync<T>(ref T instance, CancellationToken cancellationToken)
+            where T : IHostedService
+        {
+            if (typeof(T).IsValueType || CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return instance.StartAsync(cancellationToken);
+            }
+
+            return StartAsync((IHostedService)instance, cancellationToken);
+        }
+
         public static Task StartAsync(IHostedService instance, CancellationToken cancellationToken)
         {
             if (CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.None)
@@ -24,6 +35,17 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             return instance is SystemBackgroundService service ?
                 Hosting.BackgroundService.StartAsync(service, cancellationToken) :
                 instance.StartAsync(cancellationToken);
+        }
+
+        public static Task StopAsync<T>(ref T instance, CancellationToken cancellationToken)
+            where T : IHostedService
+        {
+            if (typeof(T).IsValueType || CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return instance.StopAsync(cancellationToken);
+            }
+
+            return StopAsync((IHostedService)instance, cancellationToken);
         }
 
         public static Task StopAsync(IHostedService instance, CancellationToken cancellationToken)

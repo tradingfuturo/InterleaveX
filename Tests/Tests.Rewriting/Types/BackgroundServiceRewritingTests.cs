@@ -10,6 +10,7 @@ using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Hosting;
 using Xunit;
 using Xunit.Abstractions;
 using ControlledBackgroundService = Microsoft.Coyote.Rewriting.Types.Hosting.BackgroundService;
@@ -183,6 +184,26 @@ namespace Microsoft.Coyote.Rewriting.Tests
             Assert.Equal(1, service.DisposeCount);
         }
 
+        [Fact(Timeout = 5000)]
+        public void TestConstrainedGenericHostingCallsRemainValid()
+        {
+            var classService = new GenericHostedService();
+            StartAndStopService(ref classService);
+            Assert.Equal(2, classService.CallCount);
+
+            var structService = new GenericHostedServiceStruct();
+            StartAndStopService(ref structService);
+            Assert.Equal(2, structService.CallCount);
+
+            var classHost = new GenericHost();
+            StartAndStopHost(ref classHost);
+            Assert.Equal(2, classHost.CallCount);
+
+            var structHost = new GenericHostStruct();
+            StartAndStopHost(ref structHost);
+            Assert.Equal(2, structHost.CallCount);
+        }
+
         /// <summary>The real <c>StopAsync</c> returns a <see cref="Task"/>.</summary>
         private static class WrongReturnTypeModel
         {
@@ -232,6 +253,100 @@ namespace Microsoft.Coyote.Rewriting.Tests
             }
 
             protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.CompletedTask;
+        }
+
+        private static void StartAndStopService<T>(ref T service)
+            where T : IHostedService
+        {
+            service.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
+            service.StopAsync(CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        private static void StartAndStopHost<T>(ref T host)
+            where T : IHost
+        {
+            host.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
+            host.StopAsync(CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        private sealed class GenericHostedService : IHostedService
+        {
+            internal int CallCount;
+
+            public Task StartAsync(CancellationToken cancellationToken)
+            {
+                this.CallCount++;
+                return Task.CompletedTask;
+            }
+
+            public Task StopAsync(CancellationToken cancellationToken)
+            {
+                this.CallCount++;
+                return Task.CompletedTask;
+            }
+        }
+
+        private struct GenericHostedServiceStruct : IHostedService
+        {
+            internal int CallCount;
+
+            public Task StartAsync(CancellationToken cancellationToken)
+            {
+                this.CallCount++;
+                return Task.CompletedTask;
+            }
+
+            public Task StopAsync(CancellationToken cancellationToken)
+            {
+                this.CallCount++;
+                return Task.CompletedTask;
+            }
+        }
+
+        private sealed class GenericHost : IHost
+        {
+            internal int CallCount;
+
+            public IServiceProvider Services => null;
+
+            public Task StartAsync(CancellationToken cancellationToken)
+            {
+                this.CallCount++;
+                return Task.CompletedTask;
+            }
+
+            public Task StopAsync(CancellationToken cancellationToken)
+            {
+                this.CallCount++;
+                return Task.CompletedTask;
+            }
+
+            public void Dispose()
+            {
+            }
+        }
+
+        private struct GenericHostStruct : IHost
+        {
+            internal int CallCount;
+
+            public IServiceProvider Services => null;
+
+            public Task StartAsync(CancellationToken cancellationToken)
+            {
+                this.CallCount++;
+                return Task.CompletedTask;
+            }
+
+            public Task StopAsync(CancellationToken cancellationToken)
+            {
+                this.CallCount++;
+                return Task.CompletedTask;
+            }
+
+            public void Dispose()
+            {
+            }
         }
 
         /// <summary>

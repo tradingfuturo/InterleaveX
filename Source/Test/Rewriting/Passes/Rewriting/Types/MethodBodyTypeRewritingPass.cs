@@ -5,7 +5,9 @@
 // Modifications are licensed under the GNU General Public License v3.0 or
 // later. See LICENSE-GPL for the full text.
 
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.Coyote.Logging;
 using Microsoft.Coyote.Rewriting.Types;
 using Mono.Cecil;
@@ -183,6 +185,22 @@ namespace Microsoft.Coyote.Rewriting
         {
 #if NET
             if (instruction.Previous?.OpCode == OpCodes.Constrained &&
+                instruction.Previous.Operand is TypeReference constrainedType &&
+                (method.DeclaringType.FullName == NameCache.IHostedService ||
+                 method.DeclaringType.FullName == NameCache.IHost) &&
+                this.TryRewriteConstrainedHostingCall(method, constrainedType, out MethodReference constrainedMethod))
+            {
+                Instruction prefix = instruction.Previous;
+                this.Replace(prefix, Instruction.Create(OpCodes.Nop));
+                Instruction newInstruction = Instruction.Create(OpCodes.Call, constrainedMethod);
+                newInstruction.Offset = instruction.Offset;
+                this.LogWriter.LogDebug("............. [-] {0}", instruction);
+                this.Replace(instruction, newInstruction);
+                this.LogWriter.LogDebug("............. [+] {0}", newInstruction);
+                return newInstruction;
+            }
+
+            if (instruction.Previous?.OpCode == OpCodes.Constrained &&
                 (method.DeclaringType.FullName == NameCache.IDisposable
 #if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER
                 || method.DeclaringType.FullName == NameCache.IAsyncDisposable
@@ -243,6 +261,33 @@ namespace Microsoft.Coyote.Rewriting
 
             return instruction;
         }
+
+#if NET
+        /// <summary>Finds and closes a by-reference generic router for a constrained hosting call.</summary>
+        private bool TryRewriteConstrainedHostingCall(MethodReference originalMethod, TypeReference constrainedType,
+            out MethodReference result)
+        {
+            result = originalMethod;
+            Type providerType = originalMethod.DeclaringType.FullName == NameCache.IHost ?
+                typeof(Types.Hosting.Host) : typeof(Types.Hosting.HostedService);
+            TypeDefinition provider = this.Module.ImportReference(providerType).Resolve();
+            MethodDefinition router = provider?.Methods.FirstOrDefault(candidate =>
+                candidate.Name == originalMethod.Name &&
+                candidate.HasGenericParameters &&
+                candidate.GenericParameters.Count is 1 &&
+                candidate.Parameters.Count == originalMethod.Parameters.Count + 1 &&
+                candidate.Parameters[0].ParameterType is ByReferenceType);
+            if (router is null)
+            {
+                return false;
+            }
+
+            var closed = new GenericInstanceMethod(this.Module.ImportReference(router));
+            closed.GenericArguments.Add(this.Module.ImportReference(constrainedType));
+            result = this.Module.ImportReference(closed);
+            return true;
+        }
+#endif
 
 #if NET
         /// <summary>

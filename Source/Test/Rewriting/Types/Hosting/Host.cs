@@ -28,7 +28,21 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         private static readonly Dictionary<(Type, string), MethodInfo> NotificationMethods =
             new Dictionary<(Type, string), MethodInfo>();
 
+        public static IServiceProvider get_Services<T>(ref T instance)
+            where T : IHost => instance.Services;
+
         public static IServiceProvider get_Services(IHost instance) => instance.Services;
+
+        public static Task StartAsync<T>(ref T instance, CancellationToken cancellationToken = default)
+            where T : IHost
+        {
+            if (typeof(T).IsValueType || CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return instance.StartAsync(cancellationToken);
+            }
+
+            return StartAsync((IHost)instance, cancellationToken);
+        }
 
         public static Task StartAsync(IHost instance, CancellationToken cancellationToken = default)
         {
@@ -48,6 +62,17 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             }
 
             return ControlledTask.Run(() => StopCoreAsync(instance, cancellationToken));
+        }
+
+        public static Task StopAsync<T>(ref T instance, CancellationToken cancellationToken = default)
+            where T : IHost
+        {
+            if (typeof(T).IsValueType || CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return instance.StopAsync(cancellationToken);
+            }
+
+            return StopAsync((IHost)instance, cancellationToken);
         }
 
         public static void Dispose(IHost instance)
