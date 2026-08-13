@@ -22,16 +22,34 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             task.GetAwaiter().GetResult();
         }
 
-        public static Task StopAsync(IHost host, TimeSpan timeout) => ControlledTask.Run(async () =>
+        public static Task StopAsync(IHost host, TimeSpan timeout)
         {
-            using var source = new CancellationTokenSource();
-            _ = ControlledTask.Run(async () =>
+            if (CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.None)
             {
-                await ControlledTask.Delay(timeout);
-                source.Cancel();
+                return Microsoft.Extensions.Hosting.HostingAbstractionsHostExtensions.StopAsync(host, timeout);
+            }
+
+            TimeoutLease lease;
+            var source = new CancellationTokenSource();
+            try
+            {
+                lease = TimeoutLease.Start(source, timeout);
+            }
+            catch
+            {
+                source.Dispose();
+                throw;
+            }
+
+            return ControlledTask.Run(async () =>
+            {
+                using (source)
+                await using (lease)
+                {
+                    await Host.StopAsync(host, source.Token);
+                }
             });
-            await Host.StopAsync(host, source.Token);
-        });
+        }
 
         public static void WaitForShutdown(IHost host)
         {

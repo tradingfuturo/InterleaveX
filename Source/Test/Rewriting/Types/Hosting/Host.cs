@@ -113,9 +113,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken, applicationLifetime.ApplicationStopping);
 #if NET8_0_OR_GREATER
-            using TimeoutLease timeout = TimeoutLease.Start(linked, state.Options.StartupTimeout);
+            await using TimeoutLease timeout = TimeoutLease.Start(linked, state.Options.StartupTimeout);
 #else
-            using TimeoutLease timeout = TimeoutLease.Start(linked, Timeout.InfiniteTimeSpan);
+            await using TimeoutLease timeout = TimeoutLease.Start(linked, Timeout.InfiniteTimeSpan);
 #endif
             CancellationToken token = linked.Token;
 
@@ -151,7 +151,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         {
             State state = Hosts.GetValue(instance, host => new State(host));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            using TimeoutLease timeout = TimeoutLease.Start(linked, state.Options.ShutdownTimeout);
+            await using TimeoutLease timeout = TimeoutLease.Start(linked, state.Options.ShutdownTimeout);
             CancellationToken token = linked.Token;
             var exceptions = new List<Exception>();
 
@@ -384,33 +384,6 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             internal bool Stopped { get; set; }
         }
 
-        private sealed class TimeoutLease : IDisposable
-        {
-            private readonly CancellationTokenSource Source;
-            private volatile bool IsActive;
-
-            private TimeoutLease(CancellationTokenSource source, TimeSpan timeout)
-            {
-                this.Source = source;
-                this.IsActive = timeout != Timeout.InfiniteTimeSpan;
-                if (this.IsActive)
-                {
-                    _ = ControlledTask.Run(async () =>
-                    {
-                        await ControlledTask.Delay(timeout);
-                        if (this.IsActive)
-                        {
-                            this.Source.Cancel();
-                        }
-                    });
-                }
-            }
-
-            internal static TimeoutLease Start(CancellationTokenSource source, TimeSpan timeout) =>
-                new TimeoutLease(source, timeout);
-
-            public void Dispose() => this.IsActive = false;
-        }
     }
 }
 #pragma warning restore CS1591
