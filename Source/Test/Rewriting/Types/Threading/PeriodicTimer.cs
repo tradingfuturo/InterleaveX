@@ -131,11 +131,6 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 Timers.TryGetValue(instance, out State state))
             {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return SystemTasks.ValueTask.FromCanceled<bool>(cancellationToken);
-                }
-
                 return state.BeginWait(cancellationToken, out _);
             }
 
@@ -192,16 +187,22 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             {
                 lock (this.SyncObject)
                 {
-                    if (this.IsDisposed)
-                    {
-                        version = 0;
-                        return new SystemTasks.ValueTask<bool>(false);
-                    }
-
                     if (this.IsActive)
                     {
                         throw new InvalidOperationException(
                             "Operation is not valid due to the current state of the object.");
+                    }
+
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        version = 0;
+                        return SystemTasks.ValueTask.FromCanceled<bool>(cancellationToken);
+                    }
+
+                    if (this.IsDisposed)
+                    {
+                        version = 0;
+                        return new SystemTasks.ValueTask<bool>(false);
                     }
 
                     this.Source.Reset();
