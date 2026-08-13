@@ -32,7 +32,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
                 return instance.StartAsync(cancellationToken);
             }
 
-            return instance is SystemBackgroundService service ?
+            return instance is SystemBackgroundService service &&
+                Hosting.BackgroundService.UsesHostedServiceSlot(service, nameof(IHostedService.StartAsync)) ?
                 Hosting.BackgroundService.StartAsync(service, cancellationToken) :
                 instance.StartAsync(cancellationToken);
         }
@@ -55,7 +56,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
                 return instance.StopAsync(cancellationToken);
             }
 
-            return instance is SystemBackgroundService service ?
+            return instance is SystemBackgroundService service &&
+                Hosting.BackgroundService.UsesHostedServiceSlot(service, nameof(IHostedService.StopAsync)) ?
                 Hosting.BackgroundService.StopAsync(service, cancellationToken) :
                 instance.StopAsync(cancellationToken);
         }

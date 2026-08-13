@@ -18,7 +18,8 @@ namespace Microsoft.Coyote.Rewriting.Types
     {
         public static void Dispose(IDisposable instance)
         {
-            if (instance is SystemBackgroundService service)
+            if (instance is SystemBackgroundService service &&
+                Hosting.BackgroundService.UsesDisposableSlot(service))
             {
                 Hosting.BackgroundService.Dispose(service);
             }

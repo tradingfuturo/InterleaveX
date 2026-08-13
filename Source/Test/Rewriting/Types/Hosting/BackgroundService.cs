@@ -10,6 +10,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using Microsoft.Coyote.Runtime;
 using SystemBackgroundService = Microsoft.Extensions.Hosting.BackgroundService;
+using SystemHostedService = Microsoft.Extensions.Hosting.IHostedService;
 using SystemCancellationToken = System.Threading.CancellationToken;
 using SystemCancellationTokenSource = System.Threading.CancellationTokenSource;
 using SystemTask = System.Threading.Tasks.Task;
@@ -268,6 +269,37 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
                 state.StoppingSource?.Dispose();
                 state.StoppingSource = null;
             }
+        }
+
+        internal static bool UsesHostedServiceSlot(
+            SystemBackgroundService instance, string interfaceMethodName)
+        {
+            InterfaceMapping mapping = instance.GetType().GetInterfaceMap(typeof(SystemHostedService));
+            for (int idx = 0; idx < mapping.InterfaceMethods.Length; idx++)
+            {
+                if (mapping.InterfaceMethods[idx].Name == interfaceMethodName)
+                {
+                    // An explicit interface reimplementation is emitted as a private final method.
+                    // Public virtual targets retain BackgroundService's dispatch slot, including overrides.
+                    return !mapping.TargetMethods[idx].IsPrivate;
+                }
+            }
+
+            return false;
+        }
+
+        internal static bool UsesDisposableSlot(SystemBackgroundService instance)
+        {
+            InterfaceMapping mapping = instance.GetType().GetInterfaceMap(typeof(IDisposable));
+            for (int idx = 0; idx < mapping.InterfaceMethods.Length; idx++)
+            {
+                if (mapping.InterfaceMethods[idx].Name == nameof(IDisposable.Dispose))
+                {
+                    return !mapping.TargetMethods[idx].IsPrivate;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>

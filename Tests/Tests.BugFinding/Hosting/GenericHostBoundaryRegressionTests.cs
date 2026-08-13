@@ -92,6 +92,26 @@ namespace Microsoft.Coyote.BugFinding.Tests
             });
         }
 
+        [Fact(Timeout = 5000)]
+        public void TestExplicitBackgroundServiceInterfacesKeepTheirImplementations()
+        {
+            this.Test(async () =>
+            {
+                var service = new ExplicitInterfaceService();
+                IHostedService hosted = service;
+                await hosted.StartAsync(CancellationToken.None);
+                await hosted.StopAsync(CancellationToken.None);
+                ((IDisposable)service).Dispose();
+
+                Specification.Assert(service.StartCount is 1,
+                    "The explicit IHostedService.StartAsync implementation was replaced.");
+                Specification.Assert(service.StopCount is 1,
+                    "The explicit IHostedService.StopAsync implementation was replaced.");
+                Specification.Assert(service.DisposeCount is 1,
+                    "The explicit IDisposable.Dispose implementation was replaced.");
+            });
+        }
+
         private sealed class OrderedService : BackgroundService
         {
             private readonly List<string> Events;
@@ -146,6 +166,29 @@ namespace Microsoft.Coyote.BugFinding.Tests
             }
 
             public void Dispose() => this.DisposeCount++;
+        }
+
+        private sealed class ExplicitInterfaceService : BackgroundService, IHostedService, IDisposable
+        {
+            internal int StartCount;
+            internal int StopCount;
+            internal int DisposeCount;
+
+            Task IHostedService.StartAsync(CancellationToken cancellationToken)
+            {
+                this.StartCount++;
+                return Task.CompletedTask;
+            }
+
+            Task IHostedService.StopAsync(CancellationToken cancellationToken)
+            {
+                this.StopCount++;
+                return Task.CompletedTask;
+            }
+
+            void IDisposable.Dispose() => this.DisposeCount++;
+
+            protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.CompletedTask;
         }
     }
 }
