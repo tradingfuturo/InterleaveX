@@ -3,8 +3,10 @@
 
 #if NET
 using System;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Tasks.Sources;
 using Microsoft.Coyote.Specifications;
 using Xunit;
 using Xunit.Abstractions;
@@ -88,6 +90,30 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 Specification.Assert(threw, "A pre-canceled token bypassed the active-wait check.");
                 timer.Dispose();
                 Specification.Assert(!await first, "Disposal did not complete the first wait as false.");
+            });
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestDisposalVoidsASignaledButUnconsumedTick()
+        {
+            this.Test(async () =>
+            {
+                var timer = new PeriodicTimer(TimeSpan.FromMinutes(10));
+                ValueTask<bool> wait = timer.WaitForNextTickAsync(CancellationToken.None);
+                object boxedWait = wait;
+                var source = (IValueTaskSource<bool>)typeof(ValueTask<bool>).GetField(
+                    "_obj", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(boxedWait);
+                short token = (short)typeof(ValueTask<bool>).GetField(
+                    "_token", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(boxedWait);
+                var signaled = new TaskCompletionSource<bool>();
+                source.OnCompleted(_ => signaled.TrySetResult(true), null, token,
+                    ValueTaskSourceOnCompletedFlags.UseSchedulingContext);
+
+                await signaled.Task;
+                timer.Dispose();
+
+                Specification.Assert(!source.GetResult(token),
+                    "Disposal did not void a tick that had not yet been consumed.");
             });
         }
     }

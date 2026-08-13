@@ -299,7 +299,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 {
                     lock (this.SyncObject)
                     {
-                        return this.Source.GetResult(token);
+                        bool result = this.Source.GetResult(token);
+                        return result && !this.IsDisposed;
                     }
                 }
                 finally
