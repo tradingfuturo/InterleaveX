@@ -86,6 +86,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         }
 #endif
 
+#if NET8_0_OR_GREATER
         /// <summary>
         /// Gets the period between ticks.
         /// </summary>
@@ -107,11 +108,17 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             {
                 ValidatePeriod(value);
                 state.Period = value;
+                if (state.IsDisposed)
+                {
+                    throw new ObjectDisposedException(nameof(SystemPeriodicTimer));
+                }
+
                 return;
             }
 
             instance.Period = value;
         }
+#endif
 
         /// <summary>
         /// Waits for the next tick of the timer, or for the timer to be disposed.
@@ -149,8 +156,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
         private static void ValidatePeriod(TimeSpan period)
         {
+            long milliseconds = (long)period.TotalMilliseconds;
             if (period != SystemTimeout.InfiniteTimeSpan &&
-                (period <= TimeSpan.Zero || period.TotalMilliseconds > MaxPeriodMilliseconds))
+                (milliseconds < 1 || milliseconds > MaxPeriodMilliseconds))
             {
                 throw new ArgumentOutOfRangeException(nameof(period));
             }
