@@ -7,6 +7,7 @@ using System;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks.Sources;
 using Microsoft.Coyote.Runtime;
+using Microsoft.Coyote.Runtime.CompilerServices;
 using ControlledTask = Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task;
 using SystemCancellationToken = System.Threading.CancellationToken;
 using SystemPeriodicTimer = System.Threading.PeriodicTimer;
@@ -167,12 +168,14 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// <summary>
         /// The cadence and lifetime of one controlled timer.
         /// </summary>
-        private sealed class State : IValueTaskSource<bool>
+        private sealed class State : IValueTaskSource<bool>, IControllableValueTaskSource
         {
             private readonly object SyncObject = new object();
             private ManualResetValueTaskSourceCore<bool> Source;
             private System.Threading.CancellationTokenRegistration CancellationRegistration;
+            private System.Threading.Tasks.TaskCompletionSource<bool> Completion;
             private bool IsActive;
+            private bool IsCompleted;
 
             internal State(TimeSpan period)
             {
@@ -202,7 +205,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     }
 
                     this.Source.Reset();
+                    this.Completion = new System.Threading.Tasks.TaskCompletionSource<bool>(
+                        System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+                    CoyoteRuntime.Current.RegisterKnownControlledTask(this.Completion.Task);
                     this.IsActive = true;
+                    this.IsCompleted = false;
                     version = this.Source.Version;
                 }
 
@@ -227,37 +234,61 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
             internal void Signal(short version, bool result)
             {
+                System.Threading.Tasks.TaskCompletionSource<bool> completion = null;
                 lock (this.SyncObject)
                 {
                     if (this.IsActive && version == this.Source.Version &&
-                        this.Source.GetStatus(version) is ValueTaskSourceStatus.Pending)
+                        !this.IsCompleted)
                     {
-                        this.Source.SetResult(result);
+                        this.IsCompleted = true;
+                        completion = this.Completion;
                     }
+                }
+
+                if (completion != null)
+                {
+                    completion.TrySetResult(result);
+                    this.Source.SetResult(result);
                 }
             }
 
             internal void Dispose()
             {
+                System.Threading.Tasks.TaskCompletionSource<bool> completion = null;
                 lock (this.SyncObject)
                 {
                     this.IsDisposed = true;
-                    if (this.IsActive && this.Source.GetStatus(this.Source.Version) is ValueTaskSourceStatus.Pending)
+                    if (this.IsActive && !this.IsCompleted)
                     {
-                        this.Source.SetResult(false);
+                        this.IsCompleted = true;
+                        completion = this.Completion;
                     }
+                }
+
+                if (completion != null)
+                {
+                    completion.TrySetResult(false);
+                    this.Source.SetResult(false);
                 }
             }
 
             private void Cancel(short version, SystemCancellationToken token)
             {
+                System.Threading.Tasks.TaskCompletionSource<bool> completion = null;
                 lock (this.SyncObject)
                 {
                     if (this.IsActive && version == this.Source.Version &&
-                        this.Source.GetStatus(version) is ValueTaskSourceStatus.Pending)
+                        !this.IsCompleted)
                     {
-                        this.Source.SetException(new OperationCanceledException(token));
+                        this.IsCompleted = true;
+                        completion = this.Completion;
                     }
+                }
+
+                if (completion != null)
+                {
+                    completion.TrySetCanceled(token);
+                    this.Source.SetException(new OperationCanceledException(token));
                 }
             }
 
@@ -289,6 +320,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 lock (this.SyncObject)
                 {
                     return this.Source.GetStatus(token);
+                }
+            }
+
+            System.Threading.Tasks.Task IControllableValueTaskSource.GetTask(short token)
+            {
+                lock (this.SyncObject)
+                {
+                    _ = this.Source.GetStatus(token);
+                    return this.Completion.Task;
                 }
             }
 

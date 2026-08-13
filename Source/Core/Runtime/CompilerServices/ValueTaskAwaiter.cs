@@ -185,7 +185,15 @@ namespace Microsoft.Coyote.Runtime.CompilerServices
         {
             // Access the payload through reflection.
             var field = task.GetType().GetField("_obj", BindingFlags.NonPublic | BindingFlags.Instance);
-            payload = field?.GetValueDirect(__makeref(task)) as SystemTask;
+            object value = field?.GetValueDirect(__makeref(task));
+            payload = value as SystemTask;
+            if (payload is null && value is IControllableValueTaskSource source)
+            {
+                var tokenField = task.GetType().GetField("_token", BindingFlags.NonPublic | BindingFlags.Instance);
+                short token = (short)(tokenField?.GetValueDirect(__makeref(task)) ?? default(short));
+                payload = source.GetTask(token);
+            }
+
             return payload != null;
         }
 
@@ -198,7 +206,15 @@ namespace Microsoft.Coyote.Runtime.CompilerServices
         {
             // Access the payload through reflection.
             var field = task.GetType().GetField("_obj", BindingFlags.NonPublic | BindingFlags.Instance);
-            payload = field?.GetValueDirect(__makeref(task)) as SystemTasks.Task<TResult>;
+            object value = field?.GetValueDirect(__makeref(task));
+            payload = value as SystemTasks.Task<TResult>;
+            if (payload is null && value is IControllableValueTaskSource source)
+            {
+                var tokenField = task.GetType().GetField("_token", BindingFlags.NonPublic | BindingFlags.Instance);
+                short token = (short)(tokenField?.GetValueDirect(__makeref(task)) ?? default(short));
+                payload = source.GetTask(token) as SystemTasks.Task<TResult>;
+            }
+
             return payload != null;
         }
     }
