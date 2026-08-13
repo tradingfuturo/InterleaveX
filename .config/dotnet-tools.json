@@ -24,7 +24,7 @@
       "rollForward": false
     },
     "interleavex.cli": {
-      "version": "1.8.2",
+      "version": "1.8.3",
       "commands": [
         "interleavex"
       ],
