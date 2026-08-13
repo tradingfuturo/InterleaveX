@@ -37,7 +37,13 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 await service.StartAsync(CancellationToken.None);
                 await service.StopAsync(CancellationToken.None);
 
+#if !NET10_0_OR_GREATER
+                // Through .NET 9 StartAsync invokes ExecuteAsync synchronously until its first await, so the
+                // loop must have entered before StartAsync returns. .NET 10 queues ExecuteAsync instead, and
+                // an immediate StopAsync is allowed to cancel that queued work before it starts.
                 Specification.Assert(service.Ticks > 0, "The service loop never ran.");
+#endif
+                Specification.Assert(service.ExecuteTask != null, "The service execution task was not published.");
                 Specification.Assert(service.ExecuteTask.IsCompleted, "The service loop was still running.");
             },
             this.GetConfiguration().WithTestingIterations(100));
