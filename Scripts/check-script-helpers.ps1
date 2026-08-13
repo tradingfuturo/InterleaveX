@@ -21,6 +21,11 @@ $ErrorActionPreference = "Stop"
 $RootDir = (Resolve-Path "$PSScriptRoot/..").Path
 Import-Module $PSScriptRoot/common.psm1 -Force
 
+& $PSScriptRoot/check-ilverify-diagnostics.ps1
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 $failures = New-Object System.Collections.ArrayList
 
 function Assert-That($condition, $description) {

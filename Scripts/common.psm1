@@ -142,20 +142,33 @@ function Invoke-TestTargetShard([hashtable]$Context, [String]$Name, [String]$Pro
                 $original = [IO.Path]::Combine($Context.ScriptRoot, "..", "Tests", $Project, "obj", `
                     $configuration, $f, "$assembly_name.dll")
                 $introduced = $verified.Errors
-                if (($verified.Errors.Count -gt 0) -and (Test-Path $original)) {
+                $introducedUnparsed = $verified.Unparsed
+                $baselineWasUsable = $true
+                if ((($verified.Errors.Count -gt 0) -or ($verified.Unparsed.Count -gt 0)) -and (Test-Path $original)) {
                     $baseline = Invoke-Ilverify -Context $Context -Assembly $original -References $references
                     $introduced = @($verified.Errors | Where-Object { $baseline.Errors -notcontains $_ })
+                    $introducedUnparsed = @($verified.Unparsed | Where-Object { $baseline.Unparsed -notcontains $_ })
+                    $baselineWasUsable = $baseline.ExitCode -eq 0 -or
+                        $baseline.Errors.Count -gt 0 -or $baseline.Unparsed.Count -gt 0
                     $inherited = $verified.Errors.Count - $introduced.Count
-                    [void]$output.AppendLine("... $inherited of $($verified.Errors.Count) error(s) are the " +
+                    [void]$output.AppendLine("... $inherited of $($verified.Errors.Count) parsed error(s) are the " +
                         "compiler's own and are present before rewriting.")
                 }
 
                 # An exit code with no error we could parse is the verifier itself failing, and that
                 # stays fatal: nothing has been shown about the rewrite either way.
-                if ($introduced.Count -gt 0 -or $verified.Errors.Count -eq 0) {
+                if ($introduced.Count -gt 0 -or $introducedUnparsed.Count -gt 0 -or
+                    -not $baselineWasUsable -or
+                    ($verified.Errors.Count -eq 0 -and $verified.Unparsed.Count -eq 0)) {
                     [void]$output.AppendLine("Error: found corrupted assembly rewriting in '$Project' ($f).")
                     foreach ($e in $introduced) {
                         [void]$output.AppendLine("  introduced by rewriting: $e")
+                    }
+                    foreach ($e in $introducedUnparsed) {
+                        [void]$output.AppendLine("  unclassified verifier failure: $e")
+                    }
+                    if (-not $baselineWasUsable) {
+                        [void]$output.AppendLine("  the compiler baseline verifier failed without a classifiable diagnostic")
                     }
 
                     return New-Result "ilverify" $verified.ExitCode
@@ -257,7 +270,8 @@ function Invoke-ToolCommand([String]$tool, [String]$cmd, [String]$error_msg) {
 # console interleave into something no one can read, so each shard's output is held and printed as a
 # block once it finishes. Both streams are captured, because a tool that fails usually explains
 # itself on standard error.
-# Verifies one assembly and returns the errors it reported alongside the exit code.
+# Verifies one assembly and returns every categorized error and any unclassified failure output
+# alongside the exit code.
 #
 # The error lines name the assembly they came from, and the two copies of an assembly this is used to
 # compare — the compiler's output in 'obj' and the rewritten one in 'bin' — differ only in that path,
@@ -270,13 +284,22 @@ function Invoke-Ilverify([hashtable]$Context, [String]$Assembly, [String[]]$Refe
     }
 
     $result = Invoke-ToolCommandWithResult -tool $Context.Ilverify -cmd $cmd
-    $errors = @($result.Output -split "`n" |
-        Where-Object { $_ -match '^\[IL\]: Error' } |
+    $lines = @($result.Output -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+    $errors = @($lines |
+        Where-Object { $_ -match '^\[[^\]]+\]: Error' } |
         ForEach-Object { ($_ -replace '\[[^\]]*\.dll : ', '[').Trim() })
+    $unparsed = @()
+    if ($result.ExitCode -ne 0) {
+        $unparsed = @($lines | Where-Object {
+            $_ -notmatch '^\[[^\]]+\]: Error' -and
+            $_ -notmatch '^\d+ Error\(s\) Verifying '
+        } | ForEach-Object { ($_ -replace '\[[^\]]*\.dll : ', '[').Trim() })
+    }
 
     return [pscustomobject]@{
         ExitCode = $result.ExitCode
         Errors = $errors
+        Unparsed = $unparsed
         Output = $result.Output
     }
 }
