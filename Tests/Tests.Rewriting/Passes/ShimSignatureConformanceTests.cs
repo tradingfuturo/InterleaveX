@@ -60,6 +60,41 @@ namespace Microsoft.Coyote.Rewriting.Tests
             };
 
         /// <summary>
+        /// Signature-specific compiler entry points that are selected by specialized rewriting passes
+        /// instead of the ordinary replacement lookup.
+        /// </summary>
+        private static readonly IReadOnlyDictionary<string, string> KnownSignatureDivergences =
+            new Dictionary<string, string>
+            {
+                ["Microsoft.Coyote.Rewriting.Types.Hosting.BackgroundService::DisposeBase(BackgroundService)"] =
+                    "Selected explicitly for a nonvirtual base call.",
+                ["Microsoft.Coyote.Rewriting.Types.Hosting.BackgroundService::get_ExecuteTaskBase(BackgroundService)"] =
+                    "Selected explicitly for a nonvirtual base call.",
+                ["Microsoft.Coyote.Rewriting.Types.Hosting.BackgroundService::IsExecutionControlled()"] =
+                    "Injected as the policy branch for rewritten base calls.",
+                ["Microsoft.Coyote.Rewriting.Types.Hosting.BackgroundService::StartAsyncBase(BackgroundService, CancellationToken)"] =
+                    "Selected explicitly for a nonvirtual base call.",
+                ["Microsoft.Coyote.Rewriting.Types.Hosting.BackgroundService::StopAsyncBase(BackgroundService, CancellationToken)"] =
+                    "Selected explicitly for a nonvirtual base call.",
+                ["Microsoft.Coyote.Rewriting.Types.Hosting.Host::Dispose(IHost)"] =
+                    "Selected by the IDisposable router for IHost instances.",
+                ["Microsoft.Coyote.Rewriting.Types.Hosting.Host::DisposeAsync(IHost)"] =
+                    "Selected by the IAsyncDisposable router for IHost instances.",
+                ["Microsoft.Coyote.Rewriting.Types.Hosting.Host::get_Services(T&)"] =
+                    "Closed and selected explicitly for constrained generic calls.",
+                ["Microsoft.Coyote.Rewriting.Types.Hosting.Host::IsFrameworkHost(IHost)"] =
+                    "Internal runtime identity predicate, not a replacement.",
+                ["Microsoft.Coyote.Rewriting.Types.Hosting.Host::StartAsync(T&, CancellationToken)"] =
+                    "Closed and selected explicitly for constrained generic calls.",
+                ["Microsoft.Coyote.Rewriting.Types.Hosting.Host::StopAsync(T&, CancellationToken)"] =
+                    "Closed and selected explicitly for constrained generic calls.",
+                ["Microsoft.Coyote.Rewriting.Types.Hosting.HostedService::StartAsync(T&, CancellationToken)"] =
+                    "Closed and selected explicitly for constrained generic calls.",
+                ["Microsoft.Coyote.Rewriting.Types.Hosting.HostedService::StopAsync(T&, CancellationToken)"] =
+                    "Closed and selected explicitly for constrained generic calls.",
+            };
+
+        /// <summary>
         /// Methods of a guarded collection that knowingly have no replacement, keyed by declaring type
         /// and signature. Each entry is an access that runs unguarded, so each needs a reason.
         /// </summary>
@@ -218,6 +253,12 @@ namespace Microsoft.Coyote.Rewriting.Tests
                 }
 
                 if (KnownDivergences.ContainsKey($"{replacement.FullName}::{method.Name}"))
+                {
+                    continue;
+                }
+
+                if (KnownSignatureDivergences.ContainsKey(
+                    $"{replacement.FullName}::{DescribeSignature(method)}"))
                 {
                     continue;
                 }

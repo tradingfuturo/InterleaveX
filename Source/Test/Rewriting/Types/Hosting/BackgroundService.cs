@@ -58,6 +58,10 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         private static readonly ConcurrentDictionary<(Type, string), MethodInfo> Overrides =
             new ConcurrentDictionary<(Type, string), MethodInfo>();
 
+        /// <summary>Returns true when rewritten base calls must use the controlled model.</summary>
+        public static bool IsExecutionControlled() =>
+            CoyoteRuntime.Current.SchedulingPolicy != SchedulingPolicy.None;
+
         /// <summary>
         /// Starts the service, running its <c>ExecuteAsync</c> as a controlled operation.
         /// </summary>
@@ -83,11 +87,6 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             SystemBackgroundService instance, SystemCancellationToken cancellationToken)
         {
             var runtime = CoyoteRuntime.Current;
-            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
-            {
-                return instance.StartAsync(cancellationToken);
-            }
-
             State state = Services.GetValue(instance, _ => new State());
             state.StoppingSource = SystemCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
@@ -143,12 +142,6 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         public static SystemTask StopAsyncBase(
             SystemBackgroundService instance, SystemCancellationToken cancellationToken)
         {
-            var runtime = CoyoteRuntime.Current;
-            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
-            {
-                return instance.StopAsync(cancellationToken);
-            }
-
             return StopAsyncBaseCore(instance, cancellationToken);
         }
 
@@ -241,7 +234,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
                 return state.ExecuteTask;
             }
 
-            return instance.ExecuteTask;
+            return null;
         }
 
         /// <summary>
@@ -269,12 +262,6 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         /// <summary>Runs the controlled base implementation of <c>Dispose</c>.</summary>
         public static void DisposeBase(SystemBackgroundService instance)
         {
-            if (CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.None)
-            {
-                instance.Dispose();
-                return;
-            }
-
             if (Services.TryGetValue(instance, out State state))
             {
                 state.StoppingSource?.Cancel();

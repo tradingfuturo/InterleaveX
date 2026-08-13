@@ -168,6 +168,21 @@ namespace Microsoft.Coyote.Rewriting.Tests
                 "a call to that member would be left unrewritten with the gate still green.");
         }
 
+        [Fact(Timeout = 5000)]
+        public async Task TestBaseCallsKeepNonvirtualDispatchWithoutSystematicExecution()
+        {
+            var service = new BaseCallingService();
+            await service.StartAsync(CancellationToken.None);
+            _ = service.ExecuteTask;
+            await service.StopAsync(CancellationToken.None);
+            service.Dispose();
+
+            Assert.Equal(1, service.StartCount);
+            Assert.Equal(1, service.TaskCount);
+            Assert.Equal(1, service.StopCount);
+            Assert.Equal(1, service.DisposeCount);
+        }
+
         /// <summary>The real <c>StopAsync</c> returns a <see cref="Task"/>.</summary>
         private static class WrongReturnTypeModel
         {
@@ -180,6 +195,43 @@ namespace Microsoft.Coyote.Rewriting.Tests
         {
             public static Task StartAsync(SystemBackgroundService instance, CancellationToken token) =>
                 instance.StartAsync(token);
+        }
+
+        private sealed class BaseCallingService : SystemBackgroundService
+        {
+            internal int StartCount;
+            internal int StopCount;
+            internal int DisposeCount;
+            internal int TaskCount;
+
+            public override Task StartAsync(CancellationToken cancellationToken)
+            {
+                Assert.True(++this.StartCount <= 1, "StartAsync base call redispatched to the override.");
+                return base.StartAsync(cancellationToken);
+            }
+
+            public override Task StopAsync(CancellationToken cancellationToken)
+            {
+                Assert.True(++this.StopCount <= 1, "StopAsync base call redispatched to the override.");
+                return base.StopAsync(cancellationToken);
+            }
+
+            public override Task ExecuteTask
+            {
+                get
+                {
+                    Assert.True(++this.TaskCount <= 1, "ExecuteTask base call redispatched to the override.");
+                    return base.ExecuteTask;
+                }
+            }
+
+            public override void Dispose()
+            {
+                Assert.True(++this.DisposeCount <= 1, "Dispose base call redispatched to the override.");
+                base.Dispose();
+            }
+
+            protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.CompletedTask;
         }
 
         /// <summary>

@@ -181,6 +181,7 @@ namespace Microsoft.Coyote.Rewriting
         /// <returns>The unmodified instruction, or the newly replaced instruction.</returns>
         private Instruction VisitCallInstruction(Instruction instruction, MethodReference method)
         {
+#if NET
             if (instruction.Previous?.OpCode == OpCodes.Constrained &&
                 (method.DeclaringType.FullName == NameCache.IDisposable
 #if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER
@@ -194,9 +195,13 @@ namespace Microsoft.Coyote.Rewriting
                 // BackgroundService or IHost, so preserving their native dispatch loses no coverage.
                 return instruction;
             }
+#endif
 
             MethodReference newMethod = method;
             bool isRewritten = false;
+#if NET
+            bool isBaseCall = false;
+#endif
             if (instruction.OpCode == OpCodes.Call && this.TryResolve(method, out MethodDefinition originalMethod) &&
                 originalMethod.IsVirtual)
             {
@@ -204,6 +209,9 @@ namespace Microsoft.Coyote.Rewriting
                 // that and 'callvirt', which makes an override that awaits before calling base redispatch
                 // to itself after the model's temporary call stack has unwound.
                 isRewritten = this.TryRewriteMethodReference(method, method.Name + "Base", out newMethod);
+#if NET
+                isBaseCall = isRewritten;
+#endif
             }
 
             if (!isRewritten)
@@ -214,6 +222,13 @@ namespace Microsoft.Coyote.Rewriting
             if (isRewritten &&
                 this.TryResolve(newMethod, out MethodDefinition resolvedMethod))
             {
+#if NET
+                if (isBaseCall)
+                {
+                    return this.RewriteBaseCall(instruction, method, newMethod);
+                }
+#endif
+
                 // Create and return the new instruction.
                 Instruction newInstruction = Instruction.Create(resolvedMethod.IsVirtual ?
                     OpCodes.Callvirt : OpCodes.Call, newMethod);
@@ -228,6 +243,45 @@ namespace Microsoft.Coyote.Rewriting
 
             return instruction;
         }
+
+#if NET
+        /// <summary>
+        /// Rewrites a nonvirtual base call so normal execution keeps the original CLR dispatch while
+        /// systematic execution enters the controlled base model.
+        /// </summary>
+        private Instruction RewriteBaseCall(Instruction instruction, MethodReference originalMethod,
+            MethodReference controlledMethod)
+        {
+            MethodReference predicate = this.TryImportMethod(
+                typeof(Types.Hosting.BackgroundService), nameof(Types.Hosting.BackgroundService.IsExecutionControlled));
+            if (predicate is null)
+            {
+                return instruction;
+            }
+
+            var instructions = new List<Instruction>();
+            instructions.Add(this.Processor.Create(OpCodes.Call, predicate));
+            Instruction controlledStart = this.Processor.Create(OpCodes.Call, controlledMethod);
+            Instruction end = this.Processor.Create(OpCodes.Nop);
+            instructions.Add(this.Processor.Create(OpCodes.Brtrue, controlledStart));
+            instructions.Add(this.Processor.Create(OpCodes.Call, originalMethod));
+            instructions.Add(this.Processor.Create(OpCodes.Br, end));
+            instructions.Add(controlledStart);
+            instructions.Add(end);
+
+            this.LogWriter.LogDebug("............. [-] {0}", instruction);
+            Instruction current = instructions[0];
+            this.Replace(instruction, current);
+            for (int idx = 1; idx < instructions.Count; ++idx)
+            {
+                this.Processor.InsertAfter(current, instructions[idx]);
+                current = instructions[idx];
+            }
+
+            this.LogWriter.LogDebug("............. [+] guarded base call to {0}", originalMethod);
+            return end;
+        }
+#endif
 
         /// <summary>
         /// Tries to rewrite the specified <see cref="MethodReference"/>.
