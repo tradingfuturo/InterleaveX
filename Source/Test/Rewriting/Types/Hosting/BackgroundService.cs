@@ -180,9 +180,19 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
                     !isExecuteUncontrolled,
                     "the background service to stop or its shutdown token to be canceled");
             }
-            else
+            else if (runtime.SchedulingPolicy is SchedulingPolicy.Fuzzing)
             {
+                // Keep the fuzzing perturbation, then preserve the real shutdown dependency instead
+                // of reporting completion while ExecuteAsync is still live.
                 runtime.DelayOperation(runtime.GetExecutingOperation());
+                var cancellationSource = new System.Threading.Tasks.TaskCompletionSource<bool>(
+                    System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+                runtime.RegisterKnownControlledTask(cancellationSource.Task);
+                using System.Threading.CancellationTokenRegistration registration = cancellationToken.Register(
+                    () => cancellationSource.TrySetCanceled(cancellationToken));
+                SystemTask cancellation = cancellationSource.Task;
+                SystemTask winner = await Types.Threading.Tasks.Task.WhenAny(execute, cancellation);
+                await winner;
             }
 
             await SystemTask.CompletedTask;
