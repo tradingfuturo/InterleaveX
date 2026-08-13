@@ -180,7 +180,23 @@ namespace Microsoft.Coyote.Rewriting
         /// <returns>The unmodified instruction, or the newly replaced instruction.</returns>
         private Instruction VisitCallInstruction(Instruction instruction, MethodReference method)
         {
-            if (this.TryRewriteMethodReference(method, out MethodReference newMethod) &&
+            MethodReference newMethod = method;
+            bool isRewritten = false;
+            if (instruction.OpCode == OpCodes.Call && this.TryResolve(method, out MethodDefinition originalMethod) &&
+                originalMethod.IsVirtual)
+            {
+                // A virtual 'call' is a base call. Static models otherwise erase the distinction between
+                // that and 'callvirt', which makes an override that awaits before calling base redispatch
+                // to itself after the model's temporary call stack has unwound.
+                isRewritten = this.TryRewriteMethodReference(method, method.Name + "Base", out newMethod);
+            }
+
+            if (!isRewritten)
+            {
+                isRewritten = this.TryRewriteMethodReference(method, out newMethod);
+            }
+
+            if (isRewritten &&
                 this.TryResolve(newMethod, out MethodDefinition resolvedMethod))
             {
                 // Create and return the new instruction.
@@ -373,8 +389,11 @@ namespace Microsoft.Coyote.Rewriting
             match = null;
             foreach (var method in declaringType.Methods)
             {
-                if ((method.Name == matchName && CheckMethodParametersMatch(originalMethod, method)) ||
-                    CheckMethodSignaturesMatch(originalMethod, method, expectedReturnType))
+                bool isMatch = matchName != null ?
+                    method.Name == matchName && CheckMethodSignaturesMatch(
+                        originalMethod, method, expectedReturnType, ignoreName: true) :
+                    CheckMethodSignaturesMatch(originalMethod, method, expectedReturnType);
+                if (isMatch)
                 {
                     match = method;
                     break;
@@ -489,12 +508,12 @@ namespace Microsoft.Coyote.Rewriting
         /// </para>
         /// </remarks>
         private static bool CheckMethodSignaturesMatch(MethodDefinition originalMethod, MethodDefinition newMethod,
-            TypeReference expectedReturnType)
+            TypeReference expectedReturnType, bool ignoreName = false)
         {
             // TODO: make sure all necessary checks are in place!
             // Check if the method properties match. We check 'IsStatic' later as we need to do additional checks
             // in cases where we are replacing an instance method with a static method.
-            if (originalMethod.Name != newMethod.Name ||
+            if ((!ignoreName && originalMethod.Name != newMethod.Name) ||
                 originalMethod.IsConstructor != newMethod.IsConstructor ||
                 expectedReturnType.FullName != newMethod.ReturnType.FullName ||
                 originalMethod.IsPublic != newMethod.IsPublic ||

@@ -52,8 +52,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             new ConcurrentDictionary<Type, MethodInfo>();
 
         /// <summary>
-        /// The most derived declaration of each intercepted member, per concrete service type. See
-        /// <see cref="TryDispatchToOverride"/>.
+        /// The most derived declaration of each intercepted member, per concrete service type.
         /// </summary>
         private static readonly ConcurrentDictionary<(Type, string), MethodInfo> Overrides =
             new ConcurrentDictionary<(Type, string), MethodInfo>();
@@ -69,9 +68,23 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
                 return instance.StartAsync(cancellationToken);
             }
 
-            if (TryDispatchToOverride(instance, nameof(StartAsync), out SystemTask dispatched, cancellationToken))
+            MethodInfo overriding = OverrideMethod(instance.GetType(), nameof(StartAsync));
+            if (overriding != null)
             {
-                return dispatched;
+                return (SystemTask)overriding.Invoke(instance, new object[] { cancellationToken });
+            }
+
+            return StartAsyncBase(instance, cancellationToken);
+        }
+
+        /// <summary>Runs the controlled base implementation of <c>StartAsync</c>.</summary>
+        public static SystemTask StartAsyncBase(
+            SystemBackgroundService instance, SystemCancellationToken cancellationToken)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return instance.StartAsync(cancellationToken);
             }
 
             State state = Services.GetValue(instance, _ => new State());
@@ -104,9 +117,23 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
                 return instance.StopAsync(cancellationToken);
             }
 
-            if (TryDispatchToOverride(instance, nameof(StopAsync), out SystemTask dispatched, cancellationToken))
+            MethodInfo overriding = OverrideMethod(instance.GetType(), nameof(StopAsync));
+            if (overriding != null)
             {
-                return dispatched;
+                return (SystemTask)overriding.Invoke(instance, new object[] { cancellationToken });
+            }
+
+            return StopAsyncBase(instance, cancellationToken);
+        }
+
+        /// <summary>Runs the controlled base implementation of <c>StopAsync</c>.</summary>
+        public static SystemTask StopAsyncBase(
+            SystemBackgroundService instance, SystemCancellationToken cancellationToken)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return instance.StopAsync(cancellationToken);
             }
 
             if (!Services.TryGetValue(instance, out State state) || state.ExecuteTask is null)
@@ -177,50 +204,20 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         }
 
         /// <summary>
-        /// Restores virtual dispatch for a member the rewriter turned into a static call.
+        /// Returns the most-derived override of the specified public lifecycle method.
         /// </summary>
         /// <remarks>
-        /// The intercepted members are virtual, and a rewritten <c>callvirt</c> is re-emitted as a static
-        /// <c>call</c> — so a call through a variable typed as the base class would run the model and skip a
-        /// derived override. The two shapes are indistinguishable from here, because <c>base.StopAsync(...)</c>
-        /// inside that very override arrives identically. The flag tells them apart: the first entry for an
-        /// instance dispatches to the override, and the <c>base</c> call it makes re-enters, finds the flag
-        /// set, and gets the controlled implementation. Cleared in a finally, since an override is under no
-        /// obligation to call base.
+        /// The rewriter routes virtual <c>call</c> instructions to a Base-suffixed shim, so this method only
+        /// handles genuine virtual entry through <c>callvirt</c>; no reentrancy flag has to survive an await.
         /// </remarks>
-        private static bool TryDispatchToOverride(
-            SystemBackgroundService instance, string name, out SystemTask result, SystemCancellationToken cancellationToken)
-        {
-            result = null;
-            MethodInfo overriding = Overrides.GetOrAdd((instance.GetType(), name), key =>
+        private static MethodInfo OverrideMethod(Type serviceType, string name) =>
+            Overrides.GetOrAdd((serviceType, name), key =>
             {
                 MethodInfo method = key.Item1.GetMethod(
                     key.Item2, BindingFlags.Public | BindingFlags.Instance, null,
                     new[] { typeof(SystemCancellationToken) }, null);
                 return method?.DeclaringType == typeof(SystemBackgroundService) ? null : method;
             });
-
-            if (overriding is null)
-            {
-                return false;
-            }
-
-            State state = Services.GetValue(instance, _ => new State());
-            if (!state.EnterOverride(name))
-            {
-                return false;
-            }
-
-            try
-            {
-                result = (SystemTask)overriding.Invoke(instance, new object[] { cancellationToken });
-                return true;
-            }
-            finally
-            {
-                state.ExitOverride(name);
-            }
-        }
 
         private static MethodInfo ExecuteMethod(Type serviceType) => ExecuteMethods.GetOrAdd(serviceType, type =>
         {
@@ -244,16 +241,10 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         /// </summary>
         private sealed class State
         {
-            private readonly ConcurrentDictionary<string, bool> DispatchingMembers =
-                new ConcurrentDictionary<string, bool>();
-
             internal SystemCancellationTokenSource StoppingSource { get; set; }
 
             internal SystemTask ExecuteTask { get; set; }
 
-            internal bool EnterOverride(string name) => this.DispatchingMembers.TryAdd(name, true);
-
-            internal void ExitOverride(string name) => this.DispatchingMembers.TryRemove(name, out _);
         }
     }
 }
