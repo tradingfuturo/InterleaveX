@@ -248,7 +248,12 @@ namespace Microsoft.Coyote.Rewriting
 #endif
 
                 // Create and return the new instruction.
-                Instruction newInstruction = Instruction.Create(resolvedMethod.IsVirtual ?
+                // Cecil marks value-type interface implementations as virtual, but a direct member
+                // call on the value-type receiver still requires 'call'. Emitting 'callvirt' here
+                // produces unverifiable IL because the stack contains the receiver address.
+                bool useVirtualDispatch = resolvedMethod.IsVirtual &&
+                    !resolvedMethod.DeclaringType.IsValueType;
+                Instruction newInstruction = Instruction.Create(useVirtualDispatch ?
                     OpCodes.Callvirt : OpCodes.Call, newMethod);
 
                 newInstruction.Offset = instruction.Offset;

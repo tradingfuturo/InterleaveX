@@ -1,7 +1,9 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+using System;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -27,6 +29,15 @@ namespace Microsoft.Coyote.Rewriting.Tests
         public void TestRewritingGenericTaskAwaiterInMethodSignature()
         {
             GetGenericTaskAwaiter<int>(default(TaskAwaiter<int>));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestRewritingVirtualValueTypeMemberUsesValidDispatch()
+        {
+            var awaiter = new ValueTask<int>(0).GetAwaiter();
+            awaiter.OnCompleted(() => { });
+            Assert.Equal(0, awaiter.GetResult());
         }
     }
 }
