@@ -279,7 +279,9 @@ namespace Microsoft.Coyote.Rewriting
             var readerParameters = new ReaderParameters()
             {
                 AssemblyResolver = assemblyResolver,
-                ReadSymbols = this.IsSymbolFileAvailable()
+                ReadSymbols = this.IsSymbolFileAvailable(),
+                InMemory = true,
+                ReadingMode = ReadingMode.Immediate
             };
 
             this.Definition = AssemblyDefinition.ReadAssembly(this.ReadPath, readerParameters);

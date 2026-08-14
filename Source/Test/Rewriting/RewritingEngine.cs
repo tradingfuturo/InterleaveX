@@ -561,10 +561,9 @@ namespace Microsoft.Coyote.Rewriting
             string[] threadStaticFields = Array.Empty<string>();
 
             // Read here rather than below, because rewriting stamps the signature that sets it, so by
-            // the end of the 'try' every assembly reports itself as rewritten. Everything after that --
+            // the end of the transformation every assembly reports itself as rewritten. Everything after that --
             // putting the output in place, and recording what this produced -- has to run either way.
             bool wasAlreadyRewritten = assembly.IsRewritten;
-            try
             {
                 this.LogWriter.LogImportant("... Rewriting the '{0}' assembly ({1})", assembly.Name, assembly.FullName);
 
@@ -608,6 +607,13 @@ namespace Microsoft.Coyote.Rewriting
                     this.OutputJournal.Capture(outputPath);
                     this.OutputJournal.Capture(Path.ChangeExtension(outputPath, "pdb"));
                     assembly.Write(outputPath);
+                    if (this.Options.IsReplacingAssemblies())
+                    {
+                        // Later assemblies in the same batch must resolve signatures from earlier
+                        // transformed dependencies. Overlay only the engine-owned snapshot copy; live
+                        // source publication remains deferred until the final drift gate succeeds.
+                        this.FileSystem.CopyFile(outputPath, assembly.ReadPath, true);
+                    }
 
                     if (this.Options.IsLoggingAssemblyContents)
                     {
@@ -622,10 +628,6 @@ namespace Microsoft.Coyote.Rewriting
                         this.WriteILDiffToJson(assembly, resolvedOutputPath);
                     }
                 }
-            }
-            finally
-            {
-                assembly.Dispose();
             }
 
             if (wasAlreadyRewritten && !this.Options.IsReplacingAssemblies())

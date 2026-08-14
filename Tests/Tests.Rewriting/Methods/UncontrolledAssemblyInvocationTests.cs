@@ -145,6 +145,18 @@ namespace Microsoft.Coyote.Rewriting.Tests
         }
 
         [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestStagedInPlaceBatchKeepsDependencySignaturesCoherent()
+        {
+            this.Test(async () =>
+            {
+                await new Helpers.TaskAwaiter();
+                await new Helpers.GenericTaskAwaiter();
+                await new Helpers.TaskAwaiter<int>();
+            });
+        }
+
+        [Fact(Timeout = 5000)]
         public void TestUncontrolledMethodReturnsTask()
         {
             this.Test(async () =>

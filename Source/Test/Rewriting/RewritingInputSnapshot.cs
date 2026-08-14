@@ -91,7 +91,8 @@ namespace Microsoft.Coyote.Rewriting
                             excludedFiles: excludedFiles);
                         if (mirror.DescribeSameFiles(sourceDirectory, snapshotDirectory, before, after))
                         {
-                            snapshot.BaselineFiles = after;
+                            snapshot.BaselineFiles = mirror.GetMirroredFiles(
+                                snapshotDirectory, sourceDirectory, includeFingerprints: true);
                             snapshot.ExcludedDirectories = excluded.ToArray();
                             snapshot.ExcludedFiles = (excludedFiles ?? Enumerable.Empty<string>()).ToArray();
                             return snapshot;
@@ -130,10 +131,9 @@ namespace Microsoft.Coyote.Rewriting
         internal void VerifyUnchanged()
         {
             var current = this.Mirror.GetMirroredFiles(
-                this.SourceDirectory, this.SnapshotDirectory, includeFingerprints: false,
+                this.SourceDirectory, this.SnapshotDirectory, includeFingerprints: true,
                 excludedDirectories: this.ExcludedDirectories, excludedFiles: this.ExcludedFiles);
-            if (!this.Mirror.DescribeSameFiles(
-                this.SourceDirectory, this.SnapshotDirectory, this.BaselineFiles, current))
+            if (!RewritingOutputMirror.DescribeSameFiles(this.BaselineFiles, current))
             {
                 throw new IOException(
                     $"The source directory '{this.SourceDirectory}' changed after its rewrite snapshot was created.");

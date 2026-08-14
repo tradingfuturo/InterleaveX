@@ -81,7 +81,8 @@ namespace Microsoft.Coyote.Rewriting
         protected Pass(IEnumerable<AssemblyInfo> visitedAssemblies, LogWriter logWriter)
         {
             this.VisitedAssemblyPaths = new HashSet<string>(
-                visitedAssemblies.Select(assembly => assembly.FilePath), StringComparer.Ordinal);
+                visitedAssemblies.SelectMany(assembly => new[] { assembly.FilePath, assembly.ReadPath }),
+                StringComparer.Ordinal);
             this.ImportedMethods = new Dictionary<Type, Dictionary<string, MethodReference>>();
             this.LogWriter = logWriter;
         }
