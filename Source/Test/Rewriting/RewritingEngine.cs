@@ -510,7 +510,15 @@ namespace Microsoft.Coyote.Rewriting
                 this.InitializePasses(assemblies);
                 foreach (var assembly in assemblies)
                 {
-                    string outputPath = Path.Combine(outputDirectory, assembly.Name);
+                    string assemblyOutputDirectory = outputDirectory;
+                    if (this.Options.IsReplacingAssemblies())
+                    {
+                        assemblyOutputDirectory = Path.Combine(outputDirectory,
+                            "assembly-" + Guid.NewGuid().ToString("N"));
+                        this.FileSystem.CreateDirectory(assemblyOutputDirectory);
+                    }
+
+                    string outputPath = Path.Combine(assemblyOutputDirectory, assembly.Name);
                     this.RewriteAssembly(assembly, outputPath, cache);
                     this.TrackAssemblyProducts(outputPath);
                 }

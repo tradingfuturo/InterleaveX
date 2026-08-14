@@ -455,6 +455,26 @@ namespace Microsoft.Coyote.Tools.Tests
                 Path.GetFileName(workspace.InputDirectory) + ".mirror-backup-*"));
         }
 
+        [Fact(Timeout = 120000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestInPlaceRewriteKeepsCollidingAssemblyNamesDistinct()
+        {
+            using var workspace = Workspace.Create();
+            IReadOnlyList<string> paths = workspace.CreateCollidingAssemblyPaths();
+            string[] expectedNames = paths.Select(path =>
+                AssemblyName.GetAssemblyName(path).Name).ToArray();
+            Assert.NotEqual(expectedNames[0], expectedNames[1]);
+
+            workspace.Rewrite(options =>
+            {
+                options.OutputDirectory = workspace.InputDirectory;
+                options.AssemblyPaths = new HashSet<string>(paths);
+            });
+
+            Assert.Equal(expectedNames[0], AssemblyName.GetAssemblyName(paths[0]).Name);
+            Assert.Equal(expectedNames[1], AssemblyName.GetAssemblyName(paths[1]).Name);
+        }
+
         [Theory(Timeout = 120000)]
         [InlineData(RewritingCache.ManifestFileName)]
         [InlineData(RewritingOutputLedger.ManifestFileName)]
@@ -830,6 +850,23 @@ namespace Microsoft.Coyote.Tools.Tests
                 // this name is now there to be found.
                 File.Copy(this.InputAssemblyPath, missing, true);
                 return missing;
+            }
+
+            internal IReadOnlyList<string> CreateCollidingAssemblyPaths()
+            {
+                string secondSource = Directory.GetFiles(this.InputDirectory, "*.dll")
+                    .First(path => !string.Equals(path, this.InputAssemblyPath,
+                        StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(AssemblyName.GetAssemblyName(path).Name,
+                            AssemblyName.GetAssemblyName(this.InputAssemblyPath).Name,
+                            StringComparison.Ordinal));
+                string first = Path.Combine(this.InputDirectory, "first", "Collision.dll");
+                string second = Path.Combine(this.InputDirectory, "second", "Collision.dll");
+                Directory.CreateDirectory(Path.GetDirectoryName(first));
+                Directory.CreateDirectory(Path.GetDirectoryName(second));
+                File.Copy(this.InputAssemblyPath, first);
+                File.Copy(secondSource, second);
+                return new[] { first, second };
             }
 
             public void Dispose()
