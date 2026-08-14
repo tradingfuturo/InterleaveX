@@ -405,11 +405,13 @@ namespace Microsoft.Coyote.Rewriting
                     fileSystem, normalized, directory, manifest));
             }
 
-            // A later transaction backed up the output left by an earlier one. Undo the newest
-            // transaction first so each older backup is restored onto the state it captured.
-            foreach (RewritingOutputChangeJournal journal in journals
-                .OrderByDescending(item => item.CreatedUtcTicks)
-                .ThenByDescending(item => item.BackupDirectory, StringComparer.Ordinal))
+            if (journals.Count > 1)
+            {
+                throw new IOException(
+                    $"Multiple rewrite recovery journals describe '{normalized}' and cannot be recovered automatically.");
+            }
+
+            foreach (RewritingOutputChangeJournal journal in journals)
             {
                 if (journal.State is ActiveState or RestoringState)
                 {

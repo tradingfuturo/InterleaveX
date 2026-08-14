@@ -188,7 +188,7 @@ namespace Microsoft.Coyote.Tools.Tests
 
         [Fact(Timeout = 5000)]
         [Trait("Category", "RewritingRemediation")]
-        public void TestMultipleJournalsRecoverNewestFirst()
+        public void TestMultipleJournalsAreRejectedWithoutMutation()
         {
             var fileSystem = new InMemoryFileSystem()
                 .WithFile(Out("existing.txt"), "original")
@@ -200,9 +200,13 @@ namespace Microsoft.Coyote.Tools.Tests
             second.Capture(Out("existing.txt"));
             fileSystem.WriteAllText(Out("existing.txt"), "second");
 
-            Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out());
+            IOException error = Assert.Throws<IOException>(() =>
+                Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out()));
 
-            Assert.Equal("original", fileSystem.GetContents(Out("existing.txt")));
+            Assert.Contains("multiple", error.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("second", fileSystem.GetContents(Out("existing.txt")));
+            Assert.Equal(2, Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
+                fileSystem, Out()).Count);
         }
 
         [Fact(Timeout = 5000)]
