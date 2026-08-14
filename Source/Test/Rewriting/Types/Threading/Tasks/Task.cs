@@ -31,6 +31,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
     public static class Task
     {
         /// <summary>
+        /// The maximum supported task delay in milliseconds.
+        /// </summary>
+        private const long MaxSupportedTimeoutMilliseconds = uint.MaxValue - 1;
+
+        /// <summary>
         /// Gets a task that has already completed successfully.
         /// </summary>
         public static SystemTask CompletedTask { get; } = SystemTask.CompletedTask;
@@ -293,6 +298,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                 return SystemTask.Delay(millisecondsDelay);
             }
 
+            ValidateDelay(millisecondsDelay);
             return runtime.ScheduleDelay(TimeSpan.FromMilliseconds(millisecondsDelay), default);
         }
 
@@ -307,6 +313,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                 return SystemTask.Delay(millisecondsDelay, cancellationToken);
             }
 
+            ValidateDelay(millisecondsDelay);
             return runtime.ScheduleDelay(TimeSpan.FromMilliseconds(millisecondsDelay), cancellationToken);
         }
 
@@ -321,6 +328,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                 return SystemTask.Delay(delay);
             }
 
+            ValidateDelay(delay);
             return runtime.ScheduleDelay(delay, default);
         }
 
@@ -335,7 +343,32 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                 return SystemTask.Delay(delay, cancellationToken);
             }
 
+            ValidateDelay(delay);
             return runtime.ScheduleDelay(delay, cancellationToken);
+        }
+
+        /// <summary>
+        /// Validates the specified delay in milliseconds.
+        /// </summary>
+        private static void ValidateDelay(int millisecondsDelay)
+        {
+            if (millisecondsDelay < SystemTimeout.Infinite)
+            {
+                throw new ArgumentOutOfRangeException(nameof(millisecondsDelay));
+            }
+        }
+
+        /// <summary>
+        /// Validates the specified time delay.
+        /// </summary>
+        private static void ValidateDelay(TimeSpan delay)
+        {
+            long totalMilliseconds = (long)delay.TotalMilliseconds;
+            if (totalMilliseconds < SystemTimeout.Infinite ||
+                totalMilliseconds > MaxSupportedTimeoutMilliseconds)
+            {
+                throw new ArgumentOutOfRangeException(nameof(delay));
+            }
         }
 
         /// <summary>

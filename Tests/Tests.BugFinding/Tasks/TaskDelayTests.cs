@@ -18,6 +18,44 @@ namespace Microsoft.Coyote.BugFinding.Tests
         }
 
         [Fact(Timeout = 5000)]
+        public void TestInvalidIntegerDelayIsRejected()
+        {
+            this.Test(() => AssertInvalidDelay(
+                () => Task.Delay(-2), "millisecondsDelay"));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestInvalidIntegerDelayIsRejectedBeforeCancellation()
+        {
+            this.Test(() =>
+            {
+                using var source = new CancellationTokenSource();
+                source.Cancel();
+                AssertInvalidDelay(
+                    () => Task.Delay(-2, source.Token), "millisecondsDelay");
+            });
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestInvalidTimeSpanDelayIsRejected()
+        {
+            this.Test(() => AssertInvalidDelay(
+                () => Task.Delay(TimeSpan.FromMilliseconds(-2)), "delay"));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestInvalidTimeSpanDelayIsRejectedBeforeCancellation()
+        {
+            this.Test(() =>
+            {
+                using var source = new CancellationTokenSource();
+                source.Cancel();
+                AssertInvalidDelay(
+                    () => Task.Delay(TimeSpan.FromMilliseconds(-2), source.Token), "delay");
+            });
+        }
+
+        [Fact(Timeout = 5000)]
         public void TestZeroDelayObservesPreCanceledToken()
         {
             this.Test(async () =>
@@ -95,6 +133,27 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 Specification.Assert(failure != null && failure.CancellationToken == source.Token,
                     "A positive delay ignored its pre-canceled token.");
             });
+        }
+
+        private static void AssertInvalidDelay(Action action, string expectedParameterName)
+        {
+            Exception failure = null;
+            try
+            {
+                action();
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+
+            Specification.Assert(
+                failure is ArgumentOutOfRangeException argument &&
+                argument.ParamName == expectedParameterName,
+                "Invalid delay produced '{0}' for parameter '{1}' instead of ArgumentOutOfRangeException for '{2}'.",
+                failure?.GetType().Name ?? "no exception",
+                (failure as ArgumentException)?.ParamName ?? "none",
+                expectedParameterName);
         }
 
         private static async Task WriteWithLoopAndDelayAsync(SharedEntry entry, int value, int delay)
