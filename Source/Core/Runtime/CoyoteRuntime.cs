@@ -716,6 +716,13 @@ namespace Microsoft.Coyote.Runtime
                 return Task.CompletedTask;
             }
 
+            if (delay == Timeout.InfiniteTimeSpan)
+            {
+                // Infinite is a contract, not a large value for a strategy to fuzz. Only the token
+                // can complete this delay, matching the behavior outside systematic execution.
+                return Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+
             if (this.SchedulingPolicy is SchedulingPolicy.Interleaving)
             {
                 uint timeout = (uint)this.GetNextNondeterministicIntegerChoice((int)this.Configuration.TimeoutDelay, null, null);

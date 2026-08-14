@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Coyote.Runtime;
 using Xunit;
@@ -33,6 +34,22 @@ namespace Microsoft.Coyote.BugFinding.Tests.SystematicFuzzing
                 .WithTestingIterations(200)
                 .WithRandomGeneratorSeed(0)
                 .WithMaxFuzzingDelay(1));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestInfiniteDelayWaitsForCancellation()
+        {
+            this.Test(async () =>
+            {
+                using var cancellation = new CancellationTokenSource();
+                Task delay = Task.Delay(Timeout.InfiniteTimeSpan, cancellation.Token);
+                Assert.False(delay.IsCompleted);
+                cancellation.Cancel();
+                await Assert.ThrowsAsync<TaskCanceledException>(() => delay);
+            }, configuration: this.GetConfiguration()
+                .WithTestingIterations(1)
+                .WithRandomGeneratorSeed(0));
         }
     }
 }
