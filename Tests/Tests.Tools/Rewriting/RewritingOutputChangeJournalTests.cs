@@ -122,6 +122,29 @@ namespace Microsoft.Coyote.Tools.Tests
 
         [Fact(Timeout = 5000)]
         [Trait("Category", "RewritingRemediation")]
+        public void TestRetryMutationRearmsRestoredJournalBeforeRecovery()
+        {
+            var fileSystem = new InMemoryFileSystem()
+                .WithFile(Out("existing.txt"), "before")
+                .WithDirectory(Out());
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(
+                fileSystem, Out());
+            journal.Capture(Out("existing.txt"));
+            fileSystem.WriteAllText(Out("existing.txt"), "first attempt");
+            journal.Restore();
+
+            journal.Capture(Out("existing.txt"));
+            fileSystem.WriteAllText(Out("existing.txt"), "retry interrupted");
+
+            Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out());
+
+            Assert.Equal("before", fileSystem.GetContents(Out("existing.txt")));
+            Assert.Empty(Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
+                fileSystem, Out()));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
         public void TestMultipleJournalsRecoverNewestFirst()
         {
             var fileSystem = new InMemoryFileSystem()

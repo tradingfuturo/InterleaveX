@@ -82,6 +82,7 @@ namespace Microsoft.Coyote.Rewriting
 
         internal void Capture(string targetPath)
         {
+            this.EnsureActiveForMutation();
             string normalized = RewritingCacheValidator.NormalizeFile(targetPath);
             if (!this.CapturedPaths.Add(normalized))
             {
@@ -122,6 +123,7 @@ namespace Microsoft.Coyote.Rewriting
 
         internal void CaptureDirectory(string directory)
         {
+            this.EnsureActiveForMutation();
             string normalized = RewritingCacheValidator.NormalizeDirectory(directory);
             if (!this.FileSystem.DirectoryExists(normalized) && this.CapturedDirectories.Add(normalized))
             {
@@ -136,6 +138,32 @@ namespace Microsoft.Coyote.Rewriting
                     this.CapturedDirectories.Remove(normalized);
                     throw;
                 }
+            }
+        }
+
+        private void EnsureActiveForMutation()
+        {
+            if (this.State is "active")
+            {
+                return;
+            }
+
+            if (this.State is not "restored")
+            {
+                throw new InvalidOperationException(
+                    $"Cannot capture output changes while the rewrite journal is '{this.State}'.");
+            }
+
+            string previousState = this.State;
+            this.State = "active";
+            try
+            {
+                this.SaveManifest();
+            }
+            catch
+            {
+                this.State = previousState;
+                throw;
             }
         }
 
