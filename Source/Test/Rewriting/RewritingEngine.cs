@@ -183,7 +183,8 @@ namespace Microsoft.Coyote.Rewriting
 
         private readonly List<StagedOutput> StagedOutputs = new List<StagedOutput>();
 
-        private readonly List<string> PublishedStagedOutputPaths = new List<string>();
+        private readonly List<RewritingOutputChangeJournal.PendingPublication> PublishedOutputs =
+            new List<RewritingOutputChangeJournal.PendingPublication>();
 
         private readonly List<PendingCacheRecord> PendingCacheRecords = new List<PendingCacheRecord>();
 
@@ -317,6 +318,7 @@ namespace Microsoft.Coyote.Rewriting
 
                     this.OutputLedger?.Commit(this.MirroredOutputFiles.Keys, this.ProducedOutputFiles,
                         this.AttemptedMirroredFiles, this.OutputJournal.Capture);
+                    this.OutputJournal.ValidatePublishedOutputs();
                     this.OutputJournal.Complete();
                     this.LogWriter.LogImportant("... Skipping rewriting as every assembly is up to date");
                     return;
@@ -349,7 +351,8 @@ namespace Microsoft.Coyote.Rewriting
                     {
                         cache.RecordAssembly(
                             record.Assembly, record.OutputPath, record.ThreadStaticFields,
-                            this.PublishedStagedOutputPaths);
+                            this.PublishedOutputs.Select(publication => publication.TargetPath),
+                            this.PublishedOutputs);
                     }
                 }
 
@@ -366,6 +369,7 @@ namespace Microsoft.Coyote.Rewriting
                     snapshot.VerifyUnchanged();
                 }
 
+                this.OutputJournal.ValidatePublishedOutputs();
                 cache.Save();
                 this.OutputJournal.Capture(Path.Combine(
                     this.Options.OutputDirectory, RewritingOutputLedger.ManifestFileName));
@@ -376,6 +380,7 @@ namespace Microsoft.Coyote.Rewriting
 
                 this.OutputLedger?.Commit(this.MirroredOutputFiles.Keys, this.ProducedOutputFiles,
                     this.AttemptedMirroredFiles, this.OutputJournal.Capture);
+                this.OutputJournal.ValidatePublishedOutputs();
                 this.OutputJournal.Complete();
             }
             catch (Exception ex)
@@ -1034,8 +1039,8 @@ namespace Microsoft.Coyote.Rewriting
             {
                 MirroredFile? expected = snapshot.TryGetBaselineFile(
                     output.TargetPath, out MirroredFile baseline) ? baseline : (MirroredFile?)null;
-                this.OutputJournal.Publish(output.SourcePath, output.TargetPath, expected);
-                this.PublishedStagedOutputPaths.Add(output.TargetPath);
+                this.PublishedOutputs.Add(
+                    this.OutputJournal.Publish(output.SourcePath, output.TargetPath, expected));
             }
 
             this.StagedOutputs.Clear();

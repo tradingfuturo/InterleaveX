@@ -418,7 +418,8 @@ namespace Microsoft.Coyote.Rewriting
         /// have produced, is what lets the cache settle instead of missing on every run.
         /// </remarks>
         internal void RecordAssembly(IRewrittenAssembly assembly, string outputPath,
-            IEnumerable<string> threadStaticFields, IEnumerable<string> additionalProducedPaths = null)
+            IEnumerable<string> threadStaticFields, IEnumerable<string> additionalProducedPaths = null,
+            IEnumerable<RewritingOutputChangeJournal.PendingPublication> publishedOutputs = null)
         {
             try
             {
@@ -443,6 +444,12 @@ namespace Microsoft.Coyote.Rewriting
                 };
                 producedPaths.UnionWith((additionalProducedPaths ?? Enumerable.Empty<string>())
                     .Select(RewritingCacheValidator.NormalizeFile));
+                var publicationStamps = (publishedOutputs ??
+                    Enumerable.Empty<RewritingOutputChangeJournal.PendingPublication>())
+                    .GroupBy(stamp => RewritingCacheValidator.NormalizeFile(stamp.TargetPath),
+                        this.Validator.PathComparer)
+                    .ToDictionary(group => group.Key, group => group.Last(),
+                        this.Validator.PathComparer);
 
                 var capturedFiles = new Dictionary<string, CacheFile>(this.Validator.PathComparer);
                 CacheFile Capture(string path)
@@ -450,7 +457,18 @@ namespace Microsoft.Coyote.Rewriting
                     string normalizedPath = RewritingCacheValidator.NormalizeFile(path);
                     if (!capturedFiles.TryGetValue(normalizedPath, out CacheFile captured))
                     {
-                        if (!producedPaths.Contains(normalizedPath) &&
+                        if (publicationStamps.TryGetValue(normalizedPath,
+                            out RewritingOutputChangeJournal.PendingPublication published))
+                        {
+                            captured = new CacheFile()
+                            {
+                                Path = normalizedPath,
+                                Exists = true,
+                                Length = published.StagedLength,
+                                Fingerprint = published.StagedFingerprint
+                            };
+                        }
+                        else if (!producedPaths.Contains(normalizedPath) &&
                             (assembly.TryGetResolutionStamp(path, out ResolutionStamp consumed) ||
                              assembly.TryGetResolutionStamp(normalizedPath, out consumed)))
                         {

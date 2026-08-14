@@ -587,6 +587,40 @@ namespace Microsoft.Coyote.Tools.Tests
             workspace.Rewrite(options => options.OutputDirectory = workspace.InputDirectory);
         }
 
+        [Fact(Timeout = 120000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestInPlacePublicationDriftAfterHandleCloseIsNotBlessedByCache()
+        {
+            using var workspace = Workspace.Create();
+            byte[] external = File.ReadAllBytes(workspace.InputAssemblyPath);
+            external[external.Length / 2] ^= 0x5a;
+            bool mutated = false;
+            var disposedPaths = new List<string>();
+            var fileSystem = new CallbackFileSystem(HostFileSystem.Instance,
+                afterOpenWriteExclusiveDisposed: path =>
+                {
+                    disposedPaths.Add(path);
+                    if (!mutated && string.Equals(
+                        path, workspace.InputAssemblyPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.WriteAllBytes(path, external);
+                        mutated = true;
+                    }
+                });
+
+            Exception failure = Record.Exception(() => workspace.Rewrite(fileSystem,
+                options => options.OutputDirectory = workspace.InputDirectory));
+            Assert.True(failure is IOException,
+                $"Expected publication failure; disposed update paths: {string.Join(", ", disposedPaths)}");
+
+            Assert.True(mutated, failure.ToString());
+            Assert.Equal(external, File.ReadAllBytes(workspace.InputAssemblyPath));
+            Assert.False(File.Exists(Path.Combine(
+                workspace.InputDirectory, RewritingCache.ManifestFileName)));
+            Assert.Single(RewritingOutputChangeJournal.FindJournals(
+                HostFileSystem.Instance, workspace.InputDirectory));
+        }
+
         [Theory(Timeout = 120000)]
         [InlineData(RewritingCache.ManifestFileName)]
         [InlineData(RewritingOutputLedger.ManifestFileName)]

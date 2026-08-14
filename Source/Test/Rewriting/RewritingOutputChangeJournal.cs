@@ -17,7 +17,9 @@ namespace Microsoft.Coyote.Rewriting
     /// </summary>
     internal sealed class RewritingOutputChangeJournal
     {
-        private const int SchemaVersion = 2;
+        private const int SchemaVersion = 3;
+
+        private const int PublicationSchemaVersion = 2;
 
         private const int LegacySchemaVersion = 1;
 
@@ -67,6 +69,8 @@ namespace Microsoft.Coyote.Rewriting
 
             public bool ExpectedToExist { get; set; }
 
+            public long StagedLength { get; set; }
+
             public string StagedFingerprint { get; set; }
         }
 
@@ -82,6 +86,8 @@ namespace Microsoft.Coyote.Rewriting
         private readonly List<PendingPublication> PendingPublications;
 
         private long CreatedUtcTicks;
+
+        private readonly int Version;
 
         private string State;
 
@@ -99,6 +105,7 @@ namespace Microsoft.Coyote.Rewriting
             this.CapturedDirectories = new HashSet<string>(this.CapturedPaths.Comparer);
             this.PendingPublications = new List<PendingPublication>();
             this.CreatedUtcTicks = DateTime.UtcNow.Ticks;
+            this.Version = SchemaVersion;
             this.State = ActiveState;
             this.FileSystem.CreateDirectory(this.BackupDirectory);
             this.SaveManifest();
@@ -109,7 +116,7 @@ namespace Microsoft.Coyote.Rewriting
         /// <summary>
         /// Publishes one staged file without a verification-to-write race.
         /// </summary>
-        internal void Publish(string sourcePath, string targetPath, MirroredFile? expected)
+        internal PendingPublication Publish(string sourcePath, string targetPath, MirroredFile? expected)
         {
             this.EnsureActiveForMutation();
             string source = RewritingCacheValidator.NormalizeFile(sourcePath);
@@ -118,6 +125,7 @@ namespace Microsoft.Coyote.Rewriting
             {
                 TargetPath = target,
                 ExpectedToExist = expected.HasValue,
+                StagedLength = this.FileSystem.GetFile(source).Length,
                 StagedFingerprint = RewritingCacheValidator.ComputeFileFingerprint(
                     this.FileSystem, source)
             };
@@ -140,9 +148,8 @@ namespace Microsoft.Coyote.Rewriting
                 var change = new Change() { TargetPath = target, Existed = false };
                 this.Changes.Add(change);
                 this.CapturedPaths.Add(target);
-                this.PendingPublications.Remove(pending);
                 this.SaveManifest();
-                return;
+                return pending;
             }
 
             try
@@ -172,8 +179,8 @@ namespace Microsoft.Coyote.Rewriting
                 sourceStream.CopyTo(targetStream);
                 this.FileSystem.FlushWrite(targetStream);
 
-                this.PendingPublications.Remove(pending);
                 this.SaveManifest();
+                return pending;
             }
             catch
             {
@@ -381,8 +388,9 @@ namespace Microsoft.Coyote.Rewriting
             var comparer = new FileSystemPathComparer(this.FileSystem);
             foreach (PendingPublication pending in this.PendingPublications)
             {
-                if (pending.ExpectedToExist ||
-                    this.Changes.Any(change => comparer.Equals(change.TargetPath, pending.TargetPath)) ||
+                Change change = this.Changes.LastOrDefault(candidate =>
+                    comparer.Equals(candidate.TargetPath, pending.TargetPath));
+                if (change != null || pending.ExpectedToExist ||
                     !this.FileSystem.FileExists(pending.TargetPath))
                 {
                     continue;
@@ -410,6 +418,36 @@ namespace Microsoft.Coyote.Rewriting
             {
                 try
                 {
+                    PendingPublication pending = this.PendingPublications.LastOrDefault(candidate =>
+                        comparer.Equals(candidate.TargetPath, change.TargetPath));
+                    if (pending != null)
+                    {
+                        bool exists = this.FileSystem.FileExists(change.TargetPath);
+                        string currentFingerprint = exists ?
+                            RewritingCacheValidator.ComputeFileFingerprint(
+                                this.FileSystem, change.TargetPath) : null;
+                        bool containsStagedBytes = exists &&
+                            (this.Version < SchemaVersion ||
+                             this.FileSystem.GetFile(change.TargetPath).Length == pending.StagedLength) &&
+                            string.Equals(currentFingerprint, pending.StagedFingerprint,
+                                StringComparison.Ordinal);
+                        bool containsOriginalBytes = change.Existed && exists &&
+                            this.FileSystem.GetFile(change.TargetPath).Length == change.BackupLength &&
+                            string.Equals(currentFingerprint, change.BackupFingerprint,
+                                StringComparison.Ordinal);
+                        bool alreadyRestored = containsOriginalBytes || (!change.Existed && !exists);
+                        if (alreadyRestored)
+                        {
+                            continue;
+                        }
+
+                        if (!containsStagedBytes)
+                        {
+                            throw new IOException(
+                                $"Published target '{change.TargetPath}' no longer contains journal-owned bytes.");
+                        }
+                    }
+
                     if (change.Existed)
                     {
                         IFileEntry backup = this.FileSystem.GetFile(change.BackupPath);
@@ -460,6 +498,25 @@ namespace Microsoft.Coyote.Rewriting
             this.PendingPublications.Clear();
             this.State = RestoredState;
             this.SaveManifest();
+        }
+
+        /// <summary>
+        /// Verifies that every successfully published output still contains the staged bytes.
+        /// </summary>
+        internal void ValidatePublishedOutputs()
+        {
+            foreach (PendingPublication publication in this.PendingPublications)
+            {
+                IFileEntry current = this.FileSystem.GetFile(publication.TargetPath);
+                if (!current.Exists || current.Length != publication.StagedLength ||
+                    !string.Equals(RewritingCacheValidator.ComputeFileFingerprint(
+                        this.FileSystem, publication.TargetPath), publication.StagedFingerprint,
+                        StringComparison.Ordinal))
+                {
+                    throw new IOException(
+                        $"Published output '{publication.TargetPath}' changed before the rewrite transaction completed.");
+                }
+            }
         }
 
         internal void Complete()
@@ -544,7 +601,9 @@ namespace Microsoft.Coyote.Rewriting
                 }
 
                 if (manifest is null ||
-                    (manifest.Version != SchemaVersion && manifest.Version != LegacySchemaVersion) ||
+                    (manifest.Version != SchemaVersion &&
+                     manifest.Version != PublicationSchemaVersion &&
+                     manifest.Version != LegacySchemaVersion) ||
                     !string.Equals(RewritingCacheValidator.NormalizeDirectory(manifest.OutputDirectory),
                         normalized, fileSystem.IsCaseInsensitive(normalized) ?
                             StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
@@ -591,7 +650,9 @@ namespace Microsoft.Coyote.Rewriting
                 JournalManifest manifest = JsonSerializer.Deserialize<JournalManifest>(
                     fileSystem.ReadAllText(temporaryManifestPath));
                 if (manifest is null ||
-                    (manifest.Version != SchemaVersion && manifest.Version != LegacySchemaVersion) ||
+                    (manifest.Version != SchemaVersion &&
+                     manifest.Version != PublicationSchemaVersion &&
+                     manifest.Version != LegacySchemaVersion) ||
                     manifest.State != ActiveState || manifest.Changes is null ||
                     manifest.Changes.Count is not 0 || manifest.CreatedDirectories is null ||
                     manifest.CreatedDirectories.Count is not 0 ||
@@ -625,7 +686,7 @@ namespace Microsoft.Coyote.Rewriting
                  manifest.State != RestoredState && manifest.State != CleanupState) ||
                  manifest.Changes is null ||
                  manifest.CreatedDirectories is null ||
-                 (manifest.Version == SchemaVersion && manifest.PendingPublications is null))
+                 (manifest.Version >= PublicationSchemaVersion && manifest.PendingPublications is null))
             {
                 throw new IOException($"The rewrite recovery journal '{backupDirectory}' is incomplete.");
             }
@@ -650,9 +711,10 @@ namespace Microsoft.Coyote.Rewriting
             foreach (PendingPublication pending in
                 manifest.PendingPublications ?? Enumerable.Empty<PendingPublication>())
             {
-                if (manifest.Version != SchemaVersion || pending is null ||
+                if (manifest.Version < PublicationSchemaVersion || pending is null ||
                     string.IsNullOrEmpty(pending.TargetPath) ||
                     string.IsNullOrEmpty(pending.StagedFingerprint) ||
+                    (manifest.Version >= SchemaVersion && pending.StagedLength < 0) ||
                     !RewritingOutputMirror.IsWithin(pending.TargetPath, outputDirectory, comparer) ||
                     !pendingTargets.Add(pending.TargetPath))
                 {
@@ -684,6 +746,7 @@ namespace Microsoft.Coyote.Rewriting
             this.CreatedDirectories = manifest.CreatedDirectories ?? new List<string>();
             this.PendingPublications = manifest.PendingPublications ?? new List<PendingPublication>();
             this.CreatedUtcTicks = manifest.CreatedUtcTicks;
+            this.Version = manifest.Version;
             this.State = manifest.State ?? ActiveState;
             var comparer = fileSystem.IsCaseInsensitive(outputDirectory) ?
                 StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
@@ -698,7 +761,7 @@ namespace Microsoft.Coyote.Rewriting
 
         private JournalManifest CreateManifest(List<Change> changes = null) => new JournalManifest()
         {
-            Version = SchemaVersion,
+            Version = this.Version,
             OutputDirectory = this.OutputDirectory,
             CreatedUtcTicks = this.CreatedUtcTicks,
             State = this.State,
@@ -774,6 +837,7 @@ namespace Microsoft.Coyote.Rewriting
                 (left.PendingPublications ?? new List<PendingPublication>()).Zip(
                     right.PendingPublications ?? new List<PendingPublication>(), (first, second) =>
                         first.ExpectedToExist == second.ExpectedToExist &&
+                        first.StagedLength == second.StagedLength &&
                         comparer.Equals(first.TargetPath, second.TargetPath) &&
                         string.Equals(first.StagedFingerprint, second.StagedFingerprint,
                             StringComparison.Ordinal)).All(isSame => isSame) &&

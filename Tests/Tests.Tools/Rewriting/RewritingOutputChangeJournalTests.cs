@@ -382,7 +382,7 @@ namespace Microsoft.Coyote.Tools.Tests
             fileSystem.WriteAllText(target, "after");
             string manifestPath = Path.Combine(journal.BackupDirectory, "journal.json");
             fileSystem.WriteAllText(manifestPath, fileSystem.ReadAllText(manifestPath)
-                .Replace("\"Version\": 2", "\"Version\": 1", StringComparison.Ordinal)
+                .Replace("\"Version\": 3", "\"Version\": 1", StringComparison.Ordinal)
                 .Replace(",\n  \"PendingPublications\": []", string.Empty,
                     StringComparison.Ordinal));
 
