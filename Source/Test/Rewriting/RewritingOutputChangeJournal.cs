@@ -70,6 +70,8 @@ namespace Microsoft.Coyote.Rewriting
 
         private string State;
 
+        private bool IsMutationStateAmbiguous;
+
         internal RewritingOutputChangeJournal(IFileSystem fileSystem, string outputDirectory)
         {
             this.FileSystem = fileSystem;
@@ -92,7 +94,7 @@ namespace Microsoft.Coyote.Rewriting
         {
             this.EnsureActiveForMutation();
             string normalized = RewritingCacheValidator.NormalizeFile(targetPath);
-            if (!this.CapturedPaths.Add(normalized))
+            if (this.CapturedPaths.Contains(normalized))
             {
                 return;
             }
@@ -103,6 +105,7 @@ namespace Microsoft.Coyote.Rewriting
                 TargetPath = normalized,
                 Existed = existed
             };
+            JournalManifest prior = this.CreateManifest();
 
             try
             {
@@ -119,12 +122,41 @@ namespace Microsoft.Coyote.Rewriting
                 }
 
                 this.FileSystem.CreateDirectory(this.BackupDirectory);
-                this.Changes.Add(change);
-                this.SaveManifest();
+                var proposedChanges = new List<Change>(this.Changes) { change };
+                JournalManifest proposed = this.CreateManifest(proposedChanges);
+                try
+                {
+                    this.SaveManifest(proposed);
+                }
+                catch (Exception saveFailure)
+                {
+                    try
+                    {
+                        if (this.ReconcileCaptureFailure(prior, proposed))
+                        {
+                            this.ApplyManifest(proposed);
+                        }
+                        else if (!string.IsNullOrEmpty(change.BackupPath) &&
+                            this.FileSystem.FileExists(change.BackupPath))
+                        {
+                            this.FileSystem.DeleteFile(change.BackupPath);
+                        }
+                    }
+                    catch (Exception reconciliationFailure)
+                    {
+                        this.IsMutationStateAmbiguous = true;
+                        throw new IOException(
+                            "The rewrite journal manifest has an ambiguous state after capture failed.",
+                            new AggregateException(saveFailure, reconciliationFailure));
+                    }
+
+                    throw;
+                }
+
+                this.ApplyManifest(proposed);
             }
             catch
             {
-                this.CapturedPaths.Remove(normalized);
                 throw;
             }
         }
@@ -188,6 +220,12 @@ namespace Microsoft.Coyote.Rewriting
 
         private void EnsureActiveForMutation()
         {
+            if (this.IsMutationStateAmbiguous)
+            {
+                throw new InvalidOperationException(
+                    "Cannot capture output changes while the rewrite journal state is ambiguous.");
+            }
+
             if (this.State is ActiveState)
             {
                 return;
@@ -480,17 +518,25 @@ namespace Microsoft.Coyote.Rewriting
 
         private void SaveManifest()
         {
+            this.SaveManifest(this.CreateManifest());
+        }
+
+        private JournalManifest CreateManifest(List<Change> changes = null) => new JournalManifest()
+        {
+            Version = SchemaVersion,
+            OutputDirectory = this.OutputDirectory,
+            CreatedUtcTicks = this.CreatedUtcTicks,
+            State = this.State,
+            Changes = changes ?? new List<Change>(this.Changes),
+            CreatedDirectories = new List<string>(this.CreatedDirectories)
+        };
+
+        private void SaveManifest(JournalManifest manifest)
+        {
             string manifestPath = Path.Combine(this.BackupDirectory, JournalFileName);
             string temporaryPath = manifestPath + ".tmp";
-            string json = JsonSerializer.Serialize(new JournalManifest()
-            {
-                Version = SchemaVersion,
-                OutputDirectory = this.OutputDirectory,
-                CreatedUtcTicks = this.CreatedUtcTicks,
-                State = this.State,
-                Changes = this.Changes,
-                CreatedDirectories = this.CreatedDirectories
-            }, new JsonSerializerOptions() { WriteIndented = true });
+            string json = JsonSerializer.Serialize(
+                manifest, new JsonSerializerOptions() { WriteIndented = true });
             this.FileSystem.WriteAllText(temporaryPath, json);
             if (this.FileSystem.FileExists(manifestPath))
             {
@@ -500,6 +546,69 @@ namespace Microsoft.Coyote.Rewriting
             {
                 this.FileSystem.MoveFile(temporaryPath, manifestPath);
             }
+        }
+
+        private bool ReconcileCaptureFailure(JournalManifest prior, JournalManifest proposed)
+        {
+            string manifestPath = Path.Combine(this.BackupDirectory, JournalFileName);
+            JournalManifest durable = JsonSerializer.Deserialize<JournalManifest>(
+                this.FileSystem.ReadAllText(manifestPath));
+            if (durable is null || durable.Version != SchemaVersion ||
+                !string.Equals(RewritingCacheValidator.NormalizeDirectory(durable.OutputDirectory),
+                    this.OutputDirectory, this.FileSystem.IsCaseInsensitive(this.OutputDirectory) ?
+                        StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            {
+                throw new IOException("The durable rewrite journal manifest is invalid.");
+            }
+
+            ValidateManifest(this.FileSystem, this.OutputDirectory, this.BackupDirectory, durable);
+            if (this.DescribesSameManifest(durable, proposed))
+            {
+                return true;
+            }
+
+            if (this.DescribesSameManifest(durable, prior))
+            {
+                return false;
+            }
+
+            throw new IOException("The durable rewrite journal manifest matches neither capture state.");
+        }
+
+        private bool DescribesSameManifest(JournalManifest left, JournalManifest right)
+        {
+            var comparer = new FileSystemPathComparer(this.FileSystem);
+            return left.Version == right.Version &&
+                left.CreatedUtcTicks == right.CreatedUtcTicks &&
+                left.State == right.State &&
+                comparer.Equals(left.OutputDirectory, right.OutputDirectory) &&
+                left.Changes.Count == right.Changes.Count &&
+                left.Changes.Zip(right.Changes, (first, second) =>
+                    first.Existed == second.Existed &&
+                    first.BackupLength == second.BackupLength &&
+                    string.Equals(first.BackupFingerprint, second.BackupFingerprint,
+                        StringComparison.Ordinal) &&
+                    comparer.Equals(first.TargetPath, second.TargetPath) &&
+                    ((!first.Existed && string.IsNullOrEmpty(first.BackupPath) &&
+                        string.IsNullOrEmpty(second.BackupPath)) ||
+                     (first.Existed && comparer.Equals(first.BackupPath, second.BackupPath))))
+                .All(isSame => isSame) &&
+                left.CreatedDirectories.Count == right.CreatedDirectories.Count &&
+                left.CreatedDirectories.Zip(right.CreatedDirectories, comparer.Equals)
+                    .All(isSame => isSame);
+        }
+
+        private void ApplyManifest(JournalManifest manifest)
+        {
+            this.Changes.Clear();
+            this.Changes.AddRange(manifest.Changes);
+            this.CreatedDirectories.Clear();
+            this.CreatedDirectories.AddRange(manifest.CreatedDirectories);
+            this.State = manifest.State;
+            this.CapturedPaths.Clear();
+            this.CapturedPaths.UnionWith(this.Changes.Select(change => change.TargetPath));
+            this.CapturedDirectories.Clear();
+            this.CapturedDirectories.UnionWith(this.CreatedDirectories);
         }
 
         private void DeleteDirectoryContents(string directory, string retainedManifestPath)

@@ -64,6 +64,29 @@ namespace Microsoft.Coyote.Tools.Tests
             Assert.True(fileSystem.DirectoryExists(journal.BackupDirectory));
         }
 
+        [Theory(Timeout = 5000)]
+        [InlineData(false)]
+        [InlineData(true)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestCaptureCanRetryAfterManifestSaveFailure(bool failAfterReplace)
+        {
+            var inner = new InMemoryFileSystem()
+                .WithFile(Out("existing.txt"), "before")
+                .WithDirectory(Out());
+            var fileSystem = new InterruptingManifestReplaceFileSystem(inner);
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(
+                fileSystem, Out());
+            fileSystem.InterruptNextJournalReplace(failAfterReplace);
+
+            Assert.Throws<IOException>(() => journal.Capture(Out("existing.txt")));
+            journal.Capture(Out("existing.txt"));
+            fileSystem.WriteAllText(Out("existing.txt"), "after");
+            journal.Restore();
+
+            Assert.Equal("before", fileSystem.ReadAllText(Out("existing.txt")));
+            journal.Complete();
+        }
+
         [Fact(Timeout = 5000)]
         public void TestTrailingOutputSeparatorPlacesBackupBesideOutput()
         {
@@ -396,6 +419,61 @@ namespace Microsoft.Coyote.Tools.Tests
                 this.IsInterruptionArmed = false;
                 throw new IOException("Simulated cleanup interruption.");
             }
+        }
+
+        private sealed class InterruptingManifestReplaceFileSystem : IFileSystem
+        {
+            private readonly IFileSystem Inner;
+            private bool IsReplaceInterrupted;
+            private bool FailAfterReplace;
+
+            internal InterruptingManifestReplaceFileSystem(IFileSystem inner) => this.Inner = inner;
+
+            internal void InterruptNextJournalReplace(bool failAfterReplace)
+            {
+                this.IsReplaceInterrupted = true;
+                this.FailAfterReplace = failAfterReplace;
+            }
+
+            public bool FileExists(string path) => this.Inner.FileExists(path);
+            public bool DirectoryExists(string path) => this.Inner.DirectoryExists(path);
+            public IFileEntry GetFile(string path) => this.Inner.GetFile(path);
+            public string ReadAllText(string path) => this.Inner.ReadAllText(path);
+            public void WriteAllText(string path, string contents) => this.Inner.WriteAllText(path, contents);
+            public Stream OpenRead(string path, FileReadSharing sharing) => this.Inner.OpenRead(path, sharing);
+            public void CopyFile(string sourcePath, string targetPath, bool overwrite) =>
+                this.Inner.CopyFile(sourcePath, targetPath, overwrite);
+            public void MoveFile(string sourcePath, string targetPath) =>
+                this.Inner.MoveFile(sourcePath, targetPath);
+
+            public void ReplaceFile(string sourcePath, string targetPath, string backupPath)
+            {
+                if (this.IsReplaceInterrupted && string.Equals(
+                    Path.GetFileName(targetPath), "journal.json", StringComparison.Ordinal))
+                {
+                    this.IsReplaceInterrupted = false;
+                    if (this.FailAfterReplace)
+                    {
+                        this.Inner.ReplaceFile(sourcePath, targetPath, backupPath);
+                    }
+
+                    throw new IOException("Simulated journal replace interruption.");
+                }
+
+                this.Inner.ReplaceFile(sourcePath, targetPath, backupPath);
+            }
+
+            public void DeleteFile(string path) => this.Inner.DeleteFile(path);
+            public void CreateDirectory(string path) => this.Inner.CreateDirectory(path);
+            public void DeleteDirectory(string path, bool recursive) =>
+                this.Inner.DeleteDirectory(path, recursive);
+            public string[] GetFiles(string directory, string searchPattern) =>
+                this.Inner.GetFiles(directory, searchPattern);
+            public IReadOnlyList<IFileEntry> GetFileEntries(string directory, string searchPattern) =>
+                this.Inner.GetFileEntries(directory, searchPattern);
+            public string[] GetDirectories(string directory, string searchPattern, bool recursive) =>
+                this.Inner.GetDirectories(directory, searchPattern, recursive);
+            public bool IsCaseInsensitive(string directory) => this.Inner.IsCaseInsensitive(directory);
         }
     }
 }
