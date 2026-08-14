@@ -221,6 +221,46 @@ namespace Microsoft.Coyote.Rewriting.Tests
                 string.Join(Environment.NewLine, unresolved));
         }
 
+        [Fact(Timeout = 60000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestEveryReferenceInstanceStaticShimHasAConstrainedRoute()
+        {
+            MethodInfo capability = typeof(MethodBodyTypeRewritingPass).GetMethod(
+                "CanRouteConstrainedStaticReceiverForTesting",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(capability);
+
+            var unroutable = new List<string>();
+            foreach (Type replacement in GetReplacedTypes().Keys.OrderBy(type => type.FullName))
+            {
+                foreach (MethodInfo method in replacement.GetMethods(
+                    BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly))
+                {
+                    ParameterInfo receiver = method.GetParameters().FirstOrDefault();
+                    if (receiver is null)
+                    {
+                        continue;
+                    }
+
+                    Type receiverType = receiver.ParameterType.IsByRef ?
+                        receiver.ParameterType.GetElementType() : receiver.ParameterType;
+                    if (receiverType.IsValueType || receiverType.IsPointer)
+                    {
+                        continue;
+                    }
+
+                    if (!(bool)capability.Invoke(null, new object[] { receiver.ParameterType }))
+                    {
+                        unroutable.Add(Describe(method));
+                    }
+                }
+            }
+
+            Assert.True(unroutable.Count is 0,
+                "Reference receiver shims without a legal constrained route:" +
+                Environment.NewLine + string.Join(Environment.NewLine, unroutable));
+        }
+
         /// <summary>
         /// Checks every replacement method declared by the specified type.
         /// </summary>

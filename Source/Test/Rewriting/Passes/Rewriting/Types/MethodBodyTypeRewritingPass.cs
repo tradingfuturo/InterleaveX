@@ -247,6 +247,21 @@ namespace Microsoft.Coyote.Rewriting
                 }
 #endif
 
+                if (!newMethod.HasThis && instruction.Previous?.OpCode == OpCodes.Constrained &&
+                    instruction.Previous.Operand is TypeReference constrainedReceiver)
+                {
+                    if (this.TryRewriteConstrainedStaticCall(
+                        instruction, method, newMethod, constrainedReceiver, out Instruction routed))
+                    {
+                        return routed;
+                    }
+
+                    this.LogWriter.LogWarning(
+                        "............. Preserving constrained call '{0}' because its static replacement " +
+                        "has no legal receiver route.", method.FullName);
+                    return instruction;
+                }
+
                 // Create and return the new instruction.
                 // Cecil marks value-type interface implementations as virtual, but a direct member
                 // call on the value-type receiver still requires 'call'. A retained 'constrained.'
@@ -265,6 +280,99 @@ namespace Microsoft.Coyote.Rewriting
             }
 
             return instruction;
+        }
+
+        /// <summary>
+        /// Rewrites a constrained instance call whose model is static without leaving an invalid
+        /// constrained prefix or receiver shape on the stack.
+        /// </summary>
+        private bool TryRewriteConstrainedStaticCall(Instruction instruction,
+            MethodReference originalMethod, MethodReference replacementMethod,
+            TypeReference constrainedType, out Instruction result)
+        {
+            result = instruction;
+            if (replacementMethod.Parameters.Count is 0)
+            {
+                return false;
+            }
+
+            Instruction prefix = instruction.Previous;
+            TypeReference receiverType = replacementMethod.Parameters[0].ParameterType;
+            if (receiverType is ByReferenceType byReferenceReceiver)
+            {
+                if (!string.Equals(byReferenceReceiver.ElementType.FullName,
+                    originalMethod.DeclaringType.FullName, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                this.Replace(prefix, Instruction.Create(OpCodes.Nop));
+            }
+            else
+            {
+                if (receiverType is PointerType)
+                {
+                    return false;
+                }
+
+                var route = new List<Instruction>();
+                var arguments = new List<VariableDefinition>();
+                for (int idx = originalMethod.Parameters.Count - 1; idx >= 0; --idx)
+                {
+                    var local = new VariableDefinition(
+                        this.Module.ImportReference(originalMethod.Parameters[idx].ParameterType));
+                    this.Method.Body.Variables.Add(local);
+                    arguments.Insert(0, local);
+                    route.Add(Instruction.Create(OpCodes.Stloc, local));
+                }
+
+                this.Method.Body.InitLocals = true;
+                bool isGenericReceiver = constrainedType is GenericParameter;
+                bool isValueTypeReceiver = isGenericReceiver ||
+                    (this.TryResolve(constrainedType, out TypeDefinition constrainedDefinition) &&
+                     constrainedDefinition.IsValueType);
+                if (isValueTypeReceiver)
+                {
+                    route.Add(Instruction.Create(OpCodes.Ldobj,
+                        this.Module.ImportReference(constrainedType)));
+                    route.Add(Instruction.Create(OpCodes.Box,
+                        this.Module.ImportReference(constrainedType)));
+                }
+                else
+                {
+                    route.Add(Instruction.Create(OpCodes.Ldind_Ref));
+                }
+
+                route.Add(Instruction.Create(OpCodes.Castclass,
+                    this.Module.ImportReference(receiverType)));
+                foreach (VariableDefinition argument in arguments)
+                {
+                    route.Add(Instruction.Create(OpCodes.Ldloc, argument));
+                }
+
+                Instruction current = route[0];
+                this.Replace(prefix, current);
+                for (int idx = 1; idx < route.Count; ++idx)
+                {
+                    this.Processor.InsertAfter(current, route[idx]);
+                    current = route[idx];
+                }
+            }
+
+            Instruction rewritten = Instruction.Create(OpCodes.Call, replacementMethod);
+            rewritten.Offset = instruction.Offset;
+            this.LogWriter.LogDebug("............. [-] {0}", instruction);
+            this.Replace(instruction, rewritten);
+            this.LogWriter.LogDebug("............. [+] {0}", rewritten);
+            result = rewritten;
+            return true;
+        }
+
+        /// <summary>Returns whether the constrained router supports the specified shim receiver.</summary>
+        internal static bool CanRouteConstrainedStaticReceiverForTesting(Type receiverType)
+        {
+            Type effectiveType = receiverType?.IsByRef is true ? receiverType.GetElementType() : receiverType;
+            return effectiveType != null && !effectiveType.IsPointer;
         }
 
 #if NET
