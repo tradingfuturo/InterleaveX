@@ -165,6 +165,28 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         private RewritingOutputChangeJournal OutputJournal;
 
+        private sealed class StagedOutput
+        {
+            internal string SourcePath;
+
+            internal string TargetPath;
+        }
+
+        private sealed class PendingCacheRecord
+        {
+            internal AssemblyInfo Assembly;
+
+            internal string OutputPath;
+
+            internal string[] ThreadStaticFields;
+        }
+
+        private readonly List<StagedOutput> StagedOutputs = new List<StagedOutput>();
+
+        private readonly List<string> PublishedStagedOutputPaths = new List<string>();
+
+        private readonly List<PendingCacheRecord> PendingCacheRecords = new List<PendingCacheRecord>();
+
         /// <summary>
         /// Initializes a new instance of the <see cref="RewritingEngine"/> class.
         /// </summary>
@@ -243,10 +265,23 @@ namespace Microsoft.Coyote.Rewriting
                 }
 
                 bool isUpToDate = cache.TryGetUpToDateRun(out HashSet<string> protectedOutputPaths);
+                var snapshotExcludedDirectories = new List<string>()
+                {
+                    this.OutputJournal.BackupDirectory
+                };
+                var snapshotExcludedFiles = new List<string>() { outputLock.Path };
+                if (this.Options.IsReplacingAssemblies())
+                {
+                    snapshotExcludedDirectories.Add(Path.Combine(
+                        this.Options.OutputDirectory, TempDirectory));
+                    snapshotExcludedFiles.Add(Path.Combine(
+                        this.Options.OutputDirectory, RewritingCache.ManifestFileName));
+                }
+
                 snapshot = RewritingInputSnapshot.Create(this.FileSystem, this.LogWriter,
                     this.Options.AssembliesDirectory, this.Options.OutputDirectory,
-                    excludedDirectories: new[] { this.OutputJournal.BackupDirectory },
-                    excludedFiles: new[] { outputLock.Path });
+                    excludedDirectories: snapshotExcludedDirectories,
+                    excludedFiles: snapshotExcludedFiles);
                 if (!isUpToDate)
                 {
                     this.OutputJournal.Capture(Path.Combine(
@@ -265,6 +300,12 @@ namespace Microsoft.Coyote.Rewriting
                     foreach (string path in cache.GetAcceptedProducedPaths())
                     {
                         this.TrackProducedOutput(path);
+                    }
+
+                    if (this.Options.IsReplacingAssemblies())
+                    {
+                        snapshot.VerifyUnchanged();
+                        this.PublishStagedOutputs();
                     }
 
                     this.OutputJournal.Capture(Path.Combine(
@@ -300,6 +341,18 @@ namespace Microsoft.Coyote.Rewriting
                     this.EffectiveDotnetRoot, snapshot.ToReadPath, snapshot.ToLogicalPath).ToList();
                 this.RewriteAssemblyBatch(assemblies, outputDirectory, cache);
 
+                if (this.Options.IsReplacingAssemblies())
+                {
+                    snapshot.VerifyUnchanged();
+                    this.PublishStagedOutputs();
+                    foreach (PendingCacheRecord record in this.PendingCacheRecords)
+                    {
+                        cache.RecordAssembly(
+                            record.Assembly, record.OutputPath, record.ThreadStaticFields,
+                            this.PublishedStagedOutputPaths);
+                    }
+                }
+
                 // After the passes, because the fallback resolution that fills this runs throughout
                 // them and not only while the assemblies are being loaded.
                 cache.RecordFrameworkInventories(this.FallbackFrameworkInventories);
@@ -331,6 +384,16 @@ namespace Microsoft.Coyote.Rewriting
                 {
                     try
                     {
+                        if (this.Options.IsReplacingAssemblies() &&
+                            !string.IsNullOrEmpty(outputDirectory) &&
+                            this.FileSystem.DirectoryExists(outputDirectory))
+                        {
+                            // Staging is not published output and can contain files that were copied
+                            // without journal entries. Remove it before the journal removes its captured
+                            // directory skeleton.
+                            this.FileSystem.DeleteDirectory(outputDirectory, true);
+                        }
+
                         this.OutputJournal.Restore();
                         this.OutputJournal.Complete();
                     }
@@ -494,7 +557,7 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         private void RewriteAssembly(AssemblyInfo assembly, string outputPath, RewritingCache cache)
         {
-            string resolvedOutputPath = this.Options.IsReplacingAssemblies() ? assembly.FilePath : outputPath;
+            string resolvedOutputPath = outputPath;
             string[] threadStaticFields = Array.Empty<string>();
 
             // Read here rather than below, because rewriting stamps the signature that sets it, so by
@@ -593,15 +656,25 @@ namespace Microsoft.Coyote.Rewriting
             if (!wasAlreadyRewritten && this.Options.IsReplacingAssemblies())
             {
                 string targetPath = Path.Combine(this.Options.AssembliesDirectory, assembly.Name);
-                this.OutputJournal.Capture(assembly.FilePath);
-                this.CopyWithRetriesAsync(outputPath, assembly.FilePath).Wait();
+                this.StageOutput(outputPath, assembly.FilePath);
                 if (assembly.IsSymbolFileAvailable())
                 {
                     string pdbFile = Path.ChangeExtension(outputPath, "pdb");
                     string targetPdbFile = Path.ChangeExtension(targetPath, "pdb");
-                    this.OutputJournal.Capture(targetPdbFile);
-                    this.CopyWithRetriesAsync(pdbFile, targetPdbFile).Wait();
+                    this.StageOutput(pdbFile, targetPdbFile);
                 }
+            }
+
+            if (this.Options.IsReplacingAssemblies())
+            {
+                this.StageAssemblyArtifacts(outputPath, assembly.FilePath);
+                this.PendingCacheRecords.Add(new PendingCacheRecord()
+                {
+                    Assembly = assembly,
+                    OutputPath = assembly.FilePath,
+                    ThreadStaticFields = threadStaticFields
+                });
+                return;
             }
 
             // Recorded once the output is in its final place, and for skipped assemblies too: the cache
@@ -847,8 +920,18 @@ namespace Microsoft.Coyote.Rewriting
                     continue;
                 }
 
-                this.OutputJournal.Capture(destination);
-                this.Mirror.CopyFile(assemblyPath, this.Options.OutputDirectory);
+                if (this.Options.IsReplacingAssemblies())
+                {
+                    string staged = Path.Combine(outputDirectory, Path.GetFileName(assemblyPath));
+                    this.Mirror.CopyFile(assemblyPath, outputDirectory);
+                    this.StageOutput(staged, destination);
+                }
+                else
+                {
+                    this.OutputJournal.Capture(destination);
+                    this.Mirror.CopyFile(assemblyPath, this.Options.OutputDirectory);
+                }
+
                 this.TrackProducedOutput(destination);
             }
 
@@ -889,6 +972,62 @@ namespace Microsoft.Coyote.Rewriting
             {
                 this.ProducedOutputFiles.Add(relativePath);
             }
+        }
+
+        private void StageAssemblyArtifacts(string stagedOutputPath, string targetOutputPath)
+        {
+            if (this.Options.IsLoggingAssemblyContents)
+            {
+                this.StageOutputIfPresent(
+                    Path.ChangeExtension(stagedOutputPath, ".il.json"),
+                    Path.ChangeExtension(targetOutputPath, ".il.json"));
+                this.StageOutputIfPresent(
+                    Path.ChangeExtension(stagedOutputPath, ".rw.json"),
+                    Path.ChangeExtension(targetOutputPath, ".rw.json"));
+            }
+
+            if (this.Options.IsDiffingAssemblyContents)
+            {
+                this.StageOutputIfPresent(
+                    Path.ChangeExtension(stagedOutputPath, ".diff.json"),
+                    Path.ChangeExtension(targetOutputPath, ".diff.json"));
+            }
+        }
+
+        private void StageOutputIfPresent(string sourcePath, string targetPath)
+        {
+            if (this.FileSystem.FileExists(sourcePath))
+            {
+                this.StageOutput(sourcePath, targetPath);
+            }
+        }
+
+        private void StageOutput(string sourcePath, string targetPath)
+        {
+            string normalizedTarget = RewritingCacheValidator.NormalizeFile(targetPath);
+            if (!this.StagedOutputs.Any(output => string.Equals(
+                output.TargetPath, normalizedTarget,
+                this.FileSystem.IsCaseInsensitive(this.Options.OutputDirectory) ?
+                    StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)))
+            {
+                this.StagedOutputs.Add(new StagedOutput()
+                {
+                    SourcePath = RewritingCacheValidator.NormalizeFile(sourcePath),
+                    TargetPath = normalizedTarget
+                });
+            }
+        }
+
+        private void PublishStagedOutputs()
+        {
+            foreach (StagedOutput output in this.StagedOutputs)
+            {
+                this.OutputJournal.Capture(output.TargetPath);
+                this.CopyWithRetriesAsync(output.SourcePath, output.TargetPath).Wait();
+                this.PublishedStagedOutputPaths.Add(output.TargetPath);
+            }
+
+            this.StagedOutputs.Clear();
         }
 
         /// <summary>

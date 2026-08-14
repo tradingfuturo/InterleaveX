@@ -428,6 +428,33 @@ namespace Microsoft.Coyote.Tools.Tests
                 Path.GetFileName(workspace.OutputDirectory) + ".mirror-backup-*"));
         }
 
+        [Fact(Timeout = 120000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestInPlaceRewriteRejectsSourceDriftBeforePublication()
+        {
+            using var workspace = Workspace.Create();
+            byte[] external = null;
+
+            IOException error = Assert.Throws<IOException>(() => workspace.Rewrite(
+                HostFileSystem.Instance,
+                options => options.OutputDirectory = workspace.InputDirectory,
+                onAssembliesLoaded: _ =>
+                {
+                    external = File.ReadAllBytes(workspace.InputAssemblyPath);
+                    external[external.Length / 2] ^= 0x5a;
+                    File.WriteAllBytes(workspace.InputAssemblyPath, external);
+                }));
+
+            Assert.Contains("changed after its rewrite snapshot was created", error.Message);
+            Assert.NotNull(external);
+            Assert.Equal(external, File.ReadAllBytes(workspace.InputAssemblyPath));
+            Assert.False(File.Exists(Path.Combine(
+                workspace.InputDirectory, RewritingCache.ManifestFileName)));
+            Assert.Empty(Directory.GetDirectories(
+                Path.GetDirectoryName(workspace.InputDirectory),
+                Path.GetFileName(workspace.InputDirectory) + ".mirror-backup-*"));
+        }
+
         [Theory(Timeout = 120000)]
         [InlineData(RewritingCache.ManifestFileName)]
         [InlineData(RewritingOutputLedger.ManifestFileName)]

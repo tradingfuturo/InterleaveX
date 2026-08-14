@@ -418,7 +418,7 @@ namespace Microsoft.Coyote.Rewriting
         /// have produced, is what lets the cache settle instead of missing on every run.
         /// </remarks>
         internal void RecordAssembly(IRewrittenAssembly assembly, string outputPath,
-            IEnumerable<string> threadStaticFields)
+            IEnumerable<string> threadStaticFields, IEnumerable<string> additionalProducedPaths = null)
         {
             try
             {
@@ -441,6 +441,8 @@ namespace Microsoft.Coyote.Rewriting
                     RewritingCacheValidator.NormalizeFile(outputPath),
                     RewritingCacheValidator.NormalizeFile(Path.ChangeExtension(outputPath, "pdb"))
                 };
+                producedPaths.UnionWith((additionalProducedPaths ?? Enumerable.Empty<string>())
+                    .Select(RewritingCacheValidator.NormalizeFile));
 
                 var capturedFiles = new Dictionary<string, CacheFile>(this.Validator.PathComparer);
                 CacheFile Capture(string path)
