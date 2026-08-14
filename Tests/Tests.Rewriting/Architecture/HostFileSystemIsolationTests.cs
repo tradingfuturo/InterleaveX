@@ -369,6 +369,7 @@ namespace Microsoft.Coyote.Rewriting.Tests
             "Microsoft.Coyote.IO.HostFileSystem::MoveFile",
             "Microsoft.Coyote.IO.HostFileSystem::OpenRead",
             "Microsoft.Coyote.IO.HostFileSystem::OpenWriteExclusive",
+            "Microsoft.Coyote.IO.HostFileSystem::OpenWriteNewExclusive",
             "Microsoft.Coyote.IO.HostFileSystem::QueryOrProbe",
             "Microsoft.Coyote.IO.HostFileSystem::QueryOrProbeForTesting",
             "Microsoft.Coyote.IO.HostFileSystem::ReadAllText",

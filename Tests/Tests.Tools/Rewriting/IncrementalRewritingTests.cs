@@ -1074,7 +1074,11 @@ namespace Microsoft.Coyote.Tools.Tests
                         () => this.AfterOpenWriteExclusiveDisposed(path));
             }
 
-            public void FlushWrite(Stream stream) => this.Inner.FlushWrite(stream);
+            public Stream OpenWriteNewExclusive(string path) =>
+                this.Inner.OpenWriteNewExclusive(path);
+
+            public void FlushWrite(Stream stream) => this.Inner.FlushWrite(
+                stream is DisposeCallbackStream callback ? callback.WrappedStream : stream);
 
             public void CopyFile(string sourcePath, string targetPath, bool overwrite)
             {

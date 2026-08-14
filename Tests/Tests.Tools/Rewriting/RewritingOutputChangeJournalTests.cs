@@ -412,6 +412,7 @@ namespace Microsoft.Coyote.Tools.Tests
             public Stream OpenRead(string path, FileReadSharing sharing) => this.Inner.OpenRead(path, sharing);
 
             public Stream OpenWriteExclusive(string path) => this.Inner.OpenWriteExclusive(path);
+            public Stream OpenWriteNewExclusive(string path) => this.Inner.OpenWriteNewExclusive(path);
 
             public void FlushWrite(Stream stream) => this.Inner.FlushWrite(stream);
 
@@ -482,6 +483,7 @@ namespace Microsoft.Coyote.Tools.Tests
             public Stream OpenRead(string path, FileReadSharing sharing) => this.Inner.OpenRead(path, sharing);
 
             public Stream OpenWriteExclusive(string path) => this.Inner.OpenWriteExclusive(path);
+            public Stream OpenWriteNewExclusive(string path) => this.Inner.OpenWriteNewExclusive(path);
 
             public void FlushWrite(Stream stream) => this.Inner.FlushWrite(stream);
 
@@ -567,6 +569,7 @@ namespace Microsoft.Coyote.Tools.Tests
             public Stream OpenRead(string path, FileReadSharing sharing) => this.Inner.OpenRead(path, sharing);
 
             public Stream OpenWriteExclusive(string path) => this.Inner.OpenWriteExclusive(path);
+            public Stream OpenWriteNewExclusive(string path) => this.Inner.OpenWriteNewExclusive(path);
             public void FlushWrite(Stream stream) => this.Inner.FlushWrite(stream);
             public void CopyFile(string sourcePath, string targetPath, bool overwrite) =>
                 this.Inner.CopyFile(sourcePath, targetPath, overwrite);

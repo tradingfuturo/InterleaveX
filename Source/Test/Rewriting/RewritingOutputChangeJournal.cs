@@ -165,7 +165,7 @@ namespace Microsoft.Coyote.Rewriting
                         $"The source directory '{this.OutputDirectory}' changed after its rewrite snapshot was created.");
                 }
 
-                this.Capture(target);
+                this.Capture(target, targetStream);
                 using Stream sourceStream = this.FileSystem.OpenRead(source, FileReadSharing.DenyWriters);
                 targetStream.Position = 0;
                 targetStream.SetLength(0);
@@ -194,6 +194,14 @@ namespace Microsoft.Coyote.Rewriting
 
         internal void Capture(string targetPath)
         {
+            this.Capture(targetPath, null);
+        }
+
+        /// <summary>
+        /// Captures a target through an already-held exclusive stream when publication owns one.
+        /// </summary>
+        private void Capture(string targetPath, Stream lockedTargetStream)
+        {
             this.EnsureActiveForMutation();
             string normalized = RewritingCacheValidator.NormalizeFile(targetPath);
             if (this.CapturedPaths.Contains(normalized))
@@ -217,10 +225,23 @@ namespace Microsoft.Coyote.Rewriting
                         .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
                     change.BackupPath = Path.Combine(this.BackupDirectory, relative);
                     this.FileSystem.CreateDirectory(Path.GetDirectoryName(change.BackupPath));
-                    this.FileSystem.CopyFile(normalized, change.BackupPath, false);
-                    change.BackupLength = this.FileSystem.GetFile(change.BackupPath).Length;
-                    change.BackupFingerprint = RewritingCacheValidator.ComputeFileFingerprint(
-                        this.FileSystem, change.BackupPath);
+                    if (lockedTargetStream is null)
+                    {
+                        this.FileSystem.CopyFile(normalized, change.BackupPath, false);
+                        change.BackupLength = this.FileSystem.GetFile(change.BackupPath).Length;
+                        change.BackupFingerprint = RewritingCacheValidator.ComputeFileFingerprint(
+                            this.FileSystem, change.BackupPath);
+                    }
+                    else
+                    {
+                        using Stream backupStream = this.FileSystem.OpenWriteNewExclusive(change.BackupPath);
+                        lockedTargetStream.Position = 0;
+                        lockedTargetStream.CopyTo(backupStream);
+                        this.FileSystem.FlushWrite(backupStream);
+                        change.BackupLength = backupStream.Length;
+                        change.BackupFingerprint =
+                            RewritingCacheValidator.ComputeStreamFingerprint(backupStream);
+                    }
                 }
 
                 this.FileSystem.CreateDirectory(this.BackupDirectory);

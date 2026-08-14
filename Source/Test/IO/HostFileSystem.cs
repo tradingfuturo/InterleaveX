@@ -71,7 +71,12 @@ namespace Microsoft.Coyote.IO
 
         /// <inheritdoc/>
         public Stream OpenWriteExclusive(string path) =>
-            new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read,
+            new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None,
+                bufferSize: 1, FileOptions.SequentialScan);
+
+        /// <inheritdoc/>
+        public Stream OpenWriteNewExclusive(string path) =>
+            new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None,
                 bufferSize: 1, FileOptions.SequentialScan);
 
         /// <inheritdoc/>

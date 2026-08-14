@@ -259,6 +259,29 @@ namespace Microsoft.Coyote.Tests.Common.IO
         }
 
         /// <inheritdoc/>
+        public Stream OpenWriteNewExclusive(string path)
+        {
+            string full = Normalize(path);
+            this.RequireDirectory(GetParent(full));
+            if (this.Files.ContainsKey(full))
+            {
+                throw new IOException($"The file '{full}' already exists.");
+            }
+
+            var entry = new Entry
+            {
+                Content = Array.Empty<byte>(),
+                LastWriteTimeUtc = this.Advance()
+            };
+            this.Files.Add(full, entry);
+            return new CommitStream(entry.Content, content =>
+            {
+                entry.Content = content;
+                entry.LastWriteTimeUtc = this.Advance();
+            });
+        }
+
+        /// <inheritdoc/>
         public void FlushWrite(Stream stream) => stream.Flush();
 
         /// <inheritdoc/>

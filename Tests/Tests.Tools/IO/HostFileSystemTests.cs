@@ -92,6 +92,23 @@ namespace Microsoft.Coyote.Tools.Tests
             });
         }
 
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestExclusiveUpdateRefusesReadersDuringPublication()
+        {
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                return;
+            }
+
+            WithTemporaryFile(path =>
+            {
+                using Stream writer = HostFileSystem.Instance.OpenWriteExclusive(path);
+                Assert.Throws<IOException>(() => new FileStream(path, FileMode.Open,
+                    FileAccess.Read, FileShare.ReadWrite).Dispose());
+            });
+        }
+
         [Fact(Timeout = 30000)]
         public void TestCaseSensitivityIsReadFromTheDirectoryItIsAskedAbout()
         {
