@@ -332,6 +332,12 @@ namespace Microsoft.Coyote.Rewriting
                         continue;
                     }
 
+                    if (TryDiscardInterruptedInitialization(
+                        fileSystem, normalized, directory, manifestPath + ".tmp"))
+                    {
+                        continue;
+                    }
+
                     throw new IOException(
                         $"The legacy rewrite recovery journal '{directory}' cannot be recovered automatically.");
                 }
@@ -374,6 +380,44 @@ namespace Microsoft.Coyote.Rewriting
 
                 journal.Complete();
             }
+        }
+
+        private static bool TryDiscardInterruptedInitialization(IFileSystem fileSystem,
+            string outputDirectory, string backupDirectory, string temporaryManifestPath)
+        {
+            string[] files = fileSystem.GetFiles(backupDirectory, "*");
+            if (files.Length is not 1 ||
+                fileSystem.GetDirectories(backupDirectory, "*", false).Length is not 0 ||
+                !new FileSystemPathComparer(fileSystem).Equals(files[0], temporaryManifestPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                JournalManifest manifest = JsonSerializer.Deserialize<JournalManifest>(
+                    fileSystem.ReadAllText(temporaryManifestPath));
+                if (manifest is null || manifest.Version != SchemaVersion ||
+                    manifest.State != ActiveState || manifest.Changes is null ||
+                    manifest.Changes.Count is not 0 || manifest.CreatedDirectories is null ||
+                    manifest.CreatedDirectories.Count is not 0 ||
+                    !string.Equals(RewritingCacheValidator.NormalizeDirectory(manifest.OutputDirectory),
+                        outputDirectory, fileSystem.IsCaseInsensitive(outputDirectory) ?
+                            StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                ValidateManifest(fileSystem, outputDirectory, backupDirectory, manifest);
+            }
+            catch
+            {
+                return false;
+            }
+
+            fileSystem.DeleteFile(temporaryManifestPath);
+            fileSystem.DeleteDirectory(backupDirectory, false);
+            return true;
         }
 
         private static void ValidateManifest(IFileSystem fileSystem, string outputDirectory,

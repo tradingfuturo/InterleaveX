@@ -235,6 +235,81 @@ namespace Microsoft.Coyote.Tools.Tests
                 fileSystem, Out()));
         }
 
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestInterruptedEmptyJournalInitializationIsDiscarded()
+        {
+            var inner = new InMemoryFileSystem().WithDirectory(Out());
+            var fileSystem = new InterruptingInitialManifestFileSystem(inner);
+
+            Assert.Throws<IOException>(() =>
+                new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(fileSystem, Out()));
+            string remnant = Assert.Single(
+                Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(fileSystem, Out()));
+            Assert.True(fileSystem.FileExists(Path.Combine(remnant, "journal.json.tmp")));
+
+            Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out());
+
+            Assert.Empty(Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
+                fileSystem, Out()));
+        }
+
+        private sealed class InterruptingInitialManifestFileSystem : IFileSystem
+        {
+            private readonly IFileSystem Inner;
+
+            internal InterruptingInitialManifestFileSystem(IFileSystem inner) => this.Inner = inner;
+
+            public bool FileExists(string path) => this.Inner.FileExists(path);
+
+            public bool DirectoryExists(string path) => this.Inner.DirectoryExists(path);
+
+            public IFileEntry GetFile(string path) => this.Inner.GetFile(path);
+
+            public string ReadAllText(string path) => this.Inner.ReadAllText(path);
+
+            public void WriteAllText(string path, string contents) => this.Inner.WriteAllText(path, contents);
+
+            public Stream OpenRead(string path, FileReadSharing sharing) => this.Inner.OpenRead(path, sharing);
+
+            public void CopyFile(string sourcePath, string targetPath, bool overwrite) =>
+                this.Inner.CopyFile(sourcePath, targetPath, overwrite);
+
+            public void MoveFile(string sourcePath, string targetPath)
+            {
+                if (IsJournalManifest(targetPath))
+                {
+                    throw new IOException("Simulated journal move interruption.");
+                }
+
+                this.Inner.MoveFile(sourcePath, targetPath);
+            }
+
+            public void ReplaceFile(string sourcePath, string targetPath, string backupPath) =>
+                this.Inner.ReplaceFile(sourcePath, targetPath, backupPath);
+
+            public void DeleteFile(string path) => this.Inner.DeleteFile(path);
+
+            public void CreateDirectory(string path) => this.Inner.CreateDirectory(path);
+
+            public void DeleteDirectory(string path, bool recursive) =>
+                this.Inner.DeleteDirectory(path, recursive);
+
+            public string[] GetFiles(string directory, string searchPattern) =>
+                this.Inner.GetFiles(directory, searchPattern);
+
+            public IReadOnlyList<IFileEntry> GetFileEntries(string directory, string searchPattern) =>
+                this.Inner.GetFileEntries(directory, searchPattern);
+
+            public string[] GetDirectories(string directory, string searchPattern, bool recursive) =>
+                this.Inner.GetDirectories(directory, searchPattern, recursive);
+
+            public bool IsCaseInsensitive(string directory) => this.Inner.IsCaseInsensitive(directory);
+
+            private static bool IsJournalManifest(string path) => string.Equals(
+                Path.GetFileName(path), "journal.json", StringComparison.Ordinal);
+        }
+
         private sealed class InterruptingCleanupFileSystem : IFileSystem
         {
             private readonly IFileSystem Inner;
