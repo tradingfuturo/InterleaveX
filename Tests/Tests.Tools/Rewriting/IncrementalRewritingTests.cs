@@ -475,6 +475,31 @@ namespace Microsoft.Coyote.Tools.Tests
             Assert.Equal(expectedNames[1], AssemblyName.GetAssemblyName(paths[1]).Name);
         }
 
+        [Fact(Timeout = 120000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestInPlaceRewritePublishesNestedSymbolsBesideAssembly()
+        {
+            using var workspace = Workspace.Create();
+            string assemblyPath = workspace.MoveTargetToNestedDirectory();
+            string symbolPath = Path.ChangeExtension(assemblyPath, "pdb");
+            string rootSymbolPath = Path.ChangeExtension(
+                Path.Combine(workspace.InputDirectory, Path.GetFileName(assemblyPath)), "pdb");
+
+            workspace.Rewrite(options =>
+            {
+                options.OutputDirectory = workspace.InputDirectory;
+                options.AssemblyPaths = new HashSet<string>() { assemblyPath };
+            });
+
+            Assert.True(File.Exists(symbolPath), "File not found: " + symbolPath);
+            Assert.False(File.Exists(rootSymbolPath), "Unexpected file: " + rootSymbolPath);
+            Assert.Contains(UpToDateMessage, workspace.Rewrite(options =>
+            {
+                options.OutputDirectory = workspace.InputDirectory;
+                options.AssemblyPaths = new HashSet<string>() { assemblyPath };
+            }));
+        }
+
         [Theory(Timeout = 120000)]
         [InlineData(RewritingCache.ManifestFileName)]
         [InlineData(RewritingOutputLedger.ManifestFileName)]
@@ -867,6 +892,20 @@ namespace Microsoft.Coyote.Tools.Tests
                 File.Copy(this.InputAssemblyPath, first);
                 File.Copy(secondSource, second);
                 return new[] { first, second };
+            }
+
+            internal string MoveTargetToNestedDirectory()
+            {
+                string nestedDirectory = Path.Combine(this.InputDirectory, "nested");
+                Directory.CreateDirectory(nestedDirectory);
+                string nestedAssembly = Path.Combine(nestedDirectory, TargetAssemblyName);
+                foreach (string source in Directory.GetFiles(this.InputDirectory,
+                    Path.GetFileNameWithoutExtension(TargetAssemblyName) + ".*"))
+                {
+                    File.Move(source, Path.Combine(nestedDirectory, Path.GetFileName(source)));
+                }
+
+                return nestedAssembly;
             }
 
             public void Dispose()

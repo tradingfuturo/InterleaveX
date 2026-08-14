@@ -665,12 +665,11 @@ namespace Microsoft.Coyote.Rewriting
 
             if (!wasAlreadyRewritten && this.Options.IsReplacingAssemblies())
             {
-                string targetPath = Path.Combine(this.Options.AssembliesDirectory, assembly.Name);
                 this.StageOutput(outputPath, assembly.FilePath);
                 if (assembly.IsSymbolFileAvailable())
                 {
                     string pdbFile = Path.ChangeExtension(outputPath, "pdb");
-                    string targetPdbFile = Path.ChangeExtension(targetPath, "pdb");
+                    string targetPdbFile = Path.ChangeExtension(assembly.FilePath, "pdb");
                     this.StageOutput(pdbFile, targetPdbFile);
                 }
             }
