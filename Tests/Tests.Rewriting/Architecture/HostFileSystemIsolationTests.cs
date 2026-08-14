@@ -342,6 +342,8 @@ namespace Microsoft.Coyote.Rewriting.Tests
         /// <c>ParallelTestFiles</c> is here on purpose too. Its tests are written against the real
         /// file system because what they check is that it never throws, whatever the file system
         /// does, and a fake would only reproduce the exceptions someone chose to give it.
+        /// <c>RewritingOutputLock</c> likewise exercises host file-handle exclusion itself; routing
+        /// it through the transactional content seam would no longer test or provide that exclusion.
         ///
         /// The rest -- report and artifact writing, telemetry, options parsing -- simply has not
         /// needed a seam yet. Any of them can get one when something wants to test it.
@@ -366,6 +368,7 @@ namespace Microsoft.Coyote.Rewriting.Tests
             "Microsoft.Coyote.IO.HostFileSystem::MoveFile",
             "Microsoft.Coyote.IO.HostFileSystem::OpenRead",
             "Microsoft.Coyote.IO.HostFileSystem::QueryOrProbe",
+            "Microsoft.Coyote.IO.HostFileSystem::QueryOrProbeForTesting",
             "Microsoft.Coyote.IO.HostFileSystem::ReadAllText",
             "Microsoft.Coyote.IO.HostFileSystem::ReplaceFile",
             "Microsoft.Coyote.IO.HostFileSystem::WriteAllText",
@@ -373,6 +376,8 @@ namespace Microsoft.Coyote.Rewriting.Tests
             "Microsoft.Coyote.Rewriting.RewritingEngine::RewriteAssembly",
             "Microsoft.Coyote.Rewriting.RewritingOptions::ParseFromJSON",
             "Microsoft.Coyote.Rewriting.RewritingOptions::Sanitize",
+            "Microsoft.Coyote.Rewriting.RewritingOutputLock::Acquire",
+            "Microsoft.Coyote.Rewriting.RewritingOutputLock::ReadOwner",
             "Microsoft.Coyote.SystematicTesting.ParallelTestFiles::TryCreate",
             "Microsoft.Coyote.SystematicTesting.ParallelTestFiles::TryDelete",
             "Microsoft.Coyote.SystematicTesting.ParallelTestFiles::TryDeleteDirectory",
