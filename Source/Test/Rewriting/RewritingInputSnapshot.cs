@@ -140,6 +140,41 @@ namespace Microsoft.Coyote.Rewriting
             }
         }
 
+        /// <summary>
+        /// Returns the source identity captured for the specified logical target.
+        /// </summary>
+        internal bool TryGetBaselineFile(string targetPath, out MirroredFile file)
+        {
+            string normalized = RewritingCacheValidator.NormalizeFile(targetPath);
+            string source = this.SourceDirectory.TrimEnd('\\', '/');
+            if (!RewritingOutputMirror.IsWithin(normalized, source, this.PathComparer))
+            {
+                file = default;
+                return false;
+            }
+
+            string relative = normalized.Substring(source.Length)
+                .TrimStart('\\', '/').Replace('\\', '/');
+            if (this.BaselineFiles.TryGetValue(relative, out file))
+            {
+                return true;
+            }
+
+            StringComparison comparison = this.FileSystem.IsCaseInsensitive(this.SourceDirectory) ?
+                StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            foreach (var entry in this.BaselineFiles)
+            {
+                if (string.Equals(entry.Key, relative, comparison))
+                {
+                    file = entry.Value;
+                    return true;
+                }
+            }
+
+            file = default;
+            return false;
+        }
+
         private string Translate(string path, string fromDirectory, string toDirectory,
             bool allowFileSystemComparison)
         {

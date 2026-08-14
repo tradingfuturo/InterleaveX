@@ -305,7 +305,7 @@ namespace Microsoft.Coyote.Rewriting
                     if (this.Options.IsReplacingAssemblies())
                     {
                         snapshot.VerifyUnchanged();
-                        this.PublishStagedOutputs();
+                        this.PublishStagedOutputs(snapshot);
                     }
 
                     this.OutputJournal.Capture(Path.Combine(
@@ -344,7 +344,7 @@ namespace Microsoft.Coyote.Rewriting
                 if (this.Options.IsReplacingAssemblies())
                 {
                     snapshot.VerifyUnchanged();
-                    this.PublishStagedOutputs();
+                    this.PublishStagedOutputs(snapshot);
                     foreach (PendingCacheRecord record in this.PendingCacheRecords)
                     {
                         cache.RecordAssembly(
@@ -1027,12 +1027,13 @@ namespace Microsoft.Coyote.Rewriting
             }
         }
 
-        private void PublishStagedOutputs()
+        private void PublishStagedOutputs(RewritingInputSnapshot snapshot)
         {
             foreach (StagedOutput output in this.StagedOutputs)
             {
-                this.OutputJournal.Capture(output.TargetPath);
-                this.CopyWithRetriesAsync(output.SourcePath, output.TargetPath).Wait();
+                MirroredFile? expected = snapshot.TryGetBaselineFile(
+                    output.TargetPath, out MirroredFile baseline) ? baseline : (MirroredFile?)null;
+                this.OutputJournal.Publish(output.SourcePath, output.TargetPath, expected);
                 this.PublishedStagedOutputPaths.Add(output.TargetPath);
             }
 

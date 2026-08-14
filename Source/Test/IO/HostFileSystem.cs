@@ -70,6 +70,14 @@ namespace Microsoft.Coyote.IO
                 bufferSize: 1, FileOptions.SequentialScan);
 
         /// <inheritdoc/>
+        public Stream OpenWriteExclusive(string path) =>
+            new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read,
+                bufferSize: 1, FileOptions.SequentialScan);
+
+        /// <inheritdoc/>
+        public void FlushWrite(Stream stream) => ((FileStream)stream).Flush(true);
+
+        /// <inheritdoc/>
         public void CopyFile(string sourcePath, string targetPath, bool overwrite) =>
             File.Copy(sourcePath, targetPath, overwrite);
 

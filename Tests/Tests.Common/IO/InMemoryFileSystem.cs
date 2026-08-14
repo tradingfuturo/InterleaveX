@@ -99,6 +99,10 @@ namespace Microsoft.Coyote.Tests.Common.IO
         /// </remarks>
         internal Action<string> BeforeGetFile { get; set; }
 
+        internal Action<string, string> BeforeMoveFile { get; set; }
+
+        internal Action<string, string, string> BeforeReplaceFile { get; set; }
+
         /// <summary>
         /// Stamped on the next write, and advanced by a second each time.
         /// </summary>
@@ -238,6 +242,26 @@ namespace Microsoft.Coyote.Tests.Common.IO
         }
 
         /// <inheritdoc/>
+        public Stream OpenWriteExclusive(string path)
+        {
+            string full = Normalize(path);
+            Entry entry = this.Require(full);
+            if (entry.IsReadOnly)
+            {
+                throw new UnauthorizedAccessException($"Access to the path '{full}' is denied.");
+            }
+
+            return new CommitStream(entry.Content, content =>
+            {
+                entry.Content = content;
+                entry.LastWriteTimeUtc = this.Advance();
+            });
+        }
+
+        /// <inheritdoc/>
+        public void FlushWrite(Stream stream) => stream.Flush();
+
+        /// <inheritdoc/>
         public void CopyFile(string sourcePath, string targetPath, bool overwrite)
         {
             Entry source = this.Require(Normalize(sourcePath));
@@ -274,6 +298,7 @@ namespace Microsoft.Coyote.Tests.Common.IO
         {
             string source = Normalize(sourcePath);
             string target = Normalize(targetPath);
+            this.BeforeMoveFile?.Invoke(source, target);
             Entry entry = this.Require(source);
             if (this.Files.ContainsKey(target))
             {
@@ -290,6 +315,7 @@ namespace Microsoft.Coyote.Tests.Common.IO
         {
             string source = Normalize(sourcePath);
             string target = Normalize(targetPath);
+            this.BeforeReplaceFile?.Invoke(source, target, backupPath);
             Entry entry = this.Require(source);
             Entry replaced = this.Require(target);
             if (replaced.IsReadOnly)
@@ -417,6 +443,49 @@ namespace Microsoft.Coyote.Tests.Common.IO
             }
 
             return this.CaseInsensitive;
+        }
+
+        private sealed class CommitStream : MemoryStream
+        {
+            private readonly Action<byte[]> Commit;
+
+            private bool IsDirty;
+
+            internal CommitStream(byte[] content, Action<byte[]> commit)
+                : base()
+            {
+                this.Commit = commit;
+                base.Write(content, 0, content.Length);
+                this.Position = 0;
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                this.IsDirty = true;
+                base.Write(buffer, offset, count);
+            }
+
+            public override void WriteByte(byte value)
+            {
+                this.IsDirty = true;
+                base.WriteByte(value);
+            }
+
+            public override void SetLength(long value)
+            {
+                this.IsDirty = true;
+                base.SetLength(value);
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing && this.IsDirty)
+                {
+                    this.Commit(this.ToArray());
+                }
+
+                base.Dispose(disposing);
+            }
         }
 
         /// <summary>

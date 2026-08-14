@@ -107,6 +107,16 @@ namespace Microsoft.Coyote.IO
         Stream OpenRead(string path, FileReadSharing sharing);
 
         /// <summary>
+        /// Opens an existing file for read/write update while denying other writers and deletion.
+        /// </summary>
+        Stream OpenWriteExclusive(string path);
+
+        /// <summary>
+        /// Flushes a writable file stream through durable host storage where supported.
+        /// </summary>
+        void FlushWrite(Stream stream);
+
+        /// <summary>
         /// Copies the specified file, optionally over one already at the target.
         /// </summary>
         void CopyFile(string sourcePath, string targetPath, bool overwrite);

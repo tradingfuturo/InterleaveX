@@ -879,17 +879,34 @@ namespace Microsoft.Coyote.Rewriting
             // accidentally describe neither the old nor the new input, and that evidence is later
             // used to protect rewritten output from being overwritten.
             using var stream = fileSystem.OpenRead(path, FileReadSharing.DenyWriters);
+            return ComputeStreamFingerprint(stream);
+        }
+
+        /// <summary>
+        /// Computes the XXH128 fingerprint of the specified stream without changing its position.
+        /// </summary>
+        internal static string ComputeStreamFingerprint(Stream stream)
+        {
+            long position = stream.Position;
+            stream.Position = 0;
             var algorithm = new XxHash128();
             byte[] buffer = new byte[FingerprintBufferSize];
-            while (true)
+            try
             {
-                int count = stream.Read(buffer, 0, buffer.Length);
-                if (count is 0)
+                while (true)
                 {
-                    break;
-                }
+                    int count = stream.Read(buffer, 0, buffer.Length);
+                    if (count is 0)
+                    {
+                        break;
+                    }
 
-                algorithm.Append(new ReadOnlySpan<byte>(buffer, 0, count));
+                    algorithm.Append(new ReadOnlySpan<byte>(buffer, 0, count));
+                }
+            }
+            finally
+            {
+                stream.Position = position;
             }
 
             return ToHexString(algorithm.GetCurrentHash());

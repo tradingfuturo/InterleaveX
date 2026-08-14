@@ -500,6 +500,42 @@ namespace Microsoft.Coyote.Tools.Tests
             }));
         }
 
+        [Fact(Timeout = 120000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestInPlacePublicationRejectsDriftAtTargetMutationBoundary()
+        {
+            using var workspace = Workspace.Create();
+            byte[] external = File.ReadAllBytes(workspace.InputAssemblyPath);
+            external[external.Length / 2] ^= 0x5a;
+            bool publicationReady = false;
+            bool mutated = false;
+            var fileSystem = new CallbackFileSystem(HostFileSystem.Instance,
+                beforeFileExists: path =>
+                {
+                    if (publicationReady && !mutated && string.Equals(
+                        path, workspace.InputAssemblyPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.WriteAllBytes(path, external);
+                        mutated = true;
+                    }
+                },
+                beforeCopyFile: (source, target, _) =>
+                {
+                    if (source.Contains("__temp_coyote__", StringComparison.Ordinal) &&
+                        target.Contains(RewritingInputSnapshot.DirectoryMarker, StringComparison.Ordinal))
+                    {
+                        publicationReady = true;
+                    }
+                });
+
+            IOException error = Assert.Throws<IOException>(() => workspace.Rewrite(fileSystem,
+                options => options.OutputDirectory = workspace.InputDirectory));
+
+            Assert.True(mutated);
+            Assert.Contains("changed after its rewrite snapshot was created", error.Message);
+            Assert.Equal(external, File.ReadAllBytes(workspace.InputAssemblyPath));
+        }
+
         [Theory(Timeout = 120000)]
         [InlineData(RewritingCache.ManifestFileName)]
         [InlineData(RewritingOutputLedger.ManifestFileName)]
@@ -927,6 +963,7 @@ namespace Microsoft.Coyote.Tools.Tests
         private sealed class CallbackFileSystem : IFileSystem
         {
             private readonly IFileSystem Inner;
+            private readonly Action<string> BeforeFileExists;
             private readonly Action<string, string> BeforeGetFiles;
             private readonly Action<string, string, bool> BeforeCopyFile;
             private readonly Action<string, string> BeforeMoveFile;
@@ -936,16 +973,22 @@ namespace Microsoft.Coyote.Tools.Tests
                 Action<string, string> beforeGetFiles = null,
                 Action<string, string, bool> beforeCopyFile = null,
                 Action<string, string> beforeMoveFile = null,
-                Action<string, string, string> beforeReplaceFile = null)
+                Action<string, string, string> beforeReplaceFile = null,
+                Action<string> beforeFileExists = null)
             {
                 this.Inner = inner;
+                this.BeforeFileExists = beforeFileExists;
                 this.BeforeGetFiles = beforeGetFiles;
                 this.BeforeCopyFile = beforeCopyFile;
                 this.BeforeMoveFile = beforeMoveFile;
                 this.BeforeReplaceFile = beforeReplaceFile;
             }
 
-            public bool FileExists(string path) => this.Inner.FileExists(path);
+            public bool FileExists(string path)
+            {
+                this.BeforeFileExists?.Invoke(path);
+                return this.Inner.FileExists(path);
+            }
 
             public bool DirectoryExists(string path) => this.Inner.DirectoryExists(path);
 
@@ -958,6 +1001,11 @@ namespace Microsoft.Coyote.Tools.Tests
 
             public Stream OpenRead(string path, FileReadSharing sharing) =>
                 this.Inner.OpenRead(path, sharing);
+
+            public Stream OpenWriteExclusive(string path) =>
+                this.Inner.OpenWriteExclusive(path);
+
+            public void FlushWrite(Stream stream) => this.Inner.FlushWrite(stream);
 
             public void CopyFile(string sourcePath, string targetPath, bool overwrite)
             {

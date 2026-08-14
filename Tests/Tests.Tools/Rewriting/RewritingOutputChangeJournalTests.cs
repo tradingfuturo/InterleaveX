@@ -281,6 +281,118 @@ namespace Microsoft.Coyote.Tools.Tests
                 fileSystem, Out()));
         }
 
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestMissingTargetPublicationRacePreservesExternalFile()
+        {
+            string staged = Out("staged.txt");
+            string target = Out("target.txt");
+            var fileSystem = new InMemoryFileSystem()
+                .WithDirectory(Out())
+                .WithFile(staged, "staged");
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(
+                fileSystem, Out());
+            fileSystem.BeforeMoveFile = (_, destination) =>
+            {
+                if (string.Equals(destination, target, StringComparison.Ordinal))
+                {
+                    fileSystem.WithFile(target, "external");
+                }
+            };
+
+            Assert.Throws<IOException>(() => journal.Publish(staged, target, null));
+            journal.Restore();
+            journal.Complete();
+
+            Assert.Equal("external", fileSystem.ReadAllText(target));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestRecoveryRemovesInterruptedMissingTargetPublication()
+        {
+            string staged = Out("staged.txt");
+            string target = Out("target.txt");
+            var fileSystem = new InMemoryFileSystem()
+                .WithDirectory(Out())
+                .WithFile(staged, "staged");
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(
+                fileSystem, Out());
+            int replacements = 0;
+            fileSystem.BeforeReplaceFile = (_, __, ___) =>
+            {
+                if (++replacements is 2)
+                {
+                    throw new IOException("Simulated conversion interruption.");
+                }
+            };
+
+            Assert.Throws<IOException>(() => journal.Publish(staged, target, null));
+            fileSystem.BeforeReplaceFile = null;
+            Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out());
+
+            Assert.False(fileSystem.FileExists(target));
+            Assert.Empty(Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
+                fileSystem, Out()));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestRecoveryPreservesChangedInterruptedPublicationTarget()
+        {
+            string staged = Out("staged.txt");
+            string target = Out("target.txt");
+            var fileSystem = new InMemoryFileSystem()
+                .WithDirectory(Out())
+                .WithFile(staged, "staged");
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(
+                fileSystem, Out());
+            int replacements = 0;
+            fileSystem.BeforeReplaceFile = (_, __, ___) =>
+            {
+                if (++replacements is 2)
+                {
+                    throw new IOException("Simulated conversion interruption.");
+                }
+            };
+
+            Assert.Throws<IOException>(() => journal.Publish(staged, target, null));
+            fileSystem.BeforeReplaceFile = null;
+            fileSystem.WithFile(target, "external");
+
+            IOException error = Assert.Throws<IOException>(() =>
+                Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out()));
+            Assert.Contains("journal-owned", error.ToString());
+            Assert.Equal("external", fileSystem.ReadAllText(target));
+            Assert.Single(Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
+                fileSystem, Out()));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestSchemaOneJournalRemainsRecoverable()
+        {
+            string target = Out("existing.txt");
+            var fileSystem = new InMemoryFileSystem()
+                .WithDirectory(Out())
+                .WithFile(target, "before");
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(
+                fileSystem, Out());
+            journal.Capture(target);
+            fileSystem.WriteAllText(target, "after");
+            string manifestPath = Path.Combine(journal.BackupDirectory, "journal.json");
+            fileSystem.WriteAllText(manifestPath, fileSystem.ReadAllText(manifestPath)
+                .Replace("\"Version\": 2", "\"Version\": 1", StringComparison.Ordinal)
+                .Replace(",\n  \"PendingPublications\": []", string.Empty,
+                    StringComparison.Ordinal));
+
+            Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out());
+
+            Assert.Equal("before", fileSystem.ReadAllText(target));
+            Assert.Empty(Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
+                fileSystem, Out()));
+        }
+
         private sealed class InterruptingInitialManifestFileSystem : IFileSystem
         {
             private readonly IFileSystem Inner;
@@ -298,6 +410,10 @@ namespace Microsoft.Coyote.Tools.Tests
             public void WriteAllText(string path, string contents) => this.Inner.WriteAllText(path, contents);
 
             public Stream OpenRead(string path, FileReadSharing sharing) => this.Inner.OpenRead(path, sharing);
+
+            public Stream OpenWriteExclusive(string path) => this.Inner.OpenWriteExclusive(path);
+
+            public void FlushWrite(Stream stream) => this.Inner.FlushWrite(stream);
 
             public void CopyFile(string sourcePath, string targetPath, bool overwrite) =>
                 this.Inner.CopyFile(sourcePath, targetPath, overwrite);
@@ -364,6 +480,10 @@ namespace Microsoft.Coyote.Tools.Tests
             public void WriteAllText(string path, string contents) => this.Inner.WriteAllText(path, contents);
 
             public Stream OpenRead(string path, FileReadSharing sharing) => this.Inner.OpenRead(path, sharing);
+
+            public Stream OpenWriteExclusive(string path) => this.Inner.OpenWriteExclusive(path);
+
+            public void FlushWrite(Stream stream) => this.Inner.FlushWrite(stream);
 
             public void CopyFile(string sourcePath, string targetPath, bool overwrite) =>
                 this.Inner.CopyFile(sourcePath, targetPath, overwrite);
@@ -445,6 +565,9 @@ namespace Microsoft.Coyote.Tools.Tests
             public string ReadAllText(string path) => this.Inner.ReadAllText(path);
             public void WriteAllText(string path, string contents) => this.Inner.WriteAllText(path, contents);
             public Stream OpenRead(string path, FileReadSharing sharing) => this.Inner.OpenRead(path, sharing);
+
+            public Stream OpenWriteExclusive(string path) => this.Inner.OpenWriteExclusive(path);
+            public void FlushWrite(Stream stream) => this.Inner.FlushWrite(stream);
             public void CopyFile(string sourcePath, string targetPath, bool overwrite) =>
                 this.Inner.CopyFile(sourcePath, targetPath, overwrite);
             public void MoveFile(string sourcePath, string targetPath) =>
