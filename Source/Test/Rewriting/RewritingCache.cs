@@ -452,11 +452,7 @@ namespace Microsoft.Coyote.Rewriting
                             (assembly.TryGetResolutionStamp(path, out ResolutionStamp consumed) ||
                              assembly.TryGetResolutionStamp(normalizedPath, out consumed)))
                         {
-                            string consumedPath = RewritingCacheValidator.NormalizeFile(consumed.Entry.Path);
-                            if (this.Validator.PathComparer.Equals(normalizedPath, consumedPath))
-                            {
-                                this.VerifyUnchangedSinceItWasRead(assembly, path, normalizedPath);
-                            }
+                            this.VerifyUnchangedSinceItWasRead(assembly, path, normalizedPath);
 
                             captured = new CacheFile()
                             {

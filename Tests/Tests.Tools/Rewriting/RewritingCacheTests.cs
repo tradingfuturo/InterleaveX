@@ -113,6 +113,13 @@ namespace Microsoft.Coyote.Tools.Tests
                 this.ResolutionStamps.TryGetValue(path, out stamp);
 
             internal void MarkUnreliable(string path) => this.UnreliableStampPaths.Add(path);
+
+            internal void UsePhysicalStamp(IFileSystem fileSystem, string logicalPath, string physicalPath)
+            {
+                IFileEntry entry = fileSystem.GetFile(physicalPath);
+                this.ResolutionStamps[logicalPath] = new ResolutionStamp(entry,
+                    entry.Exists ? RewritingCacheValidator.ComputeFileFingerprint(fileSystem, physicalPath) : null);
+            }
         }
 
         /// <summary>
@@ -155,12 +162,47 @@ namespace Microsoft.Coyote.Tools.Tests
             return fileSystem.FileExists(Out(RewritingCache.ManifestFileName));
         }
 
+        private static bool TryRecordSnapshotBackedRun(
+            InMemoryFileSystem fileSystem, Action<InMemoryFileSystem> afterReading)
+        {
+            string snapshotPath = In(".snapshot", "App.dll");
+            fileSystem.WithFile(snapshotPath, fileSystem.GetContents(In("App.dll")));
+            var cache = CreateCache(fileSystem);
+            var assembly = new FakeAssembly(fileSystem, In("App.dll"), In("Dependency.dll"));
+            assembly.UsePhysicalStamp(fileSystem, In("App.dll"), snapshotPath);
+            cache.RegisterRewriteInputs(new[] { assembly });
+
+            afterReading?.Invoke(fileSystem);
+
+            cache.RecordAssembly(assembly, Out("App.dll"), Array.Empty<string>());
+            cache.Save();
+            return fileSystem.FileExists(Out(RewritingCache.ManifestFileName));
+        }
+
         [Fact(Timeout = 5000)]
         public void TestAnUnchangedRunWritesItsManifest()
         {
             // The check must not fire on the ordinary run, which is every run: a cache that refuses
             // to record anything is a cache that never reports anything as up to date.
             Assert.True(TryRecordRun(CreateFileSystem(), null));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestAnUnchangedSnapshotBackedRunWritesItsManifest()
+        {
+            Assert.True(TryRecordSnapshotBackedRun(CreateFileSystem(), null));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestSnapshotBackedInputDriftPreventsManifestPublication()
+        {
+            var fileSystem = CreateFileSystem();
+
+            Assert.Throws<IOException>(() => TryRecordSnapshotBackedRun(fileSystem, current =>
+                current.WriteAllText(In("App.dll"), "a rebuilt assembly")));
+            Assert.False(fileSystem.FileExists(Out(RewritingCache.ManifestFileName)));
         }
 
         [Fact(Timeout = 5000)]
