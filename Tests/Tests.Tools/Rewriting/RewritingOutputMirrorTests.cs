@@ -54,6 +54,38 @@ namespace Microsoft.Coyote.Tools.Tests
         private static RewritingOutputMirror CreateMirror(InMemoryFileSystem fileSystem) =>
             new RewritingOutputMirror(fileSystem, new MemoryLogWriter(Configuration.Create()));
 
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestReplacementModeSnapshotIncludesNestedInputsAndRemovesStaleSnapshots()
+        {
+            string stale = In() + RewritingInputSnapshot.DirectoryMarker + "stale";
+            var fileSystem = new InMemoryFileSystem()
+                .WithFile(In("root.txt"), "root")
+                .WithFile(In("nested", "asset.txt"), "nested")
+                .WithFile(Path.Combine(stale, "old.txt"), "stale");
+
+            var snapshot = RewritingInputSnapshot.Create(fileSystem,
+                new MemoryLogWriter(Configuration.Create()), In(), In());
+            try
+            {
+                fileSystem.WriteAllText(In("root.txt"), "changed after confirmation");
+                fileSystem.WriteAllText(In("nested", "asset.txt"), "changed after confirmation");
+                Assert.False(fileSystem.DirectoryExists(stale));
+                Assert.Equal("root", fileSystem.GetContents(
+                    Path.Combine(snapshot.SnapshotDirectory, "root.txt")));
+                Assert.Equal("nested", fileSystem.GetContents(
+                    Path.Combine(snapshot.SnapshotDirectory, "nested", "asset.txt")));
+                Assert.Equal(In("nested", "asset.txt"), snapshot.ToLogicalPath(
+                    Path.Combine(snapshot.SnapshotDirectory, "nested", "asset.txt")));
+            }
+            finally
+            {
+                string snapshotDirectory = snapshot.SnapshotDirectory;
+                snapshot.Dispose();
+                Assert.False(fileSystem.DirectoryExists(snapshotDirectory));
+            }
+        }
+
         /// <summary>
         /// Returns bytes that are the same on every run and do not repeat over a block boundary.
         /// </summary>
@@ -209,6 +241,25 @@ namespace Microsoft.Coyote.Tools.Tests
         }
 
         [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestSourceContainmentUsesTheSourceAncestorsCaseRules()
+        {
+            string source = In();
+            string output = In("out");
+            string distinctSource = In("Out");
+            var fileSystem = new InMemoryFileSystem(isCaseInsensitive: false)
+                .WithFile(Path.Combine(distinctSource, "asset.txt"), "source asset")
+                .WithDirectory(output)
+                .WithCaseSensitivity(source, isCaseInsensitive: false)
+                .WithCaseSensitivity(output, isCaseInsensitive: true);
+
+            CreateMirror(fileSystem).Mirror(source, output, new HashSet<string>());
+
+            Assert.Equal("source asset",
+                fileSystem.GetContents(Path.Combine(output, "Out", "asset.txt")));
+        }
+
+        [Fact(Timeout = 5000)]
         public void TestComparisonRefusesToReadPastAWriter()
         {
             // The half of the guard that does not show up in the answer. A file caught half way
@@ -318,6 +369,37 @@ namespace Microsoft.Coyote.Tools.Tests
                 new HashSet<string>(StringComparer.OrdinalIgnoreCase));
 
             Assert.False(fileSystem.FileExists(Out(manifestName)));
+        }
+
+        [Theory(Timeout = 5000)]
+        [InlineData(RewritingCache.ManifestFileName)]
+        [InlineData(RewritingOutputLedger.ManifestFileName)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestNestedManifestNamedAssetsAreCopied(string manifestName)
+        {
+            var fileSystem = new InMemoryFileSystem()
+                .WithFile(In("assets", manifestName), "ordinary nested asset")
+                .WithDirectory(Out());
+
+            CreateMirror(fileSystem).Mirror(In(), Out(), new HashSet<string>());
+
+            Assert.Equal("ordinary nested asset",
+                fileSystem.GetContents(Out("assets", manifestName)));
+        }
+
+        [Theory(Timeout = 5000)]
+        [InlineData("rewriting.cache.json.0123456789abcdef.tmp")]
+        [InlineData("REWRITING.OUTPUTS.JSON.0123456789ABCDEF.TMP")]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestOrphanedRootPublicationFilesAreNotMirrored(string fileName)
+        {
+            var fileSystem = new InMemoryFileSystem(isCaseInsensitive: true)
+                .WithFile(In(fileName), "private publication")
+                .WithDirectory(Out());
+
+            CreateMirror(fileSystem).Mirror(In(), Out(), new HashSet<string>());
+
+            Assert.False(fileSystem.FileExists(Out(fileName)));
         }
 
         [Fact(Timeout = 5000)]

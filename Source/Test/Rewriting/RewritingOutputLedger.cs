@@ -97,14 +97,14 @@ namespace Microsoft.Coyote.Rewriting
         }
 
         internal void Commit(IEnumerable<string> mirroredFiles, IEnumerable<string> producedFiles,
-            IEnumerable<string> alsoOwnedFiles = null)
+            IEnumerable<string> alsoOwnedFiles = null, Action<string> beforeDelete = null)
         {
             var mirrored = this.NormalizeCurrentPaths(mirroredFiles);
             var produced = this.NormalizeCurrentPaths(producedFiles);
             var owned = new HashSet<string>(this.PreviousProducedFiles, this.PathComparer);
             owned.UnionWith(this.GetNewAttemptFiles(alsoOwnedFiles));
             this.DeleteOwnedFiles(owned.Where(path =>
-                !produced.Contains(path) && !mirrored.Contains(path)));
+                !produced.Contains(path) && !mirrored.Contains(path)), beforeDelete);
 
             var manifest = new OutputOwnershipManifest()
             {

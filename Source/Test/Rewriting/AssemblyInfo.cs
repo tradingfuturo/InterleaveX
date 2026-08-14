@@ -38,6 +38,11 @@ namespace Microsoft.Coyote.Rewriting
         internal readonly string FilePath;
 
         /// <summary>
+        /// The immutable physical path Mono.Cecil reads for this run.
+        /// </summary>
+        internal readonly string ReadPath;
+
+        /// <summary>
         /// The assembly definition.
         /// </summary>
         internal readonly AssemblyDefinition Definition;
@@ -55,6 +60,8 @@ namespace Microsoft.Coyote.Rewriting
         /// rewriting cache records the assembly.
         /// </remarks>
         internal readonly IReadOnlyList<string> ReferenceNames;
+
+        internal readonly IReadOnlyList<string> PresentReferenceNames;
 
         /// <summary>
         /// The resolver of this assembly.
@@ -95,6 +102,9 @@ namespace Microsoft.Coyote.Rewriting
 
         /// <inheritdoc/>
         IReadOnlyList<string> IRewrittenAssembly.ReferenceNames => this.ReferenceNames;
+
+        /// <inheritdoc/>
+        IReadOnlyList<string> IRewrittenAssembly.PresentReferenceNames => this.PresentReferenceNames;
 
         /// <inheritdoc/>
         IReadOnlyList<string> IRewrittenAssembly.SearchDirectories => this.SearchDirectories;
@@ -169,6 +179,10 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         private readonly string DotnetRoot;
 
+        private readonly Func<string, string> ToReadPath;
+
+        private readonly Func<string, string> ToLogicalPath;
+
         /// <summary>
         /// True if the assembly has been rewritten, else false.
         /// </summary>
@@ -184,28 +198,40 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         private AssemblyInfo(string name, string path, RewritingOptions options, AssemblyResolveEventHandler handler,
             IFileSystem fileSystem, Func<string, string> getEnvironmentVariable, string dotnetRoot)
+            : this(name, path, path, options, handler, fileSystem, getEnvironmentVariable, dotnetRoot,
+                  value => value, value => value)
+        {
+        }
+
+        private AssemblyInfo(string name, string logicalPath, string readPath, RewritingOptions options,
+            AssemblyResolveEventHandler handler, IFileSystem fileSystem,
+            Func<string, string> getEnvironmentVariable, string dotnetRoot,
+            Func<string, string> toReadPath, Func<string, string> toLogicalPath)
         {
             this.Name = name;
-            this.FilePath = path;
+            this.FilePath = logicalPath;
+            this.ReadPath = readPath;
             this.Dependencies = new HashSet<AssemblyInfo>();
             this.Options = options;
             this.FileSystem = fileSystem;
             this.GetEnvironmentVariable = getEnvironmentVariable;
             this.DotnetRoot = dotnetRoot;
+            this.ToReadPath = toReadPath;
+            this.ToLogicalPath = toLogicalPath;
             this.IsRewritten = false;
             this.IsDisposed = false;
 
             // TODO: can we reuse it, or do we need a new one for each assembly?
-            var assemblyResolver = new TrackingAssemblyResolver(fileSystem);
+            var assemblyResolver = new TrackingAssemblyResolver(fileSystem, toLogicalPath);
 
             // Stamped before anything below reads them, which is the whole point of doing it here: the
             // rewriting cache fingerprints these once rewriting is over, and a stamp taken now is what
             // lets it tell "unchanged since it was read" from "changed underneath us and re-read as
             // something else". Absence is stamped as faithfully as content, so a symbol file appearing
             // while a pass runs is drift too.
-            assemblyResolver.Stamp(this.FilePath);
-            assemblyResolver.Stamp(Path.ChangeExtension(this.FilePath, "pdb"));
-            assemblyResolver.Stamp(Path.ChangeExtension(this.FilePath, ".runtimeconfig.json"));
+            assemblyResolver.Stamp(this.ReadPath);
+            assemblyResolver.Stamp(Path.ChangeExtension(this.ReadPath, "pdb"));
+            assemblyResolver.Stamp(Path.ChangeExtension(this.ReadPath, ".runtimeconfig.json"));
 
             // Add known search directories for resolving assemblies. The directory of the assemblies
             // being rewritten is searched first, so that shared dependencies -- most importantly the
@@ -215,7 +241,7 @@ namespace Microsoft.Coyote.Rewriting
             // framework's core-library references into the rewritten assembly (for example, the net10
             // rewriter injecting net10 'System.Private.CoreLib'/'System.Runtime' references into a net8
             // assembly), making the rewritten assembly fail to load on the target's runtime.
-            assemblyResolver.AddSearchDirectory(this.Options.AssembliesDirectory);
+            assemblyResolver.AddSearchDirectory(this.ToReadPath(this.Options.AssembliesDirectory));
 
             // Explicitly configured search paths come next, ahead of the rewriter's own directory, for
             // the same reason: they describe the target's framework, whereas the rewriter's directory
@@ -225,7 +251,7 @@ namespace Microsoft.Coyote.Rewriting
             {
                 foreach (var dependencySearchPath in this.Options.DependencySearchPaths)
                 {
-                    assemblyResolver.AddSearchDirectory(dependencySearchPath);
+                    assemblyResolver.AddSearchDirectory(this.ToReadPath(dependencySearchPath));
                 }
             }
 
@@ -233,7 +259,7 @@ namespace Microsoft.Coyote.Rewriting
                 Path.GetDirectoryName(typeof(Types.Threading.Tasks.Task).Assembly.Location));
 
             // Add shared framework directories discovered from the target assembly's runtime config.
-            this.FrameworkInventorySnapshots = AddSharedFrameworkDirectories(assemblyResolver, path,
+            this.FrameworkInventorySnapshots = AddSharedFrameworkDirectories(assemblyResolver, this.ReadPath,
                 fileSystem, dotnetRoot);
             this.FrameworkInventoryRoots = this.FrameworkInventorySnapshots
                 .Select(snapshot => snapshot.Path).ToArray();
@@ -241,7 +267,8 @@ namespace Microsoft.Coyote.Rewriting
             // Snapshotted here, where every directory has been added and none has been searched yet, so
             // that it cannot fall behind the resolver and does not have to be read back out of it once
             // it is disposed, which is after the cache records this assembly.
-            this.SearchDirectories = assemblyResolver.GetSearchDirectories();
+            this.SearchDirectories = assemblyResolver.GetSearchDirectories()
+                .Select(this.ToLogicalPath).ToArray();
 
             // Add the assembly resolution error handler.
             assemblyResolver.ResolveFailure += handler;
@@ -253,13 +280,18 @@ namespace Microsoft.Coyote.Rewriting
                 ReadSymbols = this.IsSymbolFileAvailable()
             };
 
-            this.Definition = AssemblyDefinition.ReadAssembly(this.FilePath, readerParameters);
+            this.Definition = AssemblyDefinition.ReadAssembly(this.ReadPath, readerParameters);
             this.FullName = this.Definition.FullName;
             this.ReferenceNames = this.Definition.Modules
                 .SelectMany(module => module.AssemblyReferences)
                 .Select(reference => reference.Name)
                 .Distinct(StringComparer.Ordinal)
                 .OrderBy(referenceName => referenceName, StringComparer.Ordinal)
+                .ToArray();
+            string readDirectory = Path.GetDirectoryName(this.ReadPath);
+            this.PresentReferenceNames = this.ReferenceNames
+                .Where(referenceName => this.FileSystem.FileExists(
+                    Path.Combine(readDirectory, referenceName + ".dll")))
                 .ToArray();
         }
 
@@ -288,6 +320,16 @@ namespace Microsoft.Coyote.Rewriting
         internal static IEnumerable<AssemblyInfo> LoadAssembliesToRewrite(RewritingOptions options,
             AssemblyResolveEventHandler handler, IFileSystem fileSystem,
             Func<string, string> getEnvironmentVariable, string dotnetRoot)
+            => LoadAssembliesToRewrite(options, handler, fileSystem, getEnvironmentVariable, dotnetRoot,
+                path => path, path => path);
+
+        /// <summary>
+        /// Loads assemblies from immutable physical paths while retaining their logical source identity.
+        /// </summary>
+        internal static IEnumerable<AssemblyInfo> LoadAssembliesToRewrite(RewritingOptions options,
+            AssemblyResolveEventHandler handler, IFileSystem fileSystem,
+            Func<string, string> getEnvironmentVariable, string dotnetRoot,
+            Func<string, string> toReadPath, Func<string, string> toLogicalPath)
         {
             // Add all explicitly requested assemblies.
             var assemblies = new HashSet<AssemblyInfo>();
@@ -303,8 +345,8 @@ namespace Microsoft.Coyote.Rewriting
                             throw new InvalidOperationException($"Rewriting assembly '{name}' ({path}) that is in the ignore list.");
                         }
 
-                        assemblies.Add(new AssemblyInfo(name, path, options, handler, fileSystem,
-                            getEnvironmentVariable, dotnetRoot));
+                        assemblies.Add(new AssemblyInfo(name, path, toReadPath(path), options, handler,
+                            fileSystem, getEnvironmentVariable, dotnetRoot, toReadPath, toLogicalPath));
                     }
                 }
 
@@ -475,7 +517,7 @@ namespace Microsoft.Coyote.Rewriting
         /// Checks if the symbol file for the specified assembly is available.
         /// </summary>
         internal bool IsSymbolFileAvailable() =>
-            this.FileSystem.FileExists(Path.ChangeExtension(this.FilePath, "pdb"));
+            this.FileSystem.FileExists(Path.ChangeExtension(this.ReadPath, "pdb"));
 
         /// <summary>
         /// Returns the first found custom attribute with the specified type, if such an attribute
@@ -532,7 +574,7 @@ namespace Microsoft.Coyote.Rewriting
         private void LoadDependencies(HashSet<AssemblyInfo> assemblies, AssemblyResolveEventHandler handler)
         {
             // Get the directory associated with this assembly.
-            var assemblyDir = Path.GetDirectoryName(this.FilePath);
+            var assemblyDir = Path.GetDirectoryName(this.ReadPath);
 
             // Perform a non-recursive depth-first search to find all dependencies.
             var stack = new Stack<AssemblyInfo>();
@@ -546,12 +588,13 @@ namespace Microsoft.Coyote.Rewriting
                     var path = Path.Combine(assemblyDir, fileName);
                     if (this.FileSystem.FileExists(path) && !this.Options.IsAssemblyIgnored(fileName))
                     {
-                        AssemblyInfo dependency = assemblies.FirstOrDefault(assembly => assembly.FilePath == path);
+                        AssemblyInfo dependency = assemblies.FirstOrDefault(assembly => assembly.ReadPath == path);
                         if (dependency is null && this.Options.IsRewritingDependencies)
                         {
                             var name = Path.GetFileName(path);
-                            dependency = new AssemblyInfo(name, path, this.Options, handler, this.FileSystem,
-                                this.GetEnvironmentVariable, this.DotnetRoot);
+                            dependency = new AssemblyInfo(name, this.ToLogicalPath(path), path, this.Options,
+                                handler, this.FileSystem, this.GetEnvironmentVariable, this.DotnetRoot,
+                                this.ToReadPath, this.ToLogicalPath);
                             stack.Push(dependency);
                             assemblies.Add(dependency);
                         }

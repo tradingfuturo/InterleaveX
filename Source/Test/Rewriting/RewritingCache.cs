@@ -76,6 +76,11 @@ namespace Microsoft.Coyote.Rewriting
         private readonly string ConfigurationHash;
 
         /// <summary>
+        /// The complete non-file identity of this run, exposed for internal consistency checks.
+        /// </summary>
+        internal string ConfigurationIdentity => this.ConfigurationHash;
+
+        /// <summary>
         /// The entries recorded during this run.
         /// </summary>
         private readonly List<CacheEntry> RecordedEntries;
@@ -324,6 +329,30 @@ namespace Microsoft.Coyote.Rewriting
         }
 
         /// <summary>
+        /// Replaces a probe snapshot with the exact bytes a fallback resolution gave to Cecil.
+        /// </summary>
+        internal void RecordConsumedResolution(string path, byte[] content)
+        {
+            try
+            {
+                string normalized = RewritingCacheValidator.NormalizeFile(path);
+                this.RecordedResolutionCandidates[normalized] = new CacheFile()
+                {
+                    Path = normalized,
+                    Exists = true,
+                    Length = content.LongLength,
+                    Fingerprint = RewritingCacheValidator.ComputeFingerprint(content)
+                };
+            }
+            catch (Exception ex)
+            {
+                this.HasRecordingFailure = true;
+                this.LogWriter.LogDebug("..... Unable to record consumed resolution '{0}': {1}",
+                    path, ex.Message);
+            }
+        }
+
+        /// <summary>
         /// Re-emits the diagnostics that the skipped run would have produced.
         /// </summary>
         /// <remarks>
@@ -419,19 +448,35 @@ namespace Microsoft.Coyote.Rewriting
                     string normalizedPath = RewritingCacheValidator.NormalizeFile(path);
                     if (!capturedFiles.TryGetValue(normalizedPath, out CacheFile captured))
                     {
-                        if (!producedPaths.Contains(normalizedPath))
+                        if (!producedPaths.Contains(normalizedPath) &&
+                            (assembly.TryGetResolutionStamp(path, out ResolutionStamp consumed) ||
+                             assembly.TryGetResolutionStamp(normalizedPath, out consumed)))
                         {
-                            this.VerifyUnchangedSinceItWasRead(assembly, path, normalizedPath);
+                            string consumedPath = RewritingCacheValidator.NormalizeFile(consumed.Entry.Path);
+                            if (this.Validator.PathComparer.Equals(normalizedPath, consumedPath))
+                            {
+                                this.VerifyUnchangedSinceItWasRead(assembly, path, normalizedPath);
+                            }
+
+                            captured = new CacheFile()
+                            {
+                                Path = normalizedPath,
+                                Exists = consumed.Entry.Exists,
+                                Length = consumed.Entry.Exists ? consumed.Entry.Length : 0,
+                                Fingerprint = consumed.Entry.Exists ? consumed.Fingerprint : null
+                            };
+                        }
+                        else
+                        {
+                            captured = this.Validator.CaptureFile(normalizedPath, true);
                         }
 
-                        captured = this.Validator.CaptureFile(normalizedPath, true);
                         capturedFiles.Add(normalizedPath, captured);
                     }
 
                     return captured;
                 }
 
-                string assemblyDirectory = Path.GetDirectoryName(assembly.FilePath);
                 var entry = new CacheEntry()
                 {
                     Name = assembly.Name,
@@ -455,9 +500,7 @@ namespace Microsoft.Coyote.Rewriting
 
                     // The subset that was found, rather than a flag per name, so that the check can
                     // tell a reference that was absent from one that was never looked for.
-                    PresentReferences = assembly.ReferenceNames
-                        .Where(name => this.FileSystem.FileExists(
-                            Path.Combine(assemblyDirectory, name + ".dll"))).ToList(),
+                    PresentReferences = assembly.PresentReferenceNames.ToList(),
                     Artifacts = this.CaptureArtifacts(outputPath, Capture),
                     ThreadStaticFields = threadStaticFields?.ToList() ?? new List<string>()
                 };
@@ -465,7 +508,20 @@ namespace Microsoft.Coyote.Rewriting
                 var searchDirectories = assembly.SearchDirectories
                     .Select(RewritingCacheValidator.NormalizeDirectory).ToArray();
                 var modules = new Dictionary<string, CacheFile>(this.Validator.PathComparer);
-                foreach (string modulePath in assembly.ResolutionCandidatePaths.Concat(assembly.ResolvedModulePaths))
+                foreach (string modulePath in assembly.ResolutionCandidatePaths)
+                {
+                    string normalizedPath = RewritingCacheValidator.NormalizeFile(modulePath);
+                    if ((this.ExpectedRewriteInputs is null ||
+                        !this.ExpectedRewriteInputs.Contains(normalizedPath)) &&
+                        !this.RecordedModules.ContainsKey(normalizedPath) &&
+                        !this.RecordedResolutionCandidates.ContainsKey(normalizedPath) &&
+                        !modules.ContainsKey(normalizedPath))
+                    {
+                        modules.Add(normalizedPath, Capture(modulePath));
+                    }
+                }
+
+                foreach (string modulePath in assembly.ResolvedModulePaths)
                 {
                     string normalizedPath = RewritingCacheValidator.NormalizeFile(modulePath);
                     if ((this.ExpectedRewriteInputs is null ||
@@ -558,6 +614,11 @@ namespace Microsoft.Coyote.Rewriting
             {
                 this.LogWriter.LogDebug("..... Not writing an incomplete rewriting cache.");
                 this.Invalidate();
+                if (!this.IsDisabled)
+                {
+                    throw new IOException("Unable to publish a complete rewriting cache.");
+                }
+
                 return;
             }
 
@@ -585,7 +646,7 @@ namespace Microsoft.Coyote.Rewriting
                         .OrderBy(path => path, StringComparer.Ordinal).ToList(),
                     RewriteInputs = this.ExpectedRewriteInputs
                         .OrderBy(path => path, StringComparer.Ordinal).ToList(),
-                    ResolvedModules = this.RecordedModules.Values.Concat(this.RecordedResolutionCandidates.Values)
+                    ResolvedModules = this.RecordedResolutionCandidates.Values.Concat(this.RecordedModules.Values)
                         .GroupBy(file => file.Path, this.Validator.PathComparer).Select(group => group.First())
                         .Where(file => !recordedByEntries.Contains(file.Path))
                         .OrderBy(file => file.Path, StringComparer.Ordinal).ToList(),
@@ -622,7 +683,7 @@ namespace Microsoft.Coyote.Rewriting
             }
             catch (Exception ex)
             {
-                this.LogWriter.LogDebug("..... Unable to write the rewriting cache: {0}", ex.Message);
+                throw new IOException("Unable to publish the rewriting cache.", ex);
             }
             finally
             {

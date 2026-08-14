@@ -128,7 +128,7 @@ namespace Microsoft.Coyote.Rewriting
         /// <summary>
         /// The .NET installation selected once for this run and shared by cache admission and resolution.
         /// </summary>
-        private readonly string EffectiveDotnetRoot;
+        internal readonly string EffectiveDotnetRoot;
 
         /// <summary>
         /// Copies the input directory into the output one, leaving up-to-date outputs alone.
@@ -159,9 +159,14 @@ namespace Microsoft.Coyote.Rewriting
         private HashSet<string> AttemptedMirroredFiles;
 
         /// <summary>
+        /// Durable rollback state for every mutation of the selected output.
+        /// </summary>
+        private RewritingOutputChangeJournal OutputJournal;
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="RewritingEngine"/> class.
         /// </summary>
-        private RewritingEngine(RewritingOptions options, Configuration configuration, LogWriter logWriter,
+        internal RewritingEngine(RewritingOptions options, Configuration configuration, LogWriter logWriter,
             Profiler profiler, IFileSystem fileSystem, Func<string, string> getEnvironmentVariable)
         {
             this.Options = options.Sanitize();
@@ -204,41 +209,49 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         private void Run()
         {
-            this.Profiler.StartMeasuringExecutionTime();
-
-            // Ask the cache before anything is copied or loaded. An up-to-date run has to leave the
-            // rewritten outputs alone, and the copy below would otherwise overwrite them with the
-            // original assemblies; and loading the assemblies is itself a large part of the cost that
-            // an up-to-date run exists to avoid.
-            var cache = new RewritingCache(this.Options, this.Configuration, this.LogWriter,
-                this.FileSystem, this.EffectiveDotnetRoot);
-            this.CurrentCache = cache;
-            if (!this.Options.IsReplacingAssemblies())
-            {
-                this.OutputLedger = new RewritingOutputLedger(this.FileSystem, this.LogWriter,
-                    this.Options.AssembliesDirectory, this.Options.OutputDirectory);
-                var comparer = this.FileSystem.IsCaseInsensitive(this.Options.OutputDirectory) ?
-                    StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-                this.MirroredOutputFiles = new Dictionary<string, MirroredFile>(comparer);
-                this.ProducedOutputFiles = new HashSet<string>(comparer);
-                this.AttemptedMirroredFiles = new HashSet<string>(comparer);
-            }
-
-            bool isUpToDate = cache.TryGetUpToDateRun(out HashSet<string> protectedOutputPaths);
-            if (!isUpToDate)
-            {
-                // A failed or obsolete manifest must not survive output mutation. If this run fails
-                // halfway through, the next one must not be able to accept evidence from before it.
-                cache.Invalidate();
-            }
-
-            // Create the output directory and copy any necessary files. This still runs when everything
-            // is up to date: the output directory mirrors the input one, and nothing else in it is
-            // tracked by the cache.
-            string outputDirectory = this.CreateOutputDirectoryAndCopyFiles(protectedOutputPaths);
-
+            string outputDirectory = null;
+            RewritingInputSnapshot snapshot = null;
+            RewritingOutputLock outputLock = null;
+            bool isProfilerStarted = false;
             try
             {
+                this.Profiler.StartMeasuringExecutionTime();
+                isProfilerStarted = true;
+
+                outputLock = RewritingOutputLock.Acquire(
+                    this.Options.OutputDirectory, TimeSpan.FromSeconds(60));
+                RewritingOutputChangeJournal.RecoverAll(this.FileSystem, this.Options.OutputDirectory);
+                this.OutputJournal = new RewritingOutputChangeJournal(
+                    this.FileSystem, this.Options.OutputDirectory);
+
+                var cache = this.CreateCache();
+                this.CurrentCache = cache;
+                if (!this.Options.IsReplacingAssemblies())
+                {
+                    this.OutputLedger = new RewritingOutputLedger(this.FileSystem, this.LogWriter,
+                        this.Options.AssembliesDirectory, this.Options.OutputDirectory);
+                    var comparer = this.FileSystem.IsCaseInsensitive(this.Options.OutputDirectory) ?
+                        StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+                    this.MirroredOutputFiles = new Dictionary<string, MirroredFile>(comparer);
+                    this.ProducedOutputFiles = new HashSet<string>(comparer);
+                    this.AttemptedMirroredFiles = new HashSet<string>(comparer);
+                }
+
+                bool isUpToDate = cache.TryGetUpToDateRun(out HashSet<string> protectedOutputPaths);
+                snapshot = RewritingInputSnapshot.Create(this.FileSystem, this.LogWriter,
+                    this.Options.AssembliesDirectory, this.Options.OutputDirectory,
+                    excludedDirectories: new[] { this.OutputJournal.BackupDirectory },
+                    excludedFiles: new[] { outputLock.Path });
+                if (!isUpToDate)
+                {
+                    this.OutputJournal.Capture(Path.Combine(
+                        this.Options.OutputDirectory, RewritingCache.ManifestFileName));
+                    cache.Invalidate();
+                }
+
+                outputDirectory = this.CreateOutputDirectoryAndCopyFiles(
+                    protectedOutputPaths, snapshot.SnapshotDirectory);
+
                 if (isUpToDate && cache.TryConfirmUpToDateRun())
                 {
                     // The findings of the analysis passes hold whether or not anything was rewritten,
@@ -249,8 +262,11 @@ namespace Microsoft.Coyote.Rewriting
                         this.TrackProducedOutput(path);
                     }
 
+                    this.OutputJournal.Capture(Path.Combine(
+                        this.Options.OutputDirectory, RewritingOutputLedger.ManifestFileName));
                     this.OutputLedger?.Commit(this.MirroredOutputFiles.Keys, this.ProducedOutputFiles,
-                        this.AttemptedMirroredFiles);
+                        this.AttemptedMirroredFiles, this.OutputJournal.Capture);
+                    this.OutputJournal.Complete();
                     this.LogWriter.LogImportant("... Skipping rewriting as every assembly is up to date");
                     return;
                 }
@@ -260,15 +276,18 @@ namespace Microsoft.Coyote.Rewriting
                     // Something changed after the first validation. The protected mirror deliberately
                     // left original inputs out of the output, so run it again without protection
                     // before rewriting from the now-current source tree.
+                    this.OutputJournal.Capture(Path.Combine(
+                        this.Options.OutputDirectory, RewritingCache.ManifestFileName));
                     cache.Invalidate();
                     protectedOutputPaths.Clear();
-                    outputDirectory = this.CreateOutputDirectoryAndCopyFiles(protectedOutputPaths);
+                    outputDirectory = this.CreateOutputDirectoryAndCopyFiles(
+                        protectedOutputPaths, snapshot.SnapshotDirectory);
                 }
 
                 // Get the set of assemblies to rewrite.
                 var assemblies = AssemblyInfo.LoadAssembliesToRewrite(this.Options,
                     this.OnResolveAssemblyFailure, this.FileSystem, this.GetEnvironmentVariable,
-                    this.EffectiveDotnetRoot).ToList();
+                    this.EffectiveDotnetRoot, snapshot.ToReadPath, snapshot.ToLogicalPath).ToList();
                 cache.RegisterRewriteInputs(assemblies);
                 cache.RecordFrameworkInventories(assemblies.SelectMany(assembly =>
                     assembly.FrameworkInventorySnapshots));
@@ -286,25 +305,76 @@ namespace Microsoft.Coyote.Rewriting
 
                 // Only once every assembly has been dealt with: a manifest describing a partially
                 // rewritten directory would report assemblies as up to date that were never reached.
+                this.OutputJournal.Capture(Path.Combine(
+                    this.Options.OutputDirectory, RewritingCache.ManifestFileName));
                 cache.Save();
+                this.OutputJournal.Capture(Path.Combine(
+                    this.Options.OutputDirectory, RewritingOutputLedger.ManifestFileName));
                 this.OutputLedger?.Commit(this.MirroredOutputFiles.Keys, this.ProducedOutputFiles,
-                    this.AttemptedMirroredFiles);
+                    this.AttemptedMirroredFiles, this.OutputJournal.Capture);
+                this.OutputJournal.Complete();
             }
             catch (Exception ex)
             {
+                if (this.OutputJournal != null)
+                {
+                    try
+                    {
+                        this.OutputJournal.Restore();
+                        this.OutputJournal.Complete();
+                    }
+                    catch (Exception restoreError)
+                    {
+                        throw new IOException(
+                            $"Rewriting failed and output rollback also failed. Recovery remains at " +
+                            $"'{this.OutputJournal.BackupDirectory}'.",
+                            new AggregateException(ex, restoreError));
+                    }
+                }
+
                 ExceptionDispatchInfo.Capture(ex).Throw();
             }
             finally
             {
-                if (this.Options.IsReplacingAssemblies())
+                try
                 {
-                    // If we are replacing the original assemblies, then delete the temporary output directory.
-                    this.FileSystem.DeleteDirectory(outputDirectory, true);
+                    snapshot?.Dispose();
+                }
+                finally
+                {
+                    try
+                    {
+                        if (this.Options.IsReplacingAssemblies() && !string.IsNullOrEmpty(outputDirectory) &&
+                            this.FileSystem.DirectoryExists(outputDirectory))
+                        {
+                            // If we are replacing the original assemblies, then delete the temporary output directory.
+                            this.FileSystem.DeleteDirectory(outputDirectory, true);
+                        }
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            if (isProfilerStarted)
+                            {
+                                this.Profiler.StopMeasuringExecutionTime();
+                            }
+                        }
+                        finally
+                        {
+                            outputLock?.Dispose();
+                        }
+                    }
                 }
 
-                this.Profiler.StopMeasuringExecutionTime();
             }
         }
+
+        /// <summary>
+        /// Creates the cache using the same frozen runtime root as resolution.
+        /// </summary>
+        internal RewritingCache CreateCache() => new RewritingCache(
+            this.Options, this.Configuration, this.LogWriter, this.FileSystem, this.EffectiveDotnetRoot);
 
         /// <summary>
         /// Initializes the passes to invoke during rewriting.
@@ -402,6 +472,8 @@ namespace Microsoft.Coyote.Rewriting
 
                     // Write the binary in the output path with portable symbols enabled.
                     this.LogWriter.LogImportant("..... Writing the modified '{0}' assembly to {1}", assembly.Name, resolvedOutputPath);
+                    this.OutputJournal.Capture(outputPath);
+                    this.OutputJournal.Capture(Path.ChangeExtension(outputPath, "pdb"));
                     assembly.Write(outputPath);
 
                     if (this.Options.IsLoggingAssemblyContents)
@@ -438,10 +510,12 @@ namespace Microsoft.Coyote.Rewriting
                 // this class exists to prevent.
                 this.LogWriter.LogDebug("..... Placing the already rewritten '{0}' assembly at {1}",
                     assembly.Name, resolvedOutputPath);
-                this.CopyWithRetriesAsync(assembly.FilePath, resolvedOutputPath).Wait();
-                string symbolFile = Path.ChangeExtension(assembly.FilePath, "pdb");
+                this.OutputJournal.Capture(resolvedOutputPath);
+                this.CopyWithRetriesAsync(assembly.ReadPath, resolvedOutputPath).Wait();
+                string symbolFile = Path.ChangeExtension(assembly.ReadPath, "pdb");
                 if (File.Exists(symbolFile))
                 {
+                    this.OutputJournal.Capture(Path.ChangeExtension(resolvedOutputPath, "pdb"));
                     this.CopyWithRetriesAsync(symbolFile, Path.ChangeExtension(resolvedOutputPath, "pdb")).Wait();
                 }
             }
@@ -449,11 +523,13 @@ namespace Microsoft.Coyote.Rewriting
             if (!wasAlreadyRewritten && this.Options.IsReplacingAssemblies())
             {
                 string targetPath = Path.Combine(this.Options.AssembliesDirectory, assembly.Name);
+                this.OutputJournal.Capture(assembly.FilePath);
                 this.CopyWithRetriesAsync(outputPath, assembly.FilePath).Wait();
                 if (assembly.IsSymbolFileAvailable())
                 {
                     string pdbFile = Path.ChangeExtension(outputPath, "pdb");
                     string targetPdbFile = Path.ChangeExtension(targetPath, "pdb");
+                    this.OutputJournal.Capture(targetPdbFile);
                     this.CopyWithRetriesAsync(pdbFile, targetPdbFile).Wait();
                 }
             }
@@ -526,6 +602,7 @@ namespace Microsoft.Coyote.Rewriting
                 string jsonFile = Path.ChangeExtension(outputPath, $".{(isRewritten ? "rw" : "il")}.json");
                 this.LogWriter.LogImportant("..... Writing the {0} IL of '{1}' as JSON to {2}",
                     isRewritten ? "rewritten" : "original", assembly.Name, jsonFile);
+                this.OutputJournal.Capture(jsonFile);
                 this.FileSystem.WriteAllText(jsonFile, json);
             }
         }
@@ -549,6 +626,7 @@ namespace Microsoft.Coyote.Rewriting
 
                 string jsonFile = Path.ChangeExtension(outputPath, ".diff.json");
                 this.LogWriter.LogImportant("..... Writing the IL diff of '{0}' as JSON to {1}", assembly.Name, jsonFile);
+                this.OutputJournal.Capture(jsonFile);
                 this.FileSystem.WriteAllText(jsonFile, diffJson);
             }
         }
@@ -590,21 +668,21 @@ namespace Microsoft.Coyote.Rewriting
         /// the input directory would put the original assembly back over the rewritten one, and the
         /// run that decided nothing needed rewriting would leave an uninstrumented output behind.
         /// </param>
+        /// <param name="sourceDirectory">The immutable source snapshot to mirror.</param>
         /// <returns>The output directory path.</returns>
-        private string CreateOutputDirectoryAndCopyFiles(HashSet<string> protectedOutputPaths)
+        private string CreateOutputDirectoryAndCopyFiles(HashSet<string> protectedOutputPaths,
+            string sourceDirectory)
         {
-            string sourceDirectory = this.Options.AssembliesDirectory;
-
             // The full path is taken from 'Path', not from the 'DirectoryInfo' the creation used to
             // return: it is the same string, and asking for it separately is what lets the creation
             // itself go through the seam.
             string outputDirectory = Path.GetFullPath(this.Options.IsReplacingAssemblies() ?
                 Path.Combine(this.Options.OutputDirectory, TempDirectory) : this.Options.OutputDirectory);
+            this.OutputJournal.CaptureDirectory(outputDirectory);
             this.FileSystem.CreateDirectory(outputDirectory);
             if (!this.Options.IsReplacingAssemblies())
             {
                 this.LogWriter.LogImportant("... Copying all files to the '{0}' directory", outputDirectory);
-                var mirrorJournal = new RewritingOutputChangeJournal(this.FileSystem, outputDirectory);
                 Exception lastMirrorError = null;
                 for (int attempt = 0; attempt < 2; attempt++)
                 {
@@ -613,17 +691,17 @@ namespace Microsoft.Coyote.Rewriting
                         this.MirroredOutputFiles =
                             this.Mirror.GetMirroredFiles(sourceDirectory, outputDirectory,
                                 includeFingerprints: false,
-                                excludedDirectories: new[] { mirrorJournal.BackupDirectory });
+                                excludedDirectories: new[] { this.OutputJournal.BackupDirectory });
 
                         this.OutputLedger.RemoveStaleMirroredFiles(this.MirroredOutputFiles.Keys,
-                            this.AttemptedMirroredFiles, mirrorJournal.Capture);
+                            this.AttemptedMirroredFiles, this.OutputJournal.Capture);
                         this.Mirror.Mirror(sourceDirectory, outputDirectory, protectedOutputPaths,
                             this.MirroredOutputFiles.Keys, this.AttemptedMirroredFiles,
-                            mirrorJournal.Capture);
+                            this.OutputJournal.Capture, this.OutputJournal.CaptureDirectory);
                         var confirmed =
                             this.Mirror.GetMirroredFiles(sourceDirectory, outputDirectory,
                                 includeFingerprints: false,
-                                excludedDirectories: new[] { mirrorJournal.BackupDirectory });
+                                excludedDirectories: new[] { this.OutputJournal.BackupDirectory });
 
                         // Compared on length and write time as well as on name. Equal inventories say
                         // nothing about a file that was rewritten in place after this copied it, and
@@ -652,13 +730,13 @@ namespace Microsoft.Coyote.Rewriting
                             // Every retry starts from the same output state. In particular, a file
                             // that existed before mirroring must be restored after an earlier attempt
                             // overwrote it, rather than being mistaken for newly-owned output.
-                            mirrorJournal.Restore();
+                            this.OutputJournal.Restore();
                         }
                         catch (Exception restoreError)
                         {
                             throw new IOException(
                                 $"Unable to retry mirroring '{sourceDirectory}', and rollback failed. " +
-                                $"The recovery journal remains at '{mirrorJournal.BackupDirectory}'.",
+                                $"The recovery journal remains at '{this.OutputJournal.BackupDirectory}'.",
                                 new AggregateException(lastMirrorError, restoreError));
                         }
 
@@ -668,44 +746,8 @@ namespace Microsoft.Coyote.Rewriting
 
                 if (lastMirrorError != null)
                 {
-                    try
-                    {
-                        mirrorJournal.Restore();
-                    }
-                    catch (Exception restoreError)
-                    {
-                        throw new IOException(
-                            $"Unable to mirror a stable snapshot of '{sourceDirectory}', and rollback failed. " +
-                            $"The recovery journal remains at '{mirrorJournal.BackupDirectory}'.",
-                            new AggregateException(lastMirrorError, restoreError));
-                    }
-
-                    try
-                    {
-                        mirrorJournal.Complete();
-                    }
-                    catch (Exception cleanupError)
-                    {
-                        throw new IOException(
-                            $"Unable to mirror a stable snapshot of '{sourceDirectory}'. Rollback " +
-                            $"succeeded, but the recovery journal could not be removed from " +
-                            $"'{mirrorJournal.BackupDirectory}'.",
-                            new AggregateException(lastMirrorError, cleanupError));
-                    }
-
                     throw new IOException(
                         $"Unable to mirror a stable snapshot of '{sourceDirectory}'.", lastMirrorError);
-                }
-
-                try
-                {
-                    mirrorJournal.Complete();
-                }
-                catch (Exception cleanupError)
-                {
-                    this.LogWriter.LogWarning(
-                        "..... Unable to remove the completed mirror recovery journal '{0}': {1}",
-                        mirrorJournal.BackupDirectory, cleanupError.Message);
                 }
             }
 
@@ -735,6 +777,7 @@ namespace Microsoft.Coyote.Rewriting
                     continue;
                 }
 
+                this.OutputJournal.Capture(destination);
                 this.Mirror.CopyFile(assemblyPath, this.Options.OutputDirectory);
                 this.TrackProducedOutput(destination);
             }
@@ -909,12 +952,12 @@ namespace Microsoft.Coyote.Rewriting
         /// a file system that reported a candidate the disk does not hold would be answering a
         /// question nothing downstream asks.
         /// </remarks>
-        private AssemblyDefinition TryResolveFromSharedFrameworks(AssemblyNameReference reference)
+        internal AssemblyDefinition TryResolveFromSharedFrameworks(AssemblyNameReference reference)
         {
             if (this.CachedFrameworkDirectories is null)
             {
                 this.CachedFrameworkDirectories = new List<string>();
-                string dotnetRoot = AssemblyInfo.GetDotnetRoot(this.FileSystem, this.GetEnvironmentVariable);
+                string dotnetRoot = this.EffectiveDotnetRoot;
                 if (dotnetRoot != null)
                 {
                     string sharedDir = Path.Combine(dotnetRoot, "shared");
@@ -934,8 +977,17 @@ namespace Microsoft.Coyote.Rewriting
                 {
                     try
                     {
-                        return AssemblyDefinition.ReadAssembly(candidate,
-                            new ReaderParameters { ReadSymbols = false });
+                        byte[] content;
+                        using (var stream = this.FileSystem.OpenRead(candidate, FileReadSharing.DenyWriters))
+                        using (var memory = new MemoryStream())
+                        {
+                            stream.CopyTo(memory);
+                            content = memory.ToArray();
+                        }
+
+                        this.CurrentCache?.RecordConsumedResolution(candidate, content);
+                        return AssemblyDefinition.ReadAssembly(new MemoryStream(content, false),
+                            new ReaderParameters { ReadSymbols = false, InMemory = true });
                     }
                     catch
                     {

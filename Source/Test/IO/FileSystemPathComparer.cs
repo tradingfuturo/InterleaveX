@@ -83,7 +83,8 @@ namespace Microsoft.Coyote.IO
             string fullPath = Path.GetFullPath(path);
             string root = Path.GetPathRoot(fullPath) ?? string.Empty;
             string remainder = fullPath.Substring(root.Length);
-            var builder = new System.Text.StringBuilder(root);
+            var builder = new System.Text.StringBuilder(
+                this.DirectoryIgnoresCase(root) ? root.ToUpperInvariant() : root);
             string currentDirectory = root;
             char[] separators = new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar };
             foreach (string segment in remainder.Split(separators,
@@ -113,15 +114,7 @@ namespace Microsoft.Coyote.IO
 
             if (!this.ProbedDirectories.TryGetValue(directory, out bool ignoresCase))
             {
-                try
-                {
-                    ignoresCase = this.FileSystem.IsCaseInsensitive(directory);
-                }
-                catch (Exception)
-                {
-                    ignoresCase = false;
-                }
-
+                ignoresCase = this.FileSystem.IsCaseInsensitive(directory);
                 this.ProbedDirectories.Add(directory, ignoresCase);
             }
 

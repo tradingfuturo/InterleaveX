@@ -89,32 +89,41 @@ namespace Microsoft.Coyote.Rewriting
         /// <param name="outputDirectory">The directory to mirror it into.</param>
         /// <param name="includeFingerprints">True for callers that need a standalone content snapshot.</param>
         /// <param name="excludedDirectories">Directories under the source tree that must not be mirrored.</param>
+        /// <param name="excludedFiles">Files under the source tree that must not be mirrored.</param>
         internal Dictionary<string, MirroredFile> GetMirroredFiles(string sourceDirectory, string outputDirectory,
-            bool includeFingerprints = true, IEnumerable<string> excludedDirectories = null)
+            bool includeFingerprints = true, IEnumerable<string> excludedDirectories = null,
+            IEnumerable<string> excludedFiles = null)
         {
             var files = new Dictionary<string, MirroredFile>(StringComparer.Ordinal);
             var targetComparer = this.FileSystem.IsCaseInsensitive(outputDirectory) ?
                 StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
             var targetPaths = new Dictionary<string, string>(targetComparer);
-            var comparison = this.FileSystem.IsCaseInsensitive(outputDirectory) ?
-                StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            var sourcePathComparer = new FileSystemPathComparer(this.FileSystem);
             var excluded = (excludedDirectories ?? Enumerable.Empty<string>())
                 .Where(path => !string.IsNullOrEmpty(path))
                 .ToArray();
+            var excludedFilePaths = new HashSet<string>(excludedFiles ?? Enumerable.Empty<string>(),
+                sourcePathComparer);
 
             foreach (var entry in this.FileSystem.GetFileEntries(sourceDirectory, "*"))
             {
-                this.AddMirroredFile(sourceDirectory, entry, files, targetPaths, includeFingerprints);
+                if (!excludedFilePaths.Contains(entry.Path))
+                {
+                    this.AddMirroredFile(sourceDirectory, entry, files, targetPaths, includeFingerprints);
+                }
             }
 
             foreach (string directoryPath in this.FileSystem.GetDirectories(sourceDirectory, "*", true))
             {
-                if (!IsWithin(directoryPath, outputDirectory, comparison) &&
-                    !excluded.Any(directory => IsWithin(directoryPath, directory, comparison)))
+                if (!IsWithin(directoryPath, outputDirectory, sourcePathComparer) &&
+                    !excluded.Any(directory => IsWithin(directoryPath, directory, sourcePathComparer)))
                 {
                     foreach (var entry in this.FileSystem.GetFileEntries(directoryPath, "*"))
                     {
-                        this.AddMirroredFile(sourceDirectory, entry, files, targetPaths, includeFingerprints);
+                        if (!excludedFilePaths.Contains(entry.Path))
+                        {
+                            this.AddMirroredFile(sourceDirectory, entry, files, targetPaths, includeFingerprints);
+                        }
                     }
                 }
             }
@@ -187,7 +196,8 @@ namespace Microsoft.Coyote.Rewriting
 
         internal void Mirror(string sourceDirectory, string outputDirectory,
             HashSet<string> protectedOutputPaths, IEnumerable<string> mirroredFiles,
-            ISet<string> successfullyCopiedFiles = null, Action<string> beforeChange = null)
+            ISet<string> successfullyCopiedFiles = null, Action<string> beforeChange = null,
+            Action<string> beforeCreateDirectory = null)
         {
             foreach (string relativePath in mirroredFiles.OrderBy(path => path, StringComparer.Ordinal))
             {
@@ -195,8 +205,10 @@ namespace Microsoft.Coyote.Rewriting
                 string filePath = Path.Combine(sourceDirectory, platformPath);
                 string targetPath = Path.Combine(outputDirectory, platformPath);
                 string destination = Path.GetDirectoryName(targetPath);
+                beforeCreateDirectory?.Invoke(destination);
                 this.FileSystem.CreateDirectory(destination);
-                if (this.CopyFileUnlessProtected(filePath, destination, protectedOutputPaths, beforeChange))
+                if (this.CopyFileUnlessProtected(filePath, destination, protectedOutputPaths, beforeChange,
+                    isRootFile: relativePath.IndexOf('/') < 0))
                 {
                     successfullyCopiedFiles?.Add(relativePath);
                 }
@@ -212,15 +224,13 @@ namespace Microsoft.Coyote.Rewriting
             Dictionary<string, MirroredFile> files, Dictionary<string, string> targetPaths,
             bool includeFingerprint)
         {
-            string name = Path.GetFileName(entry.Path);
-            if (string.Equals(name, RewritingCache.ManifestFileName, StringComparison.Ordinal) ||
-                string.Equals(name, RewritingOutputLedger.ManifestFileName, StringComparison.Ordinal))
+            string relative = entry.Path.Substring(sourceDirectory.TrimEnd('\\', '/').Length)
+                .TrimStart('\\', '/').Replace('\\', '/');
+            if (relative.IndexOf('/') < 0 && IsReservedRootFile(relative, targetPaths.Comparer))
             {
                 return;
             }
 
-            string relative = entry.Path.Substring(sourceDirectory.TrimEnd('\\', '/').Length)
-                .TrimStart('\\', '/').Replace('\\', '/');
             if (targetPaths.TryGetValue(relative, out string existing))
             {
                 throw new InvalidDataException(
@@ -231,6 +241,31 @@ namespace Microsoft.Coyote.Rewriting
             files.Add(relative, new MirroredFile(entry.Length, entry.LastWriteTimeUtc,
                 includeFingerprint ? RewritingCacheValidator.ComputeFileFingerprint(
                     this.FileSystem, entry.Path) : null));
+        }
+
+        private static bool IsReservedRootFile(string relative, IEqualityComparer<string> comparer)
+        {
+            foreach (string manifest in new[]
+            {
+                RewritingCache.ManifestFileName,
+                RewritingOutputLedger.ManifestFileName
+            })
+            {
+                if (comparer.Equals(relative, manifest))
+                {
+                    return true;
+                }
+
+                string prefix = manifest + ".";
+                if (relative.Length > prefix.Length + 4 && comparer.Equals(
+                    relative.Substring(relative.Length - 4), ".tmp") && comparer.Equals(
+                        relative.Substring(0, prefix.Length), prefix))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -257,15 +292,44 @@ namespace Microsoft.Coyote.Rewriting
         }
 
         /// <summary>
+        /// Returns true if <paramref name="path"/> is the specified directory or is below it,
+        /// comparing each ancestor using the semantics of the file system that owns it.
+        /// </summary>
+        internal static bool IsWithin(string path, string directory, IEqualityComparer<string> comparer)
+        {
+            string current = Path.GetFullPath(path).TrimEnd('\\', '/');
+            string expected = Path.GetFullPath(directory).TrimEnd('\\', '/');
+            while (!string.IsNullOrEmpty(current))
+            {
+                if (comparer.Equals(current, expected))
+                {
+                    return true;
+                }
+
+                string parent = Path.GetDirectoryName(current);
+                if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                current = parent.TrimEnd('\\', '/');
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// Copies the specified file to the destination, unless doing so would overwrite an output
         /// that is already up to date, or the cache manifest itself.
         /// </summary>
         internal bool CopyFileUnlessProtected(string filePath, string destination,
-            HashSet<string> protectedOutputPaths, Action<string> beforeChange = null)
+            HashSet<string> protectedOutputPaths, Action<string> beforeChange = null,
+            bool isRootFile = true)
         {
-            if (string.Equals(Path.GetFileName(filePath), RewritingCache.ManifestFileName, StringComparison.Ordinal) ||
+            if (isRootFile &&
+                (string.Equals(Path.GetFileName(filePath), RewritingCache.ManifestFileName, StringComparison.Ordinal) ||
                 string.Equals(Path.GetFileName(filePath), RewritingOutputLedger.ManifestFileName,
-                    StringComparison.Ordinal))
+                    StringComparison.Ordinal)))
             {
                 // An input directory that was itself rewritten in place holds a manifest describing
                 // that run. Copying it here would leave a manifest in the output directory that

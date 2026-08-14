@@ -428,6 +428,55 @@ namespace Microsoft.Coyote.Tools.Tests
                 Path.GetFileName(workspace.OutputDirectory) + ".mirror-backup-*"));
         }
 
+        [Theory(Timeout = 120000)]
+        [InlineData(RewritingCache.ManifestFileName)]
+        [InlineData(RewritingOutputLedger.ManifestFileName)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestPublicationFailureRestoresTheEntireOutput(string failedManifestName)
+        {
+            using var workspace = Workspace.Create();
+            workspace.Rewrite();
+            Dictionary<string, byte[]> before = CaptureFiles(workspace.OutputDirectory);
+            string failedTarget = Path.Combine(workspace.OutputDirectory, failedManifestName);
+            var fileSystem = new CallbackFileSystem(HostFileSystem.Instance,
+                beforeMoveFile: (_, target) =>
+                {
+                    if (string.Equals(target, failedTarget, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new IOException("injected publication failure");
+                    }
+                },
+                beforeReplaceFile: (_, target, __) =>
+                {
+                    if (string.Equals(target, failedTarget, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new IOException("injected publication failure");
+                    }
+                });
+
+            Assert.Throws<IOException>(() => workspace.Rewrite(fileSystem,
+                options => options.IsDataRaceCheckingEnabled = !options.IsDataRaceCheckingEnabled));
+
+            Dictionary<string, byte[]> after = CaptureFiles(workspace.OutputDirectory);
+            Assert.Equal(before.Keys.OrderBy(path => path), after.Keys.OrderBy(path => path));
+            foreach (string path in before.Keys)
+            {
+                Assert.Equal(before[path], after[path]);
+            }
+
+            string parent = Path.GetDirectoryName(workspace.OutputDirectory);
+            string outputName = Path.GetFileName(workspace.OutputDirectory);
+            Assert.Empty(Directory.GetDirectories(parent, outputName + ".mirror-backup-*"));
+            Assert.Empty(Directory.GetDirectories(parent,
+                outputName + RewritingInputSnapshot.DirectoryMarker + "*"));
+            Assert.True(File.Exists(workspace.OutputDirectory + RewritingOutputLock.FileSuffix));
+        }
+
+        private static Dictionary<string, byte[]> CaptureFiles(string directory) =>
+            Directory.GetFiles(directory, "*", SearchOption.AllDirectories)
+                .ToDictionary(path => Path.GetRelativePath(directory, path).Replace('\\', '/'),
+                    File.ReadAllBytes, StringComparer.OrdinalIgnoreCase);
+
         [Fact(Timeout = 60000)]
         public void TestCaseSensitivityProbeMatchesTheFileSystem()
         {
@@ -674,14 +723,20 @@ namespace Microsoft.Coyote.Tools.Tests
             private readonly IFileSystem Inner;
             private readonly Action<string, string> BeforeGetFiles;
             private readonly Action<string, string, bool> BeforeCopyFile;
+            private readonly Action<string, string> BeforeMoveFile;
+            private readonly Action<string, string, string> BeforeReplaceFile;
 
             internal CallbackFileSystem(IFileSystem inner,
                 Action<string, string> beforeGetFiles = null,
-                Action<string, string, bool> beforeCopyFile = null)
+                Action<string, string, bool> beforeCopyFile = null,
+                Action<string, string> beforeMoveFile = null,
+                Action<string, string, string> beforeReplaceFile = null)
             {
                 this.Inner = inner;
                 this.BeforeGetFiles = beforeGetFiles;
                 this.BeforeCopyFile = beforeCopyFile;
+                this.BeforeMoveFile = beforeMoveFile;
+                this.BeforeReplaceFile = beforeReplaceFile;
             }
 
             public bool FileExists(string path) => this.Inner.FileExists(path);
@@ -704,11 +759,17 @@ namespace Microsoft.Coyote.Tools.Tests
                 this.Inner.CopyFile(sourcePath, targetPath, overwrite);
             }
 
-            public void MoveFile(string sourcePath, string targetPath) =>
+            public void MoveFile(string sourcePath, string targetPath)
+            {
+                this.BeforeMoveFile?.Invoke(sourcePath, targetPath);
                 this.Inner.MoveFile(sourcePath, targetPath);
+            }
 
-            public void ReplaceFile(string sourcePath, string targetPath, string backupPath) =>
+            public void ReplaceFile(string sourcePath, string targetPath, string backupPath)
+            {
+                this.BeforeReplaceFile?.Invoke(sourcePath, targetPath, backupPath);
                 this.Inner.ReplaceFile(sourcePath, targetPath, backupPath);
+            }
 
             public void DeleteFile(string path) => this.Inner.DeleteFile(path);
 

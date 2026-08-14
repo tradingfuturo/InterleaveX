@@ -45,12 +45,15 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         private readonly IFileSystem FileSystem;
 
+        private readonly Func<string, string> ToLogicalPath;
+
         /// <summary>
         /// Initializes a new instance of the <see cref="TrackingAssemblyResolver"/> class.
         /// </summary>
-        internal TrackingAssemblyResolver(IFileSystem fileSystem)
+        internal TrackingAssemblyResolver(IFileSystem fileSystem, Func<string, string> toLogicalPath = null)
         {
             this.FileSystem = fileSystem;
+            this.ToLogicalPath = toLogicalPath ?? (path => path);
 
             // Ordinal, because this set only keeps one resolver from recording one file twice, and the
             // rewriting cache does the comparison that decides identity, against the file system the
@@ -72,10 +75,11 @@ namespace Microsoft.Coyote.Rewriting
         /// resolution, but the path is exposed as unreliable so the cache cannot publish a manifest
         /// that describes bytes different from the ones the rewrite consumed.
         /// </remarks>
-        internal void Stamp(string path)
+        internal void Stamp(string path, bool replace = false)
         {
-            if (string.IsNullOrEmpty(path) || this.Stamps.ContainsKey(path) ||
-                this.UnreliableStampPaths.Contains(path))
+            string logicalPath = string.IsNullOrEmpty(path) ? path : this.ToLogicalPath(path);
+            if (string.IsNullOrEmpty(path) || (!replace && this.Stamps.ContainsKey(logicalPath)) ||
+                this.UnreliableStampPaths.Contains(logicalPath))
             {
                 return;
             }
@@ -85,11 +89,11 @@ namespace Microsoft.Coyote.Rewriting
                 IFileEntry entry = this.FileSystem.GetFile(path);
                 string fingerprint = entry.Exists ?
                     RewritingCacheValidator.ComputeFileFingerprint(this.FileSystem, path) : null;
-                this.Stamps.Add(path, new ResolutionStamp(entry, fingerprint));
+                this.Stamps[logicalPath] = new ResolutionStamp(entry, fingerprint);
             }
             catch (Exception)
             {
-                this.UnreliableStampPaths.Add(path);
+                this.UnreliableStampPaths.Add(logicalPath);
             }
         }
 
@@ -134,7 +138,7 @@ namespace Microsoft.Coyote.Rewriting
                 foreach (string extension in new[] { ".dll", ".exe", ".winmd" })
                 {
                     string path = System.IO.Path.Combine(directory, name.Name + extension);
-                    if (this.CandidatePaths.Add(path))
+                    if (this.CandidatePaths.Add(this.ToLogicalPath(path)))
                     {
                         this.Stamp(path);
                     }
@@ -151,12 +155,13 @@ namespace Microsoft.Coyote.Rewriting
             {
                 if (!string.IsNullOrEmpty(module.FileName))
                 {
-                    this.ResolvedPaths.Add(module.FileName);
-
-                    // Stamped here rather than where the cache records it, because here is where the
-                    // file was read. What the cache fingerprints later describes whatever is on disk
-                    // by then, which is the same file only if nothing replaced it in between.
-                    this.Stamp(module.FileName);
+                    if (this.ResolvedPaths.Add(this.ToLogicalPath(module.FileName)))
+                    {
+                        // Replace the earlier candidate probe exactly once, at the first successful
+                        // resolution. Later metadata lookups of the same module consume the already
+                        // loaded Cecil definition and must not repeatedly hash a large framework file.
+                        this.Stamp(module.FileName, replace: true);
+                    }
                 }
             }
 

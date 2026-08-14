@@ -135,6 +135,65 @@ namespace Microsoft.Coyote.Tools.Tests
             }
         }
 
+        [Fact(Timeout = 30000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestNativeCaseQueryFailureFallsBackInsideTheRequestedDirectory()
+        {
+            string directory = Path.Combine(Path.GetTempPath(),
+                "coyote-case-fallback-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                string lower = Path.Combine(directory, "existing-name");
+                File.WriteAllText(lower, string.Empty);
+                bool expected = File.Exists(Path.Combine(directory, "EXISTING-NAME"));
+
+                Assert.Equal(expected,
+                    HostFileSystem.QueryOrProbeForTesting(directory, _ => null));
+                Assert.Empty(Directory.GetFiles(directory, ".coyote-case-probe-*"));
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+
+        [Fact(Timeout = 30000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestUnixNativeCaseQueryMatchesTheRequestedDirectory()
+        {
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux) &&
+                !RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            {
+                this.TestOutput.WriteLine(
+                    "Skipped: the native Unix pathname case query is not available on this platform.");
+                return;
+            }
+
+            string directory = Path.Combine(Path.GetTempPath(),
+                "coyote-native-case-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                bool? native = HostFileSystem.QueryNativeCaseBehaviorForTesting(directory);
+                if (!native.HasValue)
+                {
+                    this.TestOutput.WriteLine(
+                        "Skipped: this filesystem refused or does not support the native pathname case query.");
+                    return;
+                }
+
+                string lower = Path.Combine(directory, "case-query-entry");
+                File.WriteAllText(lower, string.Empty);
+                bool observed = File.Exists(Path.Combine(directory, "CASE-QUERY-ENTRY"));
+                Assert.Equal(observed, native.Value);
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+
         /// <summary>
         /// Turns on per-directory case sensitivity, returning false if this system will not do it.
         /// </summary>

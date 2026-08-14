@@ -6,8 +6,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Microsoft.Coyote.Logging;
 using Microsoft.Coyote.Rewriting;
 using Microsoft.Coyote.Tests.Common.IO;
+using Mono.Cecil;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -110,6 +112,49 @@ namespace Microsoft.Coyote.Tools.Tests
                 "this test needs a root the real file system does not hold");
             Assert.Equal(root, AssemblyInfo.GetDotnetRoot(
                 Installation(root), name => name == RootVariable ? root : null));
+        }
+
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestCacheIdentityAndFallbackKeepTheRootFrozenAtConstruction()
+        {
+            string rootA = Path.Combine(Root, "frozen-a");
+            string rootB = Path.Combine(Root, "changed-b");
+            string relativeCandidate = Path.Combine(
+                "shared", "Test.Framework", "1.0.0", "FrozenProbe.dll");
+            byte[] assembly = File.ReadAllBytes(typeof(DotnetRootDiscoveryTests).Assembly.Location);
+            var fileSystem = new InMemoryFileSystem()
+                .WithFile(Path.Combine(rootA, relativeCandidate), assembly)
+                .WithFile(Path.Combine(rootB, relativeCandidate), assembly);
+            var options = RewritingOptions.Create();
+            options.AssembliesDirectory = Path.Combine(Root, "input");
+            options.OutputDirectory = Path.Combine(Root, "output");
+            options.AssemblyPaths = new HashSet<string>()
+            {
+                Path.Combine(options.AssembliesDirectory, "App.dll")
+            };
+            var configuration = Configuration.Create();
+            using var logWriter = new MemoryLogWriter(configuration);
+            int reads = 0;
+            var frozen = new RewritingEngine(options, configuration, logWriter, new Profiler(),
+                fileSystem, name => name == RootVariable ? (++reads is 1 ? rootA : rootB) : null);
+            var changed = new RewritingEngine(options, configuration, logWriter, new Profiler(),
+                fileSystem, name => name == RootVariable ? rootB : null);
+
+            Assert.Equal(rootA, frozen.EffectiveDotnetRoot);
+            Assert.NotEqual(frozen.CreateCache().ConfigurationIdentity,
+                changed.CreateCache().ConfigurationIdentity);
+            using AssemblyDefinition resolved = frozen.TryResolveFromSharedFrameworks(
+                new AssemblyNameReference("FrozenProbe", new Version(1, 0, 0, 0)));
+
+            Assert.NotNull(resolved);
+            Assert.Equal(1, reads);
+            Assert.Contains(fileSystem.Reads, read =>
+                string.Equals(read.Path, Path.Combine(rootA, relativeCandidate),
+                    StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(fileSystem.Reads, read =>
+                string.Equals(read.Path, Path.Combine(rootB, relativeCandidate),
+                    StringComparison.OrdinalIgnoreCase));
         }
     }
 }

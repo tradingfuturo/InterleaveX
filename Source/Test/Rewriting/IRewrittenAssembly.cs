@@ -52,6 +52,11 @@ namespace Microsoft.Coyote.Rewriting
         IReadOnlyList<string> ReferenceNames { get; }
 
         /// <summary>
+        /// Direct references that were present beside the immutable assembly input.
+        /// </summary>
+        IReadOnlyList<string> PresentReferenceNames { get; }
+
+        /// <summary>
         /// The directories that were searched while resolving the modules of this assembly.
         /// </summary>
         IReadOnlyList<string> SearchDirectories { get; }

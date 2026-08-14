@@ -7,6 +7,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
+using System.Text.Json;
 using Microsoft.Coyote.IO;
 using Microsoft.Coyote.Logging;
 using Microsoft.Coyote.Rewriting;
@@ -67,6 +69,7 @@ namespace Microsoft.Coyote.Tools.Tests
                 this.Name = Path.GetFileName(filePath);
                 this.FilePath = filePath;
                 this.ReferenceNames = Array.Empty<string>();
+                this.PresentReferenceNames = Array.Empty<string>();
                 this.SearchDirectories = new[] { Path.GetDirectoryName(filePath) };
                 this.ResolvedModulePaths = resolvedModulePaths;
                 this.ResolutionCandidatePaths = Array.Empty<string>();
@@ -91,6 +94,8 @@ namespace Microsoft.Coyote.Tools.Tests
             public string FilePath { get; }
 
             public IReadOnlyList<string> ReferenceNames { get; }
+
+            public IReadOnlyList<string> PresentReferenceNames { get; }
 
             public IReadOnlyList<string> SearchDirectories { get; }
 
@@ -164,7 +169,7 @@ namespace Microsoft.Coyote.Tools.Tests
             // The case this exists for. Recording the dependency as it is now would describe an
             // output that was rewritten against what it was before, and nothing downstream could
             // ever tell the two apart.
-            Assert.False(TryRecordRun(CreateFileSystem(), fileSystem =>
+            Assert.Throws<IOException>(() => TryRecordRun(CreateFileSystem(), fileSystem =>
                 fileSystem.WriteAllText(In("Dependency.dll"), "a different dependency")));
         }
 
@@ -172,7 +177,7 @@ namespace Microsoft.Coyote.Tools.Tests
         [Trait("Category", "RewritingRemediation")]
         public void TestAModuleReplacedWhilePreservingMetadataIsNotRecorded()
         {
-            Assert.False(TryRecordRun(CreateFileSystem(), fileSystem =>
+            Assert.Throws<IOException>(() => TryRecordRun(CreateFileSystem(), fileSystem =>
             {
                 DateTime stamp = fileSystem.GetFile(In("Dependency.dll")).LastWriteTimeUtc;
                 fileSystem.WriteAllText(In("Dependency.dll"), "b dependency");
@@ -186,7 +191,7 @@ namespace Microsoft.Coyote.Tools.Tests
             // A rebuild landing mid-run. The rewritten output came from the assembly that was there
             // when the passes ran, so recording the one that replaced it would report the next run
             // as up to date against an output the new input never produced.
-            Assert.False(TryRecordRun(CreateFileSystem(), fileSystem =>
+            Assert.Throws<IOException>(() => TryRecordRun(CreateFileSystem(), fileSystem =>
                 fileSystem.WriteAllText(In("App.dll"), "a rebuilt assembly")));
         }
 
@@ -196,7 +201,7 @@ namespace Microsoft.Coyote.Tools.Tests
             // The runtime config names the shared frameworks resolution falls back to, so editing it
             // points the rewriter at different implementation assemblies. Recorded as read, for the
             // same reason as the assemblies themselves.
-            Assert.False(TryRecordRun(CreateFileSystem(), fileSystem =>
+            Assert.Throws<IOException>(() => TryRecordRun(CreateFileSystem(), fileSystem =>
                 fileSystem.WriteAllText(In("App.runtimeconfig.json"), "{ \"runtimeOptions\": { } }")));
         }
 
@@ -206,7 +211,7 @@ namespace Microsoft.Coyote.Tools.Tests
             // Whether symbols are read decides whether they are written, and that was answered
             // before the passes ran. One arriving afterwards means the output does not carry what a
             // rewrite of what is on disk now would have carried.
-            Assert.False(TryRecordRun(CreateFileSystem(), fileSystem =>
+            Assert.Throws<IOException>(() => TryRecordRun(CreateFileSystem(), fileSystem =>
                 fileSystem.WithFile(In("App.pdb"), "symbols that were not there")));
         }
 
@@ -220,8 +225,7 @@ namespace Microsoft.Coyote.Tools.Tests
             cache.RegisterRewriteInputs(new[] { assembly });
 
             cache.RecordAssembly(assembly, Out("App.dll"), Array.Empty<string>());
-            cache.Save();
-
+            Assert.Throws<IOException>(() => cache.Save());
             Assert.False(fileSystem.FileExists(Out(RewritingCache.ManifestFileName)));
         }
 
@@ -253,6 +257,34 @@ namespace Microsoft.Coyote.Tools.Tests
             cache.Save();
 
             Assert.True(fileSystem.FileExists(In(RewritingCache.ManifestFileName)));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestConsumedFallbackBytesReplaceTheProbeEvenAfterCandidateRemoval()
+        {
+            var fileSystem = CreateFileSystem();
+            var cache = CreateCache(fileSystem);
+            var assembly = new FakeAssembly(fileSystem, In("App.dll"));
+            cache.RegisterRewriteInputs(new[] { assembly });
+            string candidate = In("Framework", "Fallback.dll");
+            fileSystem.WithFile(candidate, "bytes seen by the probe");
+            cache.RecordResolutionCandidate(candidate);
+            byte[] consumed = Encoding.UTF8.GetBytes("the exact bytes Cecil consumed");
+            fileSystem.WithFile(candidate, consumed);
+            cache.RecordConsumedResolution(candidate, consumed);
+            fileSystem.DeleteFile(candidate);
+
+            cache.RecordAssembly(assembly, Out("App.dll"), Array.Empty<string>());
+            cache.Save();
+
+            CacheManifest manifest = JsonSerializer.Deserialize<CacheManifest>(
+                fileSystem.ReadAllText(Out(RewritingCache.ManifestFileName)));
+            CacheFile recorded = Assert.Single(manifest.ResolvedModules,
+                file => string.Equals(file.Path, candidate, StringComparison.Ordinal));
+            Assert.True(recorded.Exists);
+            Assert.Equal(consumed.LongLength, recorded.Length);
+            Assert.Equal(RewritingCacheValidator.ComputeFingerprint(consumed), recorded.Fingerprint);
         }
     }
 }

@@ -24,11 +24,6 @@ namespace Microsoft.Coyote.IO
         internal static readonly IFileSystem Instance = new HostFileSystem();
 
         /// <summary>
-        /// What a file system is assumed to do with case when it cannot be asked.
-        /// </summary>
-        private static readonly bool AssumedCaseInsensitive = !RuntimeInformation.IsOSPlatform(OSPlatform.Linux);
-
-        /// <summary>
         /// The answer already found for a directory, so that the probe runs once per location.
         /// </summary>
         /// <remarks>
@@ -159,81 +154,112 @@ namespace Microsoft.Coyote.IO
         /// over it. Where they name two files, folding case would do the opposite and protect an
         /// output that nothing rewrote.
         ///
-        /// So it is asked rather than assumed. On Windows this is a property of the directory rather
-        /// than of the volume -- it can be turned on for one directory and left off for its parent --
-        /// so the flag is read from the directory itself. Everywhere else it is a property of the
-        /// mounted file system, which the enclosing directory answers for just as well, so it is
-        /// probed by looking for that directory under a name whose case has been flipped.
-        ///
-        /// Only when there is nothing to ask -- no such directory, no letters in its name, an
-        /// unsupported or refused query -- does this fall back to what the platform usually does.
+        /// So it is asked rather than assumed. Windows and Linux can keep the answer per directory,
+        /// while macOS exposes it for a pathname. If a native query is unavailable, a uniquely named
+        /// entry is created inside the requested directory and looked up under a different case.
         /// </remarks>
         public bool IsCaseInsensitive(string directory)
         {
-            try
+            // The directory itself need not exist yet -- the output directory is created after
+            // this. Its nearest existing ancestor is where that output will be created and is the
+            // only directory whose behavior can be measured before creation.
+            var info = new DirectoryInfo(Path.GetFullPath(directory));
+            while (info != null && !info.Exists)
             {
-                // The directory itself need not exist yet -- the output directory is created after
-                // this. On Windows a directory inherits the flag from its parent when it is created,
-                // so the nearest existing ancestor answers for one this run is about to create;
-                // elsewhere the ancestor is on the same mounted file system, which is what decides it.
-                var info = new DirectoryInfo(Path.GetFullPath(directory));
-                while (info != null && !info.Exists)
-                {
-                    info = info.Parent;
-                }
-
-                if (info is null)
-                {
-                    return AssumedCaseInsensitive;
-                }
-
-                lock (ProbedDirectories)
-                {
-                    if (ProbedDirectories.TryGetValue(info.FullName, out bool cached))
-                    {
-                        return cached;
-                    }
-
-                    bool isCaseInsensitive = QueryOrProbe(info);
-                    ProbedDirectories.Add(info.FullName, isCaseInsensitive);
-                    return isCaseInsensitive;
-                }
+                info = info.Parent;
             }
-            catch (Exception)
+
+            if (info is null)
             {
-                return AssumedCaseInsensitive;
+                throw new IOException($"No existing ancestor can establish the case behavior of '{directory}'.");
+            }
+
+            lock (ProbedDirectories)
+            {
+                if (ProbedDirectories.TryGetValue(info.FullName, out bool cached))
+                {
+                    return cached;
+                }
+
+                bool isCaseInsensitive = QueryOrProbe(info, QueryNativeCaseBehavior);
+                ProbedDirectories.Add(info.FullName, isCaseInsensitive);
+                return isCaseInsensitive;
             }
         }
 
         /// <summary>
-        /// Returns whether the specified existing directory folds case, by asking Windows for the
-        /// flag it keeps per directory, and otherwise by probing for a name whose case is flipped.
+        /// Runs the in-directory fallback with an injectable native query for deterministic tests.
         /// </summary>
-        private static bool QueryOrProbe(DirectoryInfo info)
+        internal static bool QueryOrProbeForTesting(string directory, Func<string, bool?> nativeQuery) =>
+            QueryOrProbe(new DirectoryInfo(Path.GetFullPath(directory)), nativeQuery);
+
+        /// <summary>
+        /// Returns whether the specified existing directory folds case.
+        /// </summary>
+        private static bool QueryOrProbe(DirectoryInfo info, Func<string, bool?> nativeQuery)
         {
-            bool? queried = TryQueryCaseSensitiveFlag(info.FullName);
+            bool? queried = nativeQuery(info.FullName);
             if (queried.HasValue)
             {
                 return queried.Value;
             }
 
-            // The probe asks whether the *parent* holds this directory under either spelling, which
-            // is a question about the parent's entries. That is the right question wherever case
-            // folding belongs to the mounted file system, and the wrong one on Windows -- which is
-            // why the flag is read there instead, and why this is only ever the fallback.
-            if (info.Parent is null)
+            // A differently-cased lookup that misses proves sensitivity without changing the
+            // directory. A hit can be the same entry on an insensitive file system or a distinct
+            // colliding entry on a sensitive one, so only a miss is conclusive.
+            foreach (string entry in Directory.EnumerateFileSystemEntries(info.FullName))
             {
-                return AssumedCaseInsensitive;
+                string name = Path.GetFileName(entry);
+                string flipped = FlipCase(name);
+                if (!string.Equals(flipped, name, StringComparison.Ordinal) &&
+                    !File.Exists(Path.Combine(info.FullName, flipped)) &&
+                    !Directory.Exists(Path.Combine(info.FullName, flipped)))
+                {
+                    return false;
+                }
             }
 
-            string flipped = FlipCase(info.Name);
-            if (string.Equals(flipped, info.Name, StringComparison.Ordinal))
+            // A GUID makes collision negligible and, unlike probing the directory from its parent,
+            // measures the directory that was requested. The entry is removed on every path.
+            string sentinel = Path.Combine(info.FullName,
+                ".coyote-case-probe-" + Guid.NewGuid().ToString("N"));
+            string recased = Path.Combine(info.FullName, FlipCase(Path.GetFileName(sentinel)));
+            try
             {
-                return AssumedCaseInsensitive;
-            }
+                using (new FileStream(sentinel, FileMode.CreateNew, FileAccess.Write,
+                    FileShare.ReadWrite | FileShare.Delete))
+                {
+                }
 
-            return Directory.Exists(Path.Combine(info.Parent.FullName, flipped));
+                return File.Exists(recased);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                throw new IOException(
+                    $"Unable to establish the case behavior of directory '{info.FullName}'.", ex);
+            }
+            finally
+            {
+                if (File.Exists(sentinel))
+                {
+                    File.Delete(sentinel);
+                }
+            }
         }
+
+        /// <summary>
+        /// Queries the platform-specific case behavior for the requested directory.
+        /// </summary>
+        private static bool? QueryNativeCaseBehavior(string directory) =>
+            TryQueryWindowsCaseSensitiveFlag(directory) ??
+            TryQueryMacCaseSensitiveFlag(directory) ??
+            TryQueryLinuxCasefoldFlag(directory);
+
+        /// <summary>
+        /// Queries only the native platform facility, for capability-gated tests.
+        /// </summary>
+        internal static bool? QueryNativeCaseBehaviorForTesting(string directory) =>
+            QueryNativeCaseBehavior(directory);
 
         /// <summary>
         /// Returns whether the specified directory folds case according to the flag Windows keeps for
@@ -246,7 +272,7 @@ namespace Microsoft.Coyote.IO
         /// the information class rather than answering, which reads here as "no flag to read" and
         /// falls back -- correctly, because a system that cannot express it does not have it set.
         /// </remarks>
-        private static bool? TryQueryCaseSensitiveFlag(string directory)
+        private static bool? TryQueryWindowsCaseSensitiveFlag(string directory)
         {
             if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
@@ -283,6 +309,69 @@ namespace Microsoft.Coyote.IO
         }
 
         /// <summary>
+        /// Returns whether macOS reports that the pathname is case insensitive.
+        /// </summary>
+        private static bool? TryQueryMacCaseSensitiveFlag(string directory)
+        {
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            {
+                return null;
+            }
+
+            try
+            {
+                long result = NativeMethods.PathConf(directory, NativeMethods.PathConfCaseSensitive);
+                return result < 0 ? (bool?)null : result is 0;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Returns whether Linux marks this directory as case-folding.
+        /// </summary>
+        private static bool? TryQueryLinuxCasefoldFlag(string directory)
+        {
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            {
+                return null;
+            }
+
+            int descriptor = -1;
+            try
+            {
+                descriptor = NativeMethods.Open(directory, NativeMethods.OpenReadOnly);
+                if (descriptor < 0)
+                {
+                    return null;
+                }
+
+                int flags = 0;
+                UIntPtr request = new UIntPtr(IntPtr.Size is 8 ?
+                    NativeMethods.GetFlags64 : NativeMethods.GetFlags32);
+                if (NativeMethods.Ioctl(descriptor, request, ref flags) != 0)
+                {
+                    return null;
+                }
+
+                return (flags & NativeMethods.CasefoldDirectory) != 0;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+            finally
+            {
+                if (descriptor >= 0)
+                {
+                    NativeMethods.Close(descriptor);
+                }
+            }
+        }
+
+        /// <summary>
         /// Returns the specified name with the case of every letter in it inverted.
         /// </summary>
         private static string FlipCase(string name)
@@ -303,6 +392,12 @@ namespace Microsoft.Coyote.IO
         /// </summary>
         private static class NativeMethods
         {
+            internal const int PathConfCaseSensitive = 11;
+            internal const int OpenReadOnly = 0;
+            internal const uint GetFlags64 = 0x80086601;
+            internal const uint GetFlags32 = 0x80046601;
+            internal const int CasefoldDirectory = 0x40000000;
+
             /// <summary>
             /// FileCaseSensitiveInformation, the information class carrying the flag.
             /// </summary>
@@ -351,6 +446,18 @@ namespace Microsoft.Coyote.IO
             internal static extern int NtQueryInformationFile(SafeFileHandle fileHandle,
                 out IoStatusBlock ioStatusBlock, ref FileCaseSensitiveInformation fileInformation,
                 uint length, int fileInformationClass);
+
+            [DllImport("libc", EntryPoint = "pathconf", SetLastError = true)]
+            internal static extern long PathConf(string path, int name);
+
+            [DllImport("libc", EntryPoint = "open", SetLastError = true)]
+            internal static extern int Open(string path, int flags);
+
+            [DllImport("libc", EntryPoint = "ioctl", SetLastError = true)]
+            internal static extern int Ioctl(int descriptor, UIntPtr request, ref int flags);
+
+            [DllImport("libc", EntryPoint = "close", SetLastError = true)]
+            internal static extern int Close(int descriptor);
         }
 
         /// <summary>
