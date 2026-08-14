@@ -114,6 +114,95 @@ namespace Microsoft.Coyote.Rewriting
         }
 
         /// <summary>
+        /// Resolves generic parameters in the specified type against the given constructed method
+        /// reference while preserving the shape of the type specification.
+        /// </summary>
+        protected static TypeReference ResolveGenericType(TypeReference type, MethodReference context)
+        {
+            if (type is GenericParameter parameter)
+            {
+                if (parameter.Type is GenericParameterType.Type &&
+                    context.DeclaringType is GenericInstanceType declaringType &&
+                    parameter.Position >= 0 && parameter.Position < declaringType.GenericArguments.Count)
+                {
+                    return declaringType.GenericArguments[parameter.Position];
+                }
+
+                if (parameter.Type is GenericParameterType.Method &&
+                    context is GenericInstanceMethod method &&
+                    parameter.Position >= 0 && parameter.Position < method.GenericArguments.Count)
+                {
+                    return method.GenericArguments[parameter.Position];
+                }
+
+                return type;
+            }
+
+            if (type is GenericInstanceType genericType)
+            {
+                var resolvedType = new GenericInstanceType(
+                    ResolveGenericType(genericType.ElementType, context));
+                foreach (TypeReference argument in genericType.GenericArguments)
+                {
+                    resolvedType.GenericArguments.Add(ResolveGenericType(argument, context));
+                }
+
+                return resolvedType;
+            }
+
+            if (type is ArrayType arrayType)
+            {
+                var resolvedType = new ArrayType(
+                    ResolveGenericType(arrayType.ElementType, context), arrayType.Rank);
+                for (int idx = 0; idx < arrayType.Dimensions.Count; ++idx)
+                {
+                    ArrayDimension dimension = resolvedType.Dimensions[idx];
+                    dimension.LowerBound = arrayType.Dimensions[idx].LowerBound;
+                    dimension.UpperBound = arrayType.Dimensions[idx].UpperBound;
+                    resolvedType.Dimensions[idx] = dimension;
+                }
+
+                return resolvedType;
+            }
+
+            if (type is ByReferenceType byReferenceType)
+            {
+                return new ByReferenceType(ResolveGenericType(byReferenceType.ElementType, context));
+            }
+
+            if (type is PointerType pointerType)
+            {
+                return new PointerType(ResolveGenericType(pointerType.ElementType, context));
+            }
+
+            if (type is RequiredModifierType requiredModifierType)
+            {
+                return new RequiredModifierType(
+                    ResolveGenericType(requiredModifierType.ModifierType, context),
+                    ResolveGenericType(requiredModifierType.ElementType, context));
+            }
+
+            if (type is OptionalModifierType optionalModifierType)
+            {
+                return new OptionalModifierType(
+                    ResolveGenericType(optionalModifierType.ModifierType, context),
+                    ResolveGenericType(optionalModifierType.ElementType, context));
+            }
+
+            if (type is PinnedType pinnedType)
+            {
+                return new PinnedType(ResolveGenericType(pinnedType.ElementType, context));
+            }
+
+            if (type is SentinelType sentinelType)
+            {
+                return new SentinelType(ResolveGenericType(sentinelType.ElementType, context));
+            }
+
+            return type;
+        }
+
+        /// <summary>
         /// Fixes the instruction offsets of the specified method.
         /// </summary>
         internal static void FixInstructionOffsets(MethodDefinition method)

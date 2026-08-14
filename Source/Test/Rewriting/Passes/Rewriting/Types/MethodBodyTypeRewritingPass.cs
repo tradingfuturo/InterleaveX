@@ -297,7 +297,8 @@ namespace Microsoft.Coyote.Rewriting
             }
 
             Instruction prefix = instruction.Previous;
-            TypeReference receiverType = replacementMethod.Parameters[0].ParameterType;
+            TypeReference receiverType = ResolveGenericType(
+                replacementMethod.Parameters[0].ParameterType, replacementMethod);
             if (receiverType is ByReferenceType byReferenceReceiver)
             {
                 if (!string.Equals(byReferenceReceiver.ElementType.FullName,
@@ -319,8 +320,9 @@ namespace Microsoft.Coyote.Rewriting
                 var arguments = new List<VariableDefinition>();
                 for (int idx = originalMethod.Parameters.Count - 1; idx >= 0; --idx)
                 {
-                    var local = new VariableDefinition(
-                        this.Module.ImportReference(originalMethod.Parameters[idx].ParameterType));
+                    TypeReference argumentType = ResolveGenericType(
+                        originalMethod.Parameters[idx].ParameterType, originalMethod);
+                    var local = new VariableDefinition(this.Module.ImportReference(argumentType));
                     this.Method.Body.Variables.Add(local);
                     arguments.Insert(0, local);
                     route.Add(Instruction.Create(OpCodes.Stloc, local));

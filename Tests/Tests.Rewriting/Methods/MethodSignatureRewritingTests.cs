@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
@@ -25,6 +27,13 @@ namespace Microsoft.Coyote.Rewriting.Tests
 
         private static TaskAwaiter GetConstrainedTaskAwaiter<T>(ref T task)
             where T : Task => task.GetAwaiter();
+
+        private static TaskAwaiter<TResult> GetConstrainedGenericTaskAwaiter<TTask, TResult>(ref TTask task)
+            where TTask : Task<TResult> => task.GetAwaiter();
+
+        private static bool TryAddToConstrainedGenericDictionary<TDictionary, TValue, TKey>(
+            ref TDictionary dictionary, TKey key, TValue value)
+            where TDictionary : ConcurrentDictionary<TKey, TValue> => dictionary.TryAdd(key, value);
 
         [Fact(Timeout = 5000)]
         public void TestRewritingTaskAwaiterInMethodSignature()
@@ -96,6 +105,40 @@ namespace Microsoft.Coyote.Rewriting.Tests
             TaskAwaiter awaiter = GetConstrainedTaskAwaiter(ref task);
             Assert.True(awaiter.IsCompleted);
             awaiter.GetResult();
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "GenericConstrainedRewriteRemediation")]
+        public void TestRewritingConstrainedGenericTaskPreservesConstructedType()
+        {
+            Task<int> task = Task.FromResult(7);
+            TaskAwaiter<int> awaiter =
+                GetConstrainedGenericTaskAwaiter<Task<int>, int>(ref task);
+            Assert.True(awaiter.IsCompleted);
+            Assert.Equal(7, awaiter.GetResult());
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "GenericConstrainedRewriteRemediation")]
+        public void TestRewritingConstrainedGenericDictionaryPreservesConstructedTypes()
+        {
+            var dictionary = new ConcurrentDictionary<string, int>();
+            Assert.True(TryAddToConstrainedGenericDictionary<ConcurrentDictionary<string, int>, int, string>(
+                ref dictionary, "key", 7));
+            Assert.Equal(7, dictionary["key"]);
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "GenericConstrainedRewriteRemediation")]
+        public void TestCecilRewritingConstrainedGenericRoutesUseCallerOwnedParameters()
+        {
+            using ModuleDefinition module = ModuleDefinition.ReadModule(this.GetType().Assembly.Location);
+            TypeDefinition type = module.GetType(typeof(MethodSignatureRewritingTests).FullName);
+
+            AssertGeneratedRouteUsesCallerOwnedParameters(type,
+                nameof(GetConstrainedGenericTaskAwaiter), new[] { 1 });
+            AssertGeneratedRouteUsesCallerOwnedParameters(type,
+                nameof(TryAddToConstrainedGenericDictionary), new[] { 2, 1 });
         }
 
         [Fact(Timeout = 5000)]
@@ -177,6 +220,49 @@ namespace Microsoft.Coyote.Rewriting.Tests
             pass.VisitModule(module);
             pass.VisitType(type);
             pass.VisitMethod(method);
+        }
+
+        private static void AssertGeneratedRouteUsesCallerOwnedParameters(
+            TypeDefinition type, string methodName, int[] expectedReceiverArgumentPositions)
+        {
+            MethodDefinition method = type.Methods.Single(candidate => candidate.Name == methodName);
+            IEnumerable<TypeReference> generatedTypes = method.Body.Variables.Select(variable => variable.VariableType)
+                .Concat(method.Body.Instructions
+                    .Where(instruction => instruction.OpCode == OpCodes.Ldobj ||
+                        instruction.OpCode == OpCodes.Box || instruction.OpCode == OpCodes.Castclass)
+                    .Select(instruction => (TypeReference)instruction.Operand));
+
+            foreach (GenericParameter parameter in generatedTypes.SelectMany(GetGenericParameters))
+            {
+                Assert.Same(method, parameter.Owner);
+            }
+
+            var receiverType = (GenericInstanceType)method.Body.Instructions.Single(
+                instruction => instruction.OpCode == OpCodes.Castclass).Operand;
+            Assert.Equal(expectedReceiverArgumentPositions,
+                receiverType.GenericArguments.Cast<GenericParameter>().Select(argument => argument.Position));
+        }
+
+        private static IEnumerable<GenericParameter> GetGenericParameters(TypeReference type)
+        {
+            if (type is GenericParameter parameter)
+            {
+                yield return parameter;
+            }
+            else if (type is GenericInstanceType genericType)
+            {
+                foreach (GenericParameter argument in genericType.GenericArguments.SelectMany(GetGenericParameters))
+                {
+                    yield return argument;
+                }
+            }
+            else if (type is TypeSpecification specification)
+            {
+                foreach (GenericParameter element in GetGenericParameters(specification.ElementType))
+                {
+                    yield return element;
+                }
+            }
         }
     }
 }
