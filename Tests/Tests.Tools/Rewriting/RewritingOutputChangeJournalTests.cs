@@ -145,6 +145,24 @@ namespace Microsoft.Coyote.Tools.Tests
 
         [Fact(Timeout = 5000)]
         [Trait("Category", "RewritingRemediation")]
+        public void TestRestoreRemovesEveryDirectoryCreatedForNestedOutput()
+        {
+            var fileSystem = new InMemoryFileSystem().WithDirectory(Out());
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(
+                fileSystem, Out());
+            string child = Out("new", "child");
+
+            journal.CaptureDirectory(child);
+            fileSystem.CreateDirectory(child);
+            journal.Restore();
+
+            Assert.False(fileSystem.DirectoryExists(child));
+            Assert.False(fileSystem.DirectoryExists(Out("new")));
+            Assert.True(fileSystem.DirectoryExists(Out()));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
         public void TestMultipleJournalsRecoverNewestFirst()
         {
             var fileSystem = new InMemoryFileSystem()

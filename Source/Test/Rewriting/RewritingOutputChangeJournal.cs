@@ -125,19 +125,56 @@ namespace Microsoft.Coyote.Rewriting
         {
             this.EnsureActiveForMutation();
             string normalized = RewritingCacheValidator.NormalizeDirectory(directory);
-            if (!this.FileSystem.DirectoryExists(normalized) && this.CapturedDirectories.Add(normalized))
+            var comparer = new FileSystemPathComparer(this.FileSystem);
+            if (!RewritingOutputMirror.IsWithin(normalized, this.OutputDirectory, comparer))
             {
-                this.CreatedDirectories.Add(normalized);
-                try
+                throw new ArgumentException(
+                    $"The directory '{normalized}' is outside the rewrite output '{this.OutputDirectory}'.",
+                    nameof(directory));
+            }
+
+            var missing = new List<string>();
+            for (string current = normalized;
+                RewritingOutputMirror.IsWithin(current, this.OutputDirectory, comparer) &&
+                !this.FileSystem.DirectoryExists(current);
+                current = Path.GetDirectoryName(current))
+            {
+                missing.Add(current);
+                if (comparer.Equals(current, this.OutputDirectory))
                 {
-                    this.SaveManifest();
+                    break;
                 }
-                catch
+            }
+
+            var added = new List<string>();
+            foreach (string current in Enumerable.Reverse(missing))
+            {
+                if (this.CapturedDirectories.Add(current))
                 {
-                    this.CreatedDirectories.RemoveAt(this.CreatedDirectories.Count - 1);
-                    this.CapturedDirectories.Remove(normalized);
-                    throw;
+                    this.CreatedDirectories.Add(current);
+                    added.Add(current);
                 }
+            }
+
+            if (added.Count is 0)
+            {
+                return;
+            }
+
+            try
+            {
+                this.SaveManifest();
+            }
+            catch
+            {
+                this.CreatedDirectories.RemoveRange(
+                    this.CreatedDirectories.Count - added.Count, added.Count);
+                foreach (string current in added)
+                {
+                    this.CapturedDirectories.Remove(current);
+                }
+
+                throw;
             }
         }
 
