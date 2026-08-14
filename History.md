@@ -15,7 +15,7 @@ concurrency defects across our codebase.
 
 PipFlow Platform® is a registered trademark of TradingFuturo, LLC.
 
-### v1.8.2 (InterleaveX)
+### v1.8.3 (InterleaveX)
 - `Microsoft.Extensions.Hosting.BackgroundService` is now modelled, so a hosted
   service can be started and stopped under the scheduler. Its `StopAsync` waits on
   `WhenAny(executeTask, Delay(Infinite, token))` inside
