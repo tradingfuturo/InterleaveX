@@ -757,8 +757,8 @@ namespace Microsoft.Coyote.Runtime
 
             // TODO: we need to come up with something better!
             // Fuzz the delay.
-            double boundedDelay = Math.Min(
-                delay.TotalMilliseconds, this.Configuration.MaxFuzzingDelay);
+            int configuredMaximum = this.GetMaxFuzzingDelay();
+            double boundedDelay = Math.Min(delay.TotalMilliseconds, configuredMaximum);
             int maxDelay = boundedDelay >= int.MaxValue ? int.MaxValue : (int)boundedDelay;
             return Task.Delay(TimeSpan.FromMilliseconds(
                 this.GetNondeterministicDelay(current, maxDelay)), cancellationToken);
@@ -1534,7 +1534,7 @@ namespace Microsoft.Coyote.Runtime
                 if (current != null || this.TryGetExecutingOperation(out current))
                 {
                     // Choose the next delay to inject. The value is in milliseconds.
-                    int delay = this.GetNondeterministicDelay(current, (int)this.Configuration.MaxFuzzingDelay);
+                    int delay = this.GetNondeterministicDelay(current, this.GetMaxFuzzingDelay());
                     this.LogWriter.LogDebug("[coyote::debug] Delaying operation {0} on thread '{1}' by {2}ms.",
                         current.DebugInfo, Thread.CurrentThread.ManagedThreadId, delay);
 
@@ -1831,9 +1831,15 @@ namespace Microsoft.Coyote.Runtime
                     this.Detach(ExecutionStatus.BoundReached);
                 }
 
-                return next;
+                return next < 0 ? 0 : next > maxDelay ? maxDelay : next;
             }
         }
+
+        /// <summary>
+        /// Returns the configured fuzzing ceiling in the representation used by delay strategies.
+        /// </summary>
+        private int GetMaxFuzzingDelay() => this.Configuration.MaxFuzzingDelay > int.MaxValue ?
+            int.MaxValue : (int)this.Configuration.MaxFuzzingDelay;
 
         /// <summary>
         /// Tries to enable any operations that have their dependencies resolved. It returns

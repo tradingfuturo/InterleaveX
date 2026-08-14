@@ -58,6 +58,21 @@ namespace Microsoft.Coyote.Testing.Fuzzing
         internal abstract bool NextDelay(ControlledOperation current, int maxValue, out int next);
 
         /// <summary>
+        /// Returns a positive quantized delay that never exceeds the inclusive maximum.
+        /// </summary>
+        protected int GetNextQuantizedDelay(int maxValue, int quantum)
+        {
+            if (maxValue <= 0)
+            {
+                return 0;
+            }
+
+            int bucketCount = maxValue / quantum;
+            return bucketCount is 0 ? maxValue :
+                (this.RandomValueGenerator.Next(bucketCount) + 1) * quantum;
+        }
+
+        /// <summary>
         /// Returns the current operation id.
         /// </summary>
         protected Guid GetOperationId()

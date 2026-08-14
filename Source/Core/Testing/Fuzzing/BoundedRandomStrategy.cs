@@ -41,8 +41,8 @@ namespace Microsoft.Coyote.Testing.Fuzzing
 
         /// <inheritdoc/>
         /// <remarks>
-        /// The delay has an injection probability of 0.05 and is in the range of [10, maxValue * 10]
-        /// with an increment of 10 and an upper bound of 5000ms per operation.
+        /// The delay has an injection probability of 0.05, uses a 10ms quantum where the configured
+        /// maximum permits it, and has an upper bound of 5000ms per operation.
         /// </remarks>
         internal override bool NextDelay(ControlledOperation current, int maxValue, out int next)
         {
@@ -52,9 +52,9 @@ namespace Microsoft.Coyote.Testing.Fuzzing
             int maxDelay = this.TotalTaskDelayMap.GetOrAdd(id, 0);
 
             // There is a 0.05 probability for a delay.
-            if (maxDelay < 5000 && this.RandomValueGenerator.NextDouble() < 0.05)
+            if (maxValue > 0 && maxDelay < 5000 && this.RandomValueGenerator.NextDouble() < 0.05)
             {
-                next = (this.RandomValueGenerator.Next(maxValue) * 10) + 10;
+                next = this.GetNextQuantizedDelay(Math.Min(maxValue, 5000 - maxDelay), 10);
             }
             else
             {
