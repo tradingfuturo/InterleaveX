@@ -31,6 +31,17 @@ namespace Microsoft.Coyote.Rewriting.Tests
         {
         }
 
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestGenericConstructorIsRedirectedToFactory()
+        {
+            this.Test(() =>
+            {
+                object collection = new BlockingCollection<int>();
+                Assert.Contains("Wrapper", collection.GetType().FullName, StringComparison.Ordinal);
+            });
+        }
+
         /// <summary>
         /// Members that are deliberately NOT intercepted, each with the reason it is safe.
         /// <para>All of them are reached through interface dispatch, which the type-rewriting pass cannot

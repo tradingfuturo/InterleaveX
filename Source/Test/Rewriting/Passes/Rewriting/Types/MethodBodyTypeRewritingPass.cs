@@ -635,9 +635,12 @@ namespace Microsoft.Coyote.Rewriting
             // in cases where we are replacing an instance method with a static method.
             bool isFactoryReplacement = ignoreName && originalMethod.IsConstructor &&
                 newMethod.IsStatic && newMethod.Name == "Create";
+            bool hasExpectedReturnType = isFactoryReplacement ?
+                HaveEquivalentFactoryTypes(originalMethod.DeclaringType, newMethod.ReturnType) :
+                expectedReturnType.FullName == newMethod.ReturnType.FullName;
             if ((!ignoreName && originalMethod.Name != newMethod.Name) ||
                 (originalMethod.IsConstructor != newMethod.IsConstructor && !isFactoryReplacement) ||
-                expectedReturnType.FullName != newMethod.ReturnType.FullName ||
+                !hasExpectedReturnType ||
                 originalMethod.IsPublic != newMethod.IsPublic ||
                 originalMethod.IsPrivate != newMethod.IsPrivate ||
                 originalMethod.IsAssembly != newMethod.IsAssembly ||
@@ -684,6 +687,50 @@ namespace Microsoft.Coyote.Rewriting
                     (newParameter.Name != originalParameter.Name) ||
                     (newParameter.IsIn && !originalParameter.IsIn) ||
                     (newParameter.IsOut && !originalParameter.IsOut))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Checks whether a constructor factory returns the type that the constructor creates.
+        /// </summary>
+        /// <remarks>
+        /// Cecil resolves a constructor on a generic type to the open declaring definition, while a
+        /// factory declares a constructed return such as <c>BlockingCollection&lt;T&gt;</c>. Their literal
+        /// full names differ even though they describe the same type. Compare the generic definitions and
+        /// require each argument to preserve its position so that a factory returning a closed or permuted
+        /// generic type is still rejected.
+        /// </remarks>
+        private static bool HaveEquivalentFactoryTypes(TypeReference expected, TypeReference actual)
+        {
+            TypeReference expectedDefinition = expected;
+            IList<GenericParameter> expectedParameters = expected.GenericParameters;
+            if (expected is GenericInstanceType expectedInstance)
+            {
+                expectedDefinition = expectedInstance.ElementType;
+            }
+
+            TypeReference actualDefinition = actual;
+            IList<TypeReference> actualArguments = Array.Empty<TypeReference>();
+            if (actual is GenericInstanceType actualInstance)
+            {
+                actualDefinition = actualInstance.ElementType;
+                actualArguments = actualInstance.GenericArguments;
+            }
+
+            if (expectedDefinition.FullName != actualDefinition.FullName ||
+                expectedParameters.Count != actualArguments.Count)
+            {
+                return false;
+            }
+
+            for (int idx = 0; idx < expectedParameters.Count; ++idx)
+            {
+                if (!(actualArguments[idx] is GenericParameter argument) || argument.Position != idx)
                 {
                     return false;
                 }
