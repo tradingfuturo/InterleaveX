@@ -750,8 +750,11 @@ namespace Microsoft.Coyote.Runtime
 
             // TODO: we need to come up with something better!
             // Fuzz the delay.
+            double boundedDelay = Math.Min(
+                delay.TotalMilliseconds, this.Configuration.MaxFuzzingDelay);
+            int maxDelay = boundedDelay >= int.MaxValue ? int.MaxValue : (int)boundedDelay;
             return Task.Delay(TimeSpan.FromMilliseconds(
-                this.GetNondeterministicDelay(current, (int)delay.TotalMilliseconds)), cancellationToken);
+                this.GetNondeterministicDelay(current, maxDelay)), cancellationToken);
         }
 
         /// <summary>
