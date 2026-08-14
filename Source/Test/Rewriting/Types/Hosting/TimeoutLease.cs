@@ -15,31 +15,53 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         private const double MaxSupportedTimeoutMilliseconds = uint.MaxValue - 1d;
 
         private readonly CancellationTokenSource Source;
+        private readonly CancellationTokenSource DelaySource;
         private readonly Task Worker;
         private volatile bool IsActive;
 
-        private TimeoutLease(CancellationTokenSource source, TimeSpan timeout)
+        private TimeoutLease(CancellationTokenSource source, TimeSpan timeout,
+            Func<TimeSpan, CancellationToken, Task> delayAsync)
         {
             Validate(timeout);
             this.Source = source;
             this.IsActive = timeout != Timeout.InfiniteTimeSpan;
+            this.DelaySource = this.IsActive ? new CancellationTokenSource() : null;
             this.Worker = this.IsActive ? ControlledTask.Run(async () =>
             {
-                await ControlledTask.Delay(timeout);
-                if (this.IsActive)
+                try
                 {
-                    this.Source.Cancel();
+                    await delayAsync(timeout, this.DelaySource.Token);
+                    if (this.IsActive)
+                    {
+                        this.Source.Cancel();
+                    }
+                }
+                catch (OperationCanceledException ex) when (
+                    this.DelaySource.IsCancellationRequested && ex.CancellationToken == this.DelaySource.Token)
+                {
                 }
             }) : Task.CompletedTask;
         }
 
         internal static TimeoutLease Start(CancellationTokenSource source, TimeSpan timeout) =>
-            new TimeoutLease(source, timeout);
+            new TimeoutLease(source, timeout, ControlledTask.Delay);
+
+        internal static TimeoutLease Start(CancellationTokenSource source, TimeSpan timeout,
+            Func<TimeSpan, CancellationToken, Task> delayAsync) =>
+            new TimeoutLease(source, timeout, delayAsync);
 
         public async ValueTask DisposeAsync()
         {
             this.IsActive = false;
-            await this.Worker;
+            this.DelaySource?.Cancel();
+            try
+            {
+                await this.Worker;
+            }
+            finally
+            {
+                this.DelaySource?.Dispose();
+            }
         }
 
         private static void Validate(TimeSpan timeout)

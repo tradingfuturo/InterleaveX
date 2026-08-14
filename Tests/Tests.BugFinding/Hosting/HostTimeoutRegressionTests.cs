@@ -5,11 +5,13 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Specifications;
 using Microsoft.Extensions.Hosting;
 using Xunit;
 using Xunit.Abstractions;
 using ControlledExtensions = Microsoft.Coyote.Rewriting.Types.Hosting.HostingAbstractionsHostExtensions;
+using ControlledTimeoutLease = Microsoft.Coyote.Rewriting.Types.Hosting.TimeoutLease;
 
 namespace Microsoft.Coyote.BugFinding.Tests
 {
@@ -64,6 +66,37 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 await Task.Yield();
                 Specification.Assert(host.CancellationCount is 0,
                     "A timeout worker canceled after StopAsync completed.");
+            });
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestSuccessfulLeaseCancelsItsOwnedDelayBeforeJoiningWorker()
+        {
+            this.Test(async () =>
+            {
+                using var hostSource = new CancellationTokenSource();
+                var started = new TaskCompletionSource<CancellationToken>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                var delay = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                CoyoteRuntime.Current.RegisterKnownControlledTask(started.Task);
+                CoyoteRuntime.Current.RegisterKnownControlledTask(delay.Task);
+
+                Task DelayAsync(TimeSpan _, CancellationToken token)
+                {
+                    started.TrySetResult(token);
+                    token.Register(() => delay.TrySetCanceled(token));
+                    return delay.Task;
+                }
+
+                ControlledTimeoutLease lease = ControlledTimeoutLease.Start(
+                    hostSource, TimeSpan.FromMinutes(1), DelayAsync);
+                CancellationToken ownedToken = await started.Task;
+                Specification.Assert(ownedToken.CanBeCanceled,
+                    "The timeout worker did not own a cancelable delay token.");
+
+                await lease.DisposeAsync();
+                Specification.Assert(!hostSource.IsCancellationRequested,
+                    "Successful lease disposal canceled the host timeout source.");
             });
         }
 
