@@ -499,10 +499,85 @@ namespace Microsoft.Coyote.Tools.Tests
                 outputName + RewritingInputSnapshot.DirectoryMarker + "*"));
         }
 
+        [Fact(Timeout = 120000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestSeparateOutputRejectsAssemblyDriftBeforePublication()
+        {
+            using var workspace = Workspace.Create();
+            workspace.Rewrite();
+            Dictionary<string, byte[]> before = CaptureFiles(workspace.OutputDirectory);
+            string ledgerPath = Path.Combine(
+                workspace.OutputDirectory, RewritingOutputLedger.ManifestFileName);
+            byte[] external = File.ReadAllBytes(workspace.InputAssemblyPath);
+            external[external.Length / 2] ^= 0x5a;
+            bool mutated = false;
+            var fileSystem = new CallbackFileSystem(HostFileSystem.Instance, beforeCopyFile:
+                (source, _, __) =>
+                {
+                    if (!mutated && string.Equals(source, ledgerPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.WriteAllBytes(workspace.InputAssemblyPath, external);
+                        mutated = true;
+                    }
+                });
+
+            IOException error = Assert.Throws<IOException>(() => workspace.Rewrite(fileSystem,
+                options => options.IsDataRaceCheckingEnabled = !options.IsDataRaceCheckingEnabled));
+
+            Assert.True(mutated);
+            Assert.Contains("changed after its rewrite snapshot was created", error.Message);
+            Assert.Equal(external, File.ReadAllBytes(workspace.InputAssemblyPath));
+            AssertFileSetEquals(before, CaptureFiles(workspace.OutputDirectory));
+        }
+
+        [Fact(Timeout = 120000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestSeparateOutputRejectsMirroredFileDriftBeforePublication()
+        {
+            using var workspace = Workspace.Create();
+            workspace.Rewrite();
+            Dictionary<string, byte[]> before = CaptureFiles(workspace.OutputDirectory);
+            string ledgerPath = Path.Combine(
+                workspace.OutputDirectory, RewritingOutputLedger.ManifestFileName);
+            string runtimeConfig = Path.ChangeExtension(
+                workspace.InputAssemblyPath, ".runtimeconfig.json");
+            byte[] external = File.ReadAllBytes(runtimeConfig);
+            external[Array.IndexOf(external, (byte)' ')] = (byte)'\t';
+            bool mutated = false;
+            var fileSystem = new CallbackFileSystem(HostFileSystem.Instance, beforeCopyFile:
+                (source, _, __) =>
+                {
+                    if (!mutated && string.Equals(source, ledgerPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.WriteAllBytes(runtimeConfig, external);
+                        mutated = true;
+                    }
+                });
+
+            IOException error = Assert.Throws<IOException>(() => workspace.Rewrite(fileSystem,
+                options => options.IsDataRaceCheckingEnabled = !options.IsDataRaceCheckingEnabled));
+
+            Assert.True(mutated);
+            Assert.Contains("changed after its rewrite snapshot was created", error.Message);
+            Assert.Equal(external, File.ReadAllBytes(runtimeConfig));
+            AssertFileSetEquals(before, CaptureFiles(workspace.OutputDirectory));
+        }
+
         private static Dictionary<string, byte[]> CaptureFiles(string directory) =>
             Directory.GetFiles(directory, "*", SearchOption.AllDirectories)
                 .ToDictionary(path => Path.GetRelativePath(directory, path).Replace('\\', '/'),
                     File.ReadAllBytes, StringComparer.OrdinalIgnoreCase);
+
+        private static void AssertFileSetEquals(
+            IReadOnlyDictionary<string, byte[]> expected,
+            IReadOnlyDictionary<string, byte[]> actual)
+        {
+            Assert.Equal(expected.Keys.OrderBy(path => path), actual.Keys.OrderBy(path => path));
+            foreach (string path in expected.Keys)
+            {
+                Assert.Equal(expected[path], actual[path]);
+            }
+        }
 
         [Fact(Timeout = 60000)]
         public void TestCaseSensitivityProbeMatchesTheFileSystem()

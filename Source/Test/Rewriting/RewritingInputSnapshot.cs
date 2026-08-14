@@ -20,15 +20,20 @@ namespace Microsoft.Coyote.Rewriting
         internal const string DirectoryMarker = ".rewrite-snapshot-";
 
         private readonly IFileSystem FileSystem;
+        private readonly RewritingOutputMirror Mirror;
         private readonly FileSystemPathComparer PathComparer;
+        private IReadOnlyDictionary<string, MirroredFile> BaselineFiles;
+        private IReadOnlyCollection<string> ExcludedDirectories;
+        private IReadOnlyCollection<string> ExcludedFiles;
         private bool IsDisposed;
 
         private RewritingInputSnapshot(IFileSystem fileSystem, string sourceDirectory,
-            string snapshotDirectory)
+            string snapshotDirectory, LogWriter logWriter)
         {
             this.FileSystem = fileSystem;
             this.SourceDirectory = RewritingCacheValidator.NormalizeDirectory(sourceDirectory);
             this.SnapshotDirectory = RewritingCacheValidator.NormalizeDirectory(snapshotDirectory);
+            this.Mirror = new RewritingOutputMirror(fileSystem, logWriter);
             this.PathComparer = new FileSystemPathComparer(fileSystem);
         }
 
@@ -42,8 +47,9 @@ namespace Microsoft.Coyote.Rewriting
         {
             string normalizedOutput = RewritingCacheValidator.NormalizeDirectory(outputDirectory);
             string snapshotDirectory = normalizedOutput + DirectoryMarker + Guid.NewGuid().ToString("N");
-            var snapshot = new RewritingInputSnapshot(fileSystem, sourceDirectory, snapshotDirectory);
-            var mirror = new RewritingOutputMirror(fileSystem, logWriter);
+            var snapshot = new RewritingInputSnapshot(
+                fileSystem, sourceDirectory, snapshotDirectory, logWriter);
+            var mirror = snapshot.Mirror;
             var pathComparer = new FileSystemPathComparer(fileSystem);
             var excluded = new HashSet<string>(excludedDirectories ?? Enumerable.Empty<string>(),
                 pathComparer) { snapshotDirectory };
@@ -85,6 +91,9 @@ namespace Microsoft.Coyote.Rewriting
                             excludedFiles: excludedFiles);
                         if (mirror.DescribeSameFiles(sourceDirectory, snapshotDirectory, before, after))
                         {
+                            snapshot.BaselineFiles = after;
+                            snapshot.ExcludedDirectories = excluded.ToArray();
+                            snapshot.ExcludedFiles = (excludedFiles ?? Enumerable.Empty<string>()).ToArray();
                             return snapshot;
                         }
 
@@ -114,6 +123,22 @@ namespace Microsoft.Coyote.Rewriting
         internal string ToLogicalPath(string readPath) =>
             this.Translate(readPath, this.SnapshotDirectory, this.SourceDirectory,
                 allowFileSystemComparison: false);
+
+        /// <summary>
+        /// Verifies that the source tree still has exactly the names and bytes captured by this snapshot.
+        /// </summary>
+        internal void VerifyUnchanged()
+        {
+            var current = this.Mirror.GetMirroredFiles(
+                this.SourceDirectory, this.SnapshotDirectory, includeFingerprints: false,
+                excludedDirectories: this.ExcludedDirectories, excludedFiles: this.ExcludedFiles);
+            if (!this.Mirror.DescribeSameFiles(
+                this.SourceDirectory, this.SnapshotDirectory, this.BaselineFiles, current))
+            {
+                throw new IOException(
+                    $"The source directory '{this.SourceDirectory}' changed after its rewrite snapshot was created.");
+            }
+        }
 
         private string Translate(string path, string fromDirectory, string toDirectory,
             bool allowFileSystemComparison)

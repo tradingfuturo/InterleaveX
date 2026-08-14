@@ -269,6 +269,11 @@ namespace Microsoft.Coyote.Rewriting
 
                     this.OutputJournal.Capture(Path.Combine(
                         this.Options.OutputDirectory, RewritingOutputLedger.ManifestFileName));
+                    if (!this.Options.IsReplacingAssemblies())
+                    {
+                        snapshot.VerifyUnchanged();
+                    }
+
                     this.OutputLedger?.Commit(this.MirroredOutputFiles.Keys, this.ProducedOutputFiles,
                         this.AttemptedMirroredFiles, this.OutputJournal.Capture);
                     this.OutputJournal.Complete();
@@ -303,9 +308,19 @@ namespace Microsoft.Coyote.Rewriting
                 // rewritten directory would report assemblies as up to date that were never reached.
                 this.OutputJournal.Capture(Path.Combine(
                     this.Options.OutputDirectory, RewritingCache.ManifestFileName));
+                if (!this.Options.IsReplacingAssemblies())
+                {
+                    snapshot.VerifyUnchanged();
+                }
+
                 cache.Save();
                 this.OutputJournal.Capture(Path.Combine(
                     this.Options.OutputDirectory, RewritingOutputLedger.ManifestFileName));
+                if (!this.Options.IsReplacingAssemblies())
+                {
+                    snapshot.VerifyUnchanged();
+                }
+
                 this.OutputLedger?.Commit(this.MirroredOutputFiles.Keys, this.ProducedOutputFiles,
                     this.AttemptedMirroredFiles, this.OutputJournal.Capture);
                 this.OutputJournal.Complete();
