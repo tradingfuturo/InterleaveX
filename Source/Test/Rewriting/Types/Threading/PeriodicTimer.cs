@@ -95,7 +95,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 #pragma warning disable SA1300 // Element should begin with upper-case letter
 #pragma warning disable IDE1006 // Naming Styles
         public static TimeSpan get_Period(SystemPeriodicTimer instance) =>
-            Timers.TryGetValue(instance, out State state) ? state.Period : instance.Period;
+            Timers.TryGetValue(instance, out State state) ? state.GetPeriod() : instance.Period;
 
         /// <summary>
         /// Sets the period between ticks.
@@ -108,12 +108,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (Timers.TryGetValue(instance, out State state))
             {
                 ValidatePeriod(value);
-                state.Period = value;
-                if (state.IsDisposed)
-                {
-                    throw new ObjectDisposedException(nameof(SystemPeriodicTimer));
-                }
-
+                state.SetPeriod(value);
                 return;
             }
 
@@ -169,8 +164,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             private ManualResetValueTaskSourceCore<bool> Source;
             private System.Threading.CancellationTokenRegistration CancellationRegistration;
             private System.Threading.Tasks.TaskCompletionSource<bool> Completion;
+            private System.Threading.CancellationTokenSource CadenceCancellation;
+            private System.Threading.Tasks.TaskCompletionSource<bool> CadenceSignal;
             private bool IsActive;
+            private bool IsCadenceStarted;
             private bool IsCompleted;
+            private long PeriodRevision;
 
             internal State(TimeSpan period)
             {
@@ -178,9 +177,40 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 this.Source.RunContinuationsAsynchronously = true;
             }
 
-            internal TimeSpan Period { get; set; }
+            private TimeSpan Period { get; set; }
 
-            internal bool IsDisposed { get; set; }
+            private bool IsDisposed { get; set; }
+
+            internal TimeSpan GetPeriod()
+            {
+                lock (this.SyncObject)
+                {
+                    return this.Period;
+                }
+            }
+
+            internal void SetPeriod(TimeSpan value)
+            {
+                System.Threading.CancellationTokenSource cadenceCancellation;
+                System.Threading.Tasks.TaskCompletionSource<bool> cadenceSignal;
+                bool isDisposed;
+                lock (this.SyncObject)
+                {
+                    this.Period = value;
+                    this.PeriodRevision++;
+                    isDisposed = this.IsDisposed;
+                    cadenceCancellation = this.CadenceCancellation;
+                    cadenceSignal = this.CadenceSignal;
+                    this.CadenceCancellation = null;
+                    this.CadenceSignal = null;
+                }
+
+                WakeCadence(cadenceCancellation, cadenceSignal);
+                if (isDisposed)
+                {
+                    throw new ObjectDisposedException(nameof(SystemPeriodicTimer));
+                }
+            }
 
             internal SystemTasks.ValueTask<bool> BeginWait(
                 SystemCancellationToken cancellationToken, out short version)
@@ -210,6 +240,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
                     CoyoteRuntime.Current.RegisterKnownControlledTask(this.Completion.Task);
                     this.IsActive = true;
+                    this.IsCadenceStarted = false;
                     this.IsCompleted = false;
                     version = this.Source.Version;
                 }
@@ -262,9 +293,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             internal void Dispose()
             {
                 System.Threading.Tasks.TaskCompletionSource<bool> completion = null;
+                System.Threading.CancellationTokenSource cadenceCancellation;
+                System.Threading.Tasks.TaskCompletionSource<bool> cadenceSignal;
                 lock (this.SyncObject)
                 {
                     this.IsDisposed = true;
+                    cadenceCancellation = this.CadenceCancellation;
+                    cadenceSignal = this.CadenceSignal;
+                    this.CadenceCancellation = null;
+                    this.CadenceSignal = null;
                     if (this.IsActive && !this.IsCompleted)
                     {
                         this.IsCompleted = true;
@@ -277,11 +314,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     completion.TrySetResult(false);
                     this.Source.SetResult(false);
                 }
+
+                WakeCadence(cadenceCancellation, cadenceSignal);
             }
 
             private void Cancel(short version, SystemCancellationToken token)
             {
                 System.Threading.Tasks.TaskCompletionSource<bool> completion = null;
+                System.Threading.CancellationTokenSource cadenceCancellation = null;
+                System.Threading.Tasks.TaskCompletionSource<bool> cadenceSignal = null;
                 lock (this.SyncObject)
                 {
                     if (this.IsActive && version == this.Source.Version &&
@@ -289,6 +330,10 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     {
                         this.IsCompleted = true;
                         completion = this.Completion;
+                        cadenceCancellation = this.CadenceCancellation;
+                        cadenceSignal = this.CadenceSignal;
+                        this.CadenceCancellation = null;
+                        this.CadenceSignal = null;
                     }
                 }
 
@@ -297,6 +342,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     completion.TrySetCanceled(token);
                     this.Source.SetException(new OperationCanceledException(token));
                 }
+
+                WakeCadence(cadenceCancellation, cadenceSignal);
             }
 
             bool IValueTaskSource<bool>.GetResult(short token)
@@ -346,20 +393,119 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             void IValueTaskSource<bool>.OnCompleted(Action<object> continuation, object state,
                 short token, ValueTaskSourceOnCompletedFlags flags)
             {
-                bool scheduleTick;
+                bool startCadence;
                 lock (this.SyncObject)
                 {
                     this.Source.OnCompleted(continuation, state, token, flags);
-                    scheduleTick = this.Period != SystemTimeout.InfiniteTimeSpan;
+                    startCadence = this.IsActive && token == this.Source.Version &&
+                        !this.IsCompleted && !this.IsCadenceStarted;
+                    this.IsCadenceStarted |= startCadence;
                 }
 
-                // Publish the scheduler-owned tick only once a consumer has actually suspended on
-                // this wait. This leaves a deterministic window for overlap, cancellation and disposal
-                // before the tick, just as the real timer does.
-                if (scheduleTick)
+                if (startCadence)
                 {
-                    _ = ControlledTask.Run(() => this.Signal(token, true));
+                    _ = ControlledTask.Run(() => this.RunCadence(token));
                 }
+            }
+
+            private void RunCadence(short version)
+            {
+                while (true)
+                {
+                    TimeSpan period;
+                    long revision;
+                    System.Threading.CancellationTokenSource delaySource = null;
+                    SystemCancellationToken delayToken = default;
+                    System.Threading.Tasks.TaskCompletionSource<bool> signal = null;
+                    lock (this.SyncObject)
+                    {
+                        if (!this.IsActive || version != this.Source.Version ||
+                            this.IsCompleted || this.IsDisposed)
+                        {
+                            return;
+                        }
+
+                        period = this.Period;
+                        revision = this.PeriodRevision;
+                        if (period == SystemTimeout.InfiniteTimeSpan)
+                        {
+                            signal = new System.Threading.Tasks.TaskCompletionSource<bool>(
+                                System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+                            CoyoteRuntime.Current.RegisterKnownControlledTask(signal.Task);
+                            this.CadenceSignal = signal;
+                        }
+                        else
+                        {
+                            delaySource = new System.Threading.CancellationTokenSource();
+                            delayToken = delaySource.Token;
+                            this.CadenceCancellation = delaySource;
+                        }
+                    }
+
+                    bool delayElapsed = false;
+                    if (signal != null)
+                    {
+                        ControlledTask.Wait(signal.Task);
+                        signal.Task.GetAwaiter().GetResult();
+                    }
+                    else
+                    {
+                        try
+                        {
+                            SystemTasks.Task delay = ControlledTask.Delay(period, delayToken);
+                            ControlledTask.Wait(delay);
+                            delay.GetAwaiter().GetResult();
+                            delayElapsed = true;
+                        }
+                        catch (OperationCanceledException ex) when (
+                            delayToken.IsCancellationRequested && ex.CancellationToken == delayToken)
+                        {
+                        }
+                    }
+
+                    bool disposeDelay = false;
+                    bool publishTick;
+                    lock (this.SyncObject)
+                    {
+                        if (delaySource != null && ReferenceEquals(this.CadenceCancellation, delaySource))
+                        {
+                            this.CadenceCancellation = null;
+                            disposeDelay = true;
+                        }
+
+                        if (signal != null && ReferenceEquals(this.CadenceSignal, signal))
+                        {
+                            this.CadenceSignal = null;
+                        }
+
+                        publishTick = delayElapsed && this.IsActive && version == this.Source.Version &&
+                            !this.IsCompleted && !this.IsDisposed && revision == this.PeriodRevision;
+                    }
+
+                    if (disposeDelay)
+                    {
+                        delaySource.Dispose();
+                    }
+
+                    if (publishTick)
+                    {
+                        this.Signal(version, true);
+                        return;
+                    }
+                }
+            }
+
+            private static void WakeCadence(
+                System.Threading.CancellationTokenSource cancellation,
+                System.Threading.Tasks.TaskCompletionSource<bool> signal)
+            {
+                if (cancellation != null)
+                {
+                    cancellation.Cancel();
+                    cancellation.Dispose();
+                }
+
+                signal?.TrySetResult(true);
             }
         }
     }
