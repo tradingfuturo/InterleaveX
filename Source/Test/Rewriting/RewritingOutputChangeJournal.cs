@@ -21,6 +21,14 @@ namespace Microsoft.Coyote.Rewriting
 
         private const string JournalFileName = "journal.json";
 
+        private const string ActiveState = "active";
+
+        private const string RestoringState = "restoring";
+
+        private const string RestoredState = "restored";
+
+        private const string CleanupState = "cleanup";
+
         internal sealed class Change
         {
             public string TargetPath { get; set; }
@@ -73,7 +81,7 @@ namespace Microsoft.Coyote.Rewriting
             this.CreatedDirectories = new List<string>();
             this.CapturedDirectories = new HashSet<string>(this.CapturedPaths.Comparer);
             this.CreatedUtcTicks = DateTime.UtcNow.Ticks;
-            this.State = "active";
+            this.State = ActiveState;
             this.FileSystem.CreateDirectory(this.BackupDirectory);
             this.SaveManifest();
         }
@@ -180,19 +188,19 @@ namespace Microsoft.Coyote.Rewriting
 
         private void EnsureActiveForMutation()
         {
-            if (this.State is "active")
+            if (this.State is ActiveState)
             {
                 return;
             }
 
-            if (this.State is not "restored")
+            if (this.State is not RestoredState)
             {
                 throw new InvalidOperationException(
                     $"Cannot capture output changes while the rewrite journal is '{this.State}'.");
             }
 
             string previousState = this.State;
-            this.State = "active";
+            this.State = ActiveState;
             try
             {
                 this.SaveManifest();
@@ -206,7 +214,7 @@ namespace Microsoft.Coyote.Rewriting
 
         internal void Restore()
         {
-            this.State = "restoring";
+            this.State = RestoringState;
             this.SaveManifest();
             Exception failure = null;
             foreach (Change change in Enumerable.Reverse(this.Changes))
@@ -260,15 +268,42 @@ namespace Microsoft.Coyote.Rewriting
                 throw new IOException("Unable to restore one or more mirrored output files.", failure);
             }
 
-            this.State = "restored";
+            this.State = RestoredState;
             this.SaveManifest();
         }
 
         internal void Complete()
         {
+            if (!this.FileSystem.DirectoryExists(this.BackupDirectory))
+            {
+                return;
+            }
+
+            if (this.State is not CleanupState)
+            {
+                string previousState = this.State;
+                this.State = CleanupState;
+                try
+                {
+                    this.SaveManifest();
+                }
+                catch
+                {
+                    this.State = previousState;
+                    throw;
+                }
+            }
+
+            string manifestPath = Path.Combine(this.BackupDirectory, JournalFileName);
+            this.DeleteDirectoryContents(this.BackupDirectory, manifestPath);
+            if (this.FileSystem.FileExists(manifestPath))
+            {
+                this.FileSystem.DeleteFile(manifestPath);
+            }
+
             if (this.FileSystem.DirectoryExists(this.BackupDirectory))
             {
-                this.FileSystem.DeleteDirectory(this.BackupDirectory, true);
+                this.FileSystem.DeleteDirectory(this.BackupDirectory, false);
             }
         }
 
@@ -290,6 +325,13 @@ namespace Microsoft.Coyote.Rewriting
                 string manifestPath = Path.Combine(directory, JournalFileName);
                 if (!fileSystem.FileExists(manifestPath))
                 {
+                    if (fileSystem.GetFiles(directory, "*").Length is 0 &&
+                        fileSystem.GetDirectories(directory, "*", false).Length is 0)
+                    {
+                        fileSystem.DeleteDirectory(directory, false);
+                        continue;
+                    }
+
                     throw new IOException(
                         $"The legacy rewrite recovery journal '{directory}' cannot be recovered automatically.");
                 }
@@ -325,7 +367,7 @@ namespace Microsoft.Coyote.Rewriting
                 .OrderByDescending(item => item.CreatedUtcTicks)
                 .ThenByDescending(item => item.BackupDirectory, StringComparer.Ordinal))
             {
-                if (journal.State != "restored")
+                if (journal.State is ActiveState or RestoringState)
                 {
                     journal.Restore();
                 }
@@ -339,8 +381,9 @@ namespace Microsoft.Coyote.Rewriting
         {
             var comparer = new FileSystemPathComparer(fileSystem);
             if (manifest.CreatedUtcTicks <= 0 ||
-                (manifest.State != "active" && manifest.State != "restoring" &&
-                 manifest.State != "restored") || manifest.Changes is null ||
+                (manifest.State != ActiveState && manifest.State != RestoringState &&
+                 manifest.State != RestoredState && manifest.State != CleanupState) ||
+                manifest.Changes is null ||
                 manifest.CreatedDirectories is null)
             {
                 throw new IOException($"The rewrite recovery journal '{backupDirectory}' is incomplete.");
@@ -384,7 +427,7 @@ namespace Microsoft.Coyote.Rewriting
             this.Changes = manifest.Changes ?? new List<Change>();
             this.CreatedDirectories = manifest.CreatedDirectories ?? new List<string>();
             this.CreatedUtcTicks = manifest.CreatedUtcTicks;
-            this.State = manifest.State ?? "active";
+            this.State = manifest.State ?? ActiveState;
             var comparer = fileSystem.IsCaseInsensitive(outputDirectory) ?
                 StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
             this.CapturedPaths = new HashSet<string>(this.Changes.Select(change => change.TargetPath), comparer);
@@ -412,6 +455,27 @@ namespace Microsoft.Coyote.Rewriting
             else
             {
                 this.FileSystem.MoveFile(temporaryPath, manifestPath);
+            }
+        }
+
+        private void DeleteDirectoryContents(string directory, string retainedManifestPath)
+        {
+            var comparer = new FileSystemPathComparer(this.FileSystem);
+            foreach (string file in this.FileSystem.GetFiles(directory, "*"))
+            {
+                if (!comparer.Equals(file, retainedManifestPath))
+                {
+                    this.FileSystem.DeleteFile(file);
+                }
+            }
+
+            foreach (string child in this.FileSystem.GetDirectories(directory, "*", false))
+            {
+                this.DeleteDirectoryContents(child, retainedManifestPath);
+                if (this.FileSystem.DirectoryExists(child))
+                {
+                    this.FileSystem.DeleteDirectory(child, false);
+                }
             }
         }
     }

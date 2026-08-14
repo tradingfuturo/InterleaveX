@@ -4,8 +4,10 @@
 // Public License v3.0 or later. See LICENSE-GPL for the full text.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Microsoft.Coyote.IO;
 using Microsoft.Coyote.Tests.Common.IO;
 using Xunit;
 using Xunit.Abstractions;
@@ -193,6 +195,132 @@ namespace Microsoft.Coyote.Tools.Tests
 
             Assert.Contains("cannot be recovered", error.Message);
             Assert.True(fileSystem.DirectoryExists(legacy));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestCompletedJournalCleanupResumesWithoutRollingBackCommittedOutput()
+        {
+            var inner = new InMemoryFileSystem()
+                .WithFile(Out("existing.txt"), "before")
+                .WithDirectory(Out());
+            var fileSystem = new InterruptingCleanupFileSystem(inner);
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(
+                fileSystem, Out());
+            journal.Capture(Out("existing.txt"));
+            inner.WriteAllText(Out("existing.txt"), "committed");
+            fileSystem.InterruptJournal(journal.BackupDirectory);
+
+            Assert.Throws<IOException>(() => journal.Complete());
+
+            Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out());
+
+            Assert.Equal("committed", inner.GetContents(Out("existing.txt")));
+            Assert.Empty(Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
+                fileSystem, Out()));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestEmptyManifestlessJournalIsDiscardedAfterInterruptedCleanup()
+        {
+            var fileSystem = new InMemoryFileSystem().WithDirectory(Out());
+            string remnant = Out() + ".mirror-backup-empty";
+            fileSystem.WithDirectory(remnant);
+
+            Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out());
+
+            Assert.False(fileSystem.DirectoryExists(remnant));
+            Assert.Empty(Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
+                fileSystem, Out()));
+        }
+
+        private sealed class InterruptingCleanupFileSystem : IFileSystem
+        {
+            private readonly IFileSystem Inner;
+
+            private string JournalDirectory;
+
+            private bool IsInterruptionArmed;
+
+            internal InterruptingCleanupFileSystem(IFileSystem inner) => this.Inner = inner;
+
+            internal void InterruptJournal(string journalDirectory)
+            {
+                this.JournalDirectory = Path.GetFullPath(journalDirectory);
+                this.IsInterruptionArmed = true;
+            }
+
+            public bool FileExists(string path) => this.Inner.FileExists(path);
+
+            public bool DirectoryExists(string path) => this.Inner.DirectoryExists(path);
+
+            public IFileEntry GetFile(string path) => this.Inner.GetFile(path);
+
+            public string ReadAllText(string path) => this.Inner.ReadAllText(path);
+
+            public void WriteAllText(string path, string contents) => this.Inner.WriteAllText(path, contents);
+
+            public Stream OpenRead(string path, FileReadSharing sharing) => this.Inner.OpenRead(path, sharing);
+
+            public void CopyFile(string sourcePath, string targetPath, bool overwrite) =>
+                this.Inner.CopyFile(sourcePath, targetPath, overwrite);
+
+            public void MoveFile(string sourcePath, string targetPath) =>
+                this.Inner.MoveFile(sourcePath, targetPath);
+
+            public void ReplaceFile(string sourcePath, string targetPath, string backupPath) =>
+                this.Inner.ReplaceFile(sourcePath, targetPath, backupPath);
+
+            public void DeleteFile(string path)
+            {
+                this.Inner.DeleteFile(path);
+                if (this.ShouldInterrupt(path))
+                {
+                    this.ThrowInterruption();
+                }
+            }
+
+            public void CreateDirectory(string path) => this.Inner.CreateDirectory(path);
+
+            public void DeleteDirectory(string path, bool recursive)
+            {
+                if (recursive && this.IsInterruptionArmed && this.IsJournalRoot(path))
+                {
+                    string backup = this.Inner.GetFiles(path, "*")
+                        .First(file => !string.Equals(Path.GetFileName(file), "journal.json",
+                            StringComparison.Ordinal));
+                    this.Inner.DeleteFile(backup);
+                    this.ThrowInterruption();
+                }
+
+                this.Inner.DeleteDirectory(path, recursive);
+            }
+
+            public string[] GetFiles(string directory, string searchPattern) =>
+                this.Inner.GetFiles(directory, searchPattern);
+
+            public IReadOnlyList<IFileEntry> GetFileEntries(string directory, string searchPattern) =>
+                this.Inner.GetFileEntries(directory, searchPattern);
+
+            public string[] GetDirectories(string directory, string searchPattern, bool recursive) =>
+                this.Inner.GetDirectories(directory, searchPattern, recursive);
+
+            public bool IsCaseInsensitive(string directory) => this.Inner.IsCaseInsensitive(directory);
+
+            private bool ShouldInterrupt(string path) => this.IsInterruptionArmed &&
+                Path.GetFullPath(path).StartsWith(this.JournalDirectory + Path.DirectorySeparatorChar,
+                    StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(Path.GetFileName(path), "journal.json", StringComparison.Ordinal);
+
+            private bool IsJournalRoot(string path) => string.Equals(
+                Path.GetFullPath(path), this.JournalDirectory, StringComparison.OrdinalIgnoreCase);
+
+            private void ThrowInterruption()
+            {
+                this.IsInterruptionArmed = false;
+                throw new IOException("Simulated cleanup interruption.");
+            }
         }
     }
 }
