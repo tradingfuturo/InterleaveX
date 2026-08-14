@@ -125,6 +125,8 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         private readonly Func<string, string> GetEnvironmentVariable;
 
+        private readonly Action<IReadOnlyList<AssemblyInfo>> OnAssembliesLoaded;
+
         /// <summary>
         /// The .NET installation selected once for this run and shared by cache admission and resolution.
         /// </summary>
@@ -167,7 +169,8 @@ namespace Microsoft.Coyote.Rewriting
         /// Initializes a new instance of the <see cref="RewritingEngine"/> class.
         /// </summary>
         internal RewritingEngine(RewritingOptions options, Configuration configuration, LogWriter logWriter,
-            Profiler profiler, IFileSystem fileSystem, Func<string, string> getEnvironmentVariable)
+            Profiler profiler, IFileSystem fileSystem, Func<string, string> getEnvironmentVariable,
+            Action<IReadOnlyList<AssemblyInfo>> onAssembliesLoaded = null)
         {
             this.Options = options.Sanitize();
             this.Configuration = configuration;
@@ -178,6 +181,7 @@ namespace Microsoft.Coyote.Rewriting
             this.Profiler = profiler;
             this.FileSystem = fileSystem;
             this.GetEnvironmentVariable = getEnvironmentVariable;
+            this.OnAssembliesLoaded = onAssembliesLoaded;
             this.EffectiveDotnetRoot = AssemblyInfo.GetDotnetRoot(fileSystem, getEnvironmentVariable);
             this.Mirror = new RewritingOutputMirror(fileSystem, logWriter);
         }
@@ -197,10 +201,11 @@ namespace Microsoft.Coyote.Rewriting
         /// no file name for the cache to record. What this reaches is everything around that.
         /// </remarks>
         internal static void Run(RewritingOptions options, Configuration configuration, LogWriter logWriter,
-            Profiler profiler, IFileSystem fileSystem, Func<string, string> getEnvironmentVariable)
+            Profiler profiler, IFileSystem fileSystem, Func<string, string> getEnvironmentVariable,
+            Action<IReadOnlyList<AssemblyInfo>> onAssembliesLoaded = null)
         {
             var engine = new RewritingEngine(options, configuration, logWriter, profiler,
-                fileSystem, getEnvironmentVariable);
+                fileSystem, getEnvironmentVariable, onAssembliesLoaded);
             engine.Run();
         }
 
@@ -288,16 +293,7 @@ namespace Microsoft.Coyote.Rewriting
                 var assemblies = AssemblyInfo.LoadAssembliesToRewrite(this.Options,
                     this.OnResolveAssemblyFailure, this.FileSystem, this.GetEnvironmentVariable,
                     this.EffectiveDotnetRoot, snapshot.ToReadPath, snapshot.ToLogicalPath).ToList();
-                cache.RegisterRewriteInputs(assemblies);
-                cache.RecordFrameworkInventories(assemblies.SelectMany(assembly =>
-                    assembly.FrameworkInventorySnapshots));
-                this.InitializePasses(assemblies);
-                foreach (var assembly in assemblies)
-                {
-                    string outputPath = Path.Combine(outputDirectory, assembly.Name);
-                    this.RewriteAssembly(assembly, outputPath, cache);
-                    this.TrackAssemblyProducts(outputPath);
-                }
+                this.RewriteAssemblyBatch(assemblies, outputDirectory, cache);
 
                 // After the passes, because the fallback resolution that fills this runs throughout
                 // them and not only while the assemblies are being loaded.
@@ -416,6 +412,65 @@ namespace Microsoft.Coyote.Rewriting
                 // Parsing the contents of an assembly must happen before and after any other pass.
                 this.Passes.AddFirst(new AssemblyDiffingPass(assemblies, this.LogWriter));
                 this.Passes.AddLast(new AssemblyDiffingPass(assemblies, this.LogWriter));
+            }
+        }
+
+        /// <summary>
+        /// Owns the complete loaded assembly batch through every operation that can fail before
+        /// publication.
+        /// </summary>
+        private void RewriteAssemblyBatch(
+            IReadOnlyList<AssemblyInfo> assemblies, string outputDirectory, RewritingCache cache)
+        {
+            Exception primaryFailure = null;
+            try
+            {
+                this.OnAssembliesLoaded?.Invoke(assemblies);
+                cache.RegisterRewriteInputs(assemblies);
+                cache.RecordFrameworkInventories(assemblies.SelectMany(assembly =>
+                    assembly.FrameworkInventorySnapshots));
+                this.InitializePasses(assemblies);
+                foreach (var assembly in assemblies)
+                {
+                    string outputPath = Path.Combine(outputDirectory, assembly.Name);
+                    this.RewriteAssembly(assembly, outputPath, cache);
+                    this.TrackAssemblyProducts(outputPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                primaryFailure = ex;
+            }
+
+            Exception disposalFailure = null;
+            foreach (AssemblyInfo assembly in assemblies)
+            {
+                try
+                {
+                    assembly.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    disposalFailure = disposalFailure is null ? ex :
+                        new AggregateException(disposalFailure, ex);
+                }
+            }
+
+            if (primaryFailure != null)
+            {
+                if (disposalFailure != null)
+                {
+                    throw new IOException(
+                        "Rewriting failed and the loaded assembly batch could not be fully disposed.",
+                        new AggregateException(primaryFailure, disposalFailure));
+                }
+
+                ExceptionDispatchInfo.Capture(primaryFailure).Throw();
+            }
+
+            if (disposalFailure != null)
+            {
+                throw new IOException("The loaded assembly batch could not be fully disposed.", disposalFailure);
             }
         }
 

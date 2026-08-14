@@ -472,6 +472,33 @@ namespace Microsoft.Coyote.Tools.Tests
             Assert.True(File.Exists(workspace.OutputDirectory + RewritingOutputLock.FileSuffix));
         }
 
+        [Fact(Timeout = 60000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestLoadedAssemblyBatchIsDisposedWhenPostLoadPhaseFails()
+        {
+            using var workspace = Workspace.Create();
+            IReadOnlyList<AssemblyInfo> loaded = null;
+            var injected = new IOException("injected post-load failure");
+
+            IOException error = Assert.Throws<IOException>(() => workspace.Rewrite(
+                HostFileSystem.Instance, onAssembliesLoaded: assemblies =>
+                {
+                    loaded = assemblies;
+                    throw injected;
+                }));
+
+            Assert.Same(injected, error);
+            Assert.NotNull(loaded);
+            Assert.NotEmpty(loaded);
+            Assert.All(loaded, assembly => Assert.True(assembly.IsDisposedForTesting));
+            Assert.False(Directory.Exists(workspace.OutputDirectory));
+            string parent = Path.GetDirectoryName(workspace.OutputDirectory);
+            string outputName = Path.GetFileName(workspace.OutputDirectory);
+            Assert.Empty(Directory.GetDirectories(parent, outputName + ".mirror-backup-*"));
+            Assert.Empty(Directory.GetDirectories(parent,
+                outputName + RewritingInputSnapshot.DirectoryMarker + "*"));
+        }
+
         private static Dictionary<string, byte[]> CaptureFiles(string directory) =>
             Directory.GetFiles(directory, "*", SearchOption.AllDirectories)
                 .ToDictionary(path => Path.GetRelativePath(directory, path).Replace('\\', '/'),
@@ -644,7 +671,8 @@ namespace Microsoft.Coyote.Tools.Tests
             internal string Rewrite(Action<RewritingOptions> configure = null)
                 => this.Rewrite(HostFileSystem.Instance, configure);
 
-            internal string Rewrite(IFileSystem fileSystem, Action<RewritingOptions> configure = null)
+            internal string Rewrite(IFileSystem fileSystem, Action<RewritingOptions> configure = null,
+                Action<IReadOnlyList<AssemblyInfo>> onAssembliesLoaded = null)
             {
                 var options = RewritingOptions.Create();
                 options.AssembliesDirectory = this.InputDirectory;
@@ -655,7 +683,7 @@ namespace Microsoft.Coyote.Tools.Tests
                 var configuration = Configuration.Create().WithVerbosityEnabled(VerbosityLevel.Info);
                 using var logWriter = new MemoryLogWriter(configuration);
                 RewritingEngine.Run(options, configuration, logWriter, new Profiler(),
-                    fileSystem, Environment.GetEnvironmentVariable);
+                    fileSystem, Environment.GetEnvironmentVariable, onAssembliesLoaded);
                 return logWriter.GetObservedMessages();
             }
 

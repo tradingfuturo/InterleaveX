@@ -193,6 +193,8 @@ namespace Microsoft.Coyote.Rewriting
         /// </summary>
         private bool IsDisposed;
 
+        internal bool IsDisposedForTesting => this.IsDisposed;
+
         /// <summary>
         /// Initializes a new instance of the <see cref="AssemblyInfo"/> class.
         /// </summary>
