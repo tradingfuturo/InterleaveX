@@ -4,6 +4,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Specifications;
 using Xunit;
 using Xunit.Abstractions;
@@ -133,6 +134,60 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 Specification.Assert(failure != null && failure.CancellationToken == source.Token,
                     "A positive delay ignored its pre-canceled token.");
             });
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestInfiniteDelayCancellationIsControlled()
+        {
+            this.Test(async () =>
+            {
+                using var source = new CancellationTokenSource();
+                Task delay = Task.Delay(Timeout.InfiniteTimeSpan, source.Token);
+                Specification.Assert(!CoyoteRuntime.Current.IsTaskUncontrolled(delay),
+                    "The infinite delay returned an unregistered task.");
+                source.Cancel();
+
+                OperationCanceledException failure = null;
+                try
+                {
+                    await delay;
+                }
+                catch (OperationCanceledException ex)
+                {
+                    failure = ex;
+                }
+
+                Specification.Assert(failure != null && failure.CancellationToken == source.Token,
+                    "The controlled infinite delay did not preserve its cancellation token.");
+            }, configuration: this.GetConfiguration()
+                .WithTestingIterations(1)
+                .WithPartiallyControlledConcurrencyAllowed(false));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestUncancellableInfiniteDelayIsDefiniteControlledDeadlock()
+        {
+            if (this.SchedulingPolicy is not SchedulingPolicy.Interleaving)
+            {
+                return;
+            }
+
+            this.TestWithError(async () =>
+            {
+                Task delay = Task.Delay(Timeout.InfiniteTimeSpan);
+                Specification.Assert(!CoyoteRuntime.Current.IsTaskUncontrolled(delay),
+                    "The infinite delay returned an unregistered task.");
+                await delay;
+            }, errorChecker: error =>
+            {
+                Assert.StartsWith("Deadlock detected.", error);
+                Assert.DoesNotContain("Potential deadlock", error, StringComparison.Ordinal);
+                Assert.DoesNotContain("uncontrolled", error, StringComparison.OrdinalIgnoreCase);
+            }, configuration: this.GetConfiguration()
+                .WithTestingIterations(1)
+                .WithPartiallyControlledConcurrencyAllowed(false), replay: true);
         }
 
         private static void AssertInvalidDelay(Action action, string expectedParameterName)

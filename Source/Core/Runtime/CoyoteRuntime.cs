@@ -719,8 +719,19 @@ namespace Microsoft.Coyote.Runtime
             if (delay == Timeout.InfiniteTimeSpan)
             {
                 // Infinite is a contract, not a large value for a strategy to fuzz. Only the token
-                // can complete this delay, matching the behavior outside systematic execution.
-                return Task.Delay(Timeout.Infinite, cancellationToken);
+                // can complete this delay, matching the behavior outside systematic execution. The
+                // task itself must still be registered with this runtime: a raw BCL delay is otherwise
+                // classified as uncontrolled when awaited under strict systematic testing.
+                var completion = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                this.RegisterKnownControlledTask(completion.Task);
+                if (cancellationToken.CanBeCanceled)
+                {
+                    cancellationToken.Register(() =>
+                        completion.TrySetCanceled(cancellationToken));
+                }
+
+                return completion.Task;
             }
 
             if (this.SchedulingPolicy is SchedulingPolicy.Interleaving)
