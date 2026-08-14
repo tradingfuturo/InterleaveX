@@ -536,6 +536,57 @@ namespace Microsoft.Coyote.Tools.Tests
             Assert.Equal(external, File.ReadAllBytes(workspace.InputAssemblyPath));
         }
 
+        [Fact(Timeout = 120000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestInPlaceStagingDirectoriesRecoverAfterInterruptedCleanup()
+        {
+            using var workspace = Workspace.Create();
+            bool stagingCreated = false;
+            bool publicationInterrupted = false;
+            bool cleanupInterrupted = false;
+            var fileSystem = new CallbackFileSystem(HostFileSystem.Instance,
+                beforeOpenWriteExclusive: path =>
+                {
+                    if (stagingCreated && !publicationInterrupted && string.Equals(
+                        path, workspace.InputAssemblyPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        publicationInterrupted = true;
+                        throw new IOException("Simulated publication interruption.");
+                    }
+                },
+                afterCreateDirectory: path =>
+                {
+                    stagingCreated |= Path.GetFileName(path).StartsWith(
+                        "assembly-", StringComparison.Ordinal);
+                },
+                beforeDeleteDirectory: (path, recursive) =>
+                {
+                    if (publicationInterrupted && recursive && path.Contains(
+                        "__temp_coyote__", StringComparison.Ordinal))
+                    {
+                        cleanupInterrupted = true;
+                        throw new IOException("Simulated cleanup interruption.");
+                    }
+                });
+
+            IOException error = Assert.Throws<IOException>(() => workspace.Rewrite(fileSystem,
+                options => options.OutputDirectory = workspace.InputDirectory));
+            Assert.True(stagingCreated, error.ToString());
+            Assert.True(publicationInterrupted, error.ToString());
+            Assert.True(cleanupInterrupted, error.ToString());
+            Assert.Single(RewritingOutputChangeJournal.FindJournals(
+                HostFileSystem.Instance, workspace.InputDirectory));
+
+            RewritingOutputChangeJournal.RecoverAll(
+                HostFileSystem.Instance, workspace.InputDirectory);
+
+            Assert.Empty(RewritingOutputChangeJournal.FindJournals(
+                HostFileSystem.Instance, workspace.InputDirectory));
+            Assert.Empty(Directory.GetDirectories(
+                workspace.InputDirectory, "__temp_coyote__*"));
+            workspace.Rewrite(options => options.OutputDirectory = workspace.InputDirectory);
+        }
+
         [Theory(Timeout = 120000)]
         [InlineData(RewritingCache.ManifestFileName)]
         [InlineData(RewritingOutputLedger.ManifestFileName)]
@@ -968,13 +1019,21 @@ namespace Microsoft.Coyote.Tools.Tests
             private readonly Action<string, string, bool> BeforeCopyFile;
             private readonly Action<string, string> BeforeMoveFile;
             private readonly Action<string, string, string> BeforeReplaceFile;
+            private readonly Action<string> BeforeOpenWriteExclusive;
+            private readonly Action<string> AfterOpenWriteExclusiveDisposed;
+            private readonly Action<string, bool> BeforeDeleteDirectory;
+            private readonly Action<string> AfterCreateDirectory;
 
             internal CallbackFileSystem(IFileSystem inner,
                 Action<string, string> beforeGetFiles = null,
                 Action<string, string, bool> beforeCopyFile = null,
                 Action<string, string> beforeMoveFile = null,
                 Action<string, string, string> beforeReplaceFile = null,
-                Action<string> beforeFileExists = null)
+                Action<string> beforeFileExists = null,
+                Action<string> beforeOpenWriteExclusive = null,
+                Action<string> afterOpenWriteExclusiveDisposed = null,
+                Action<string, bool> beforeDeleteDirectory = null,
+                Action<string> afterCreateDirectory = null)
             {
                 this.Inner = inner;
                 this.BeforeFileExists = beforeFileExists;
@@ -982,6 +1041,10 @@ namespace Microsoft.Coyote.Tools.Tests
                 this.BeforeCopyFile = beforeCopyFile;
                 this.BeforeMoveFile = beforeMoveFile;
                 this.BeforeReplaceFile = beforeReplaceFile;
+                this.BeforeOpenWriteExclusive = beforeOpenWriteExclusive;
+                this.AfterOpenWriteExclusiveDisposed = afterOpenWriteExclusiveDisposed;
+                this.BeforeDeleteDirectory = beforeDeleteDirectory;
+                this.AfterCreateDirectory = afterCreateDirectory;
             }
 
             public bool FileExists(string path)
@@ -1002,8 +1065,14 @@ namespace Microsoft.Coyote.Tools.Tests
             public Stream OpenRead(string path, FileReadSharing sharing) =>
                 this.Inner.OpenRead(path, sharing);
 
-            public Stream OpenWriteExclusive(string path) =>
-                this.Inner.OpenWriteExclusive(path);
+            public Stream OpenWriteExclusive(string path)
+            {
+                this.BeforeOpenWriteExclusive?.Invoke(path);
+                Stream stream = this.Inner.OpenWriteExclusive(path);
+                return this.AfterOpenWriteExclusiveDisposed is null ? stream :
+                    new DisposeCallbackStream(stream,
+                        () => this.AfterOpenWriteExclusiveDisposed(path));
+            }
 
             public void FlushWrite(Stream stream) => this.Inner.FlushWrite(stream);
 
@@ -1027,10 +1096,17 @@ namespace Microsoft.Coyote.Tools.Tests
 
             public void DeleteFile(string path) => this.Inner.DeleteFile(path);
 
-            public void CreateDirectory(string path) => this.Inner.CreateDirectory(path);
+            public void CreateDirectory(string path)
+            {
+                this.Inner.CreateDirectory(path);
+                this.AfterCreateDirectory?.Invoke(path);
+            }
 
-            public void DeleteDirectory(string path, bool recursive) =>
+            public void DeleteDirectory(string path, bool recursive)
+            {
+                this.BeforeDeleteDirectory?.Invoke(path, recursive);
                 this.Inner.DeleteDirectory(path, recursive);
+            }
 
             public string[] GetFiles(string directory, string searchPattern)
             {
@@ -1055,6 +1131,44 @@ namespace Microsoft.Coyote.Tools.Tests
 
             public bool IsCaseInsensitive(string directory) =>
                 this.Inner.IsCaseInsensitive(directory);
+        }
+
+        private sealed class DisposeCallbackStream : Stream
+        {
+            private readonly Stream Inner;
+            private readonly Action OnDispose;
+
+            internal DisposeCallbackStream(Stream inner, Action onDispose)
+            {
+                this.Inner = inner;
+                this.OnDispose = onDispose;
+            }
+
+            internal Stream WrappedStream => this.Inner;
+
+            public override bool CanRead => this.Inner.CanRead;
+            public override bool CanSeek => this.Inner.CanSeek;
+            public override bool CanWrite => this.Inner.CanWrite;
+            public override long Length => this.Inner.Length;
+            public override long Position { get => this.Inner.Position; set => this.Inner.Position = value; }
+            public override void Flush() => this.Inner.Flush();
+            public override int Read(byte[] buffer, int offset, int count) =>
+                this.Inner.Read(buffer, offset, count);
+            public override long Seek(long offset, SeekOrigin origin) => this.Inner.Seek(offset, origin);
+            public override void SetLength(long value) => this.Inner.SetLength(value);
+            public override void Write(byte[] buffer, int offset, int count) =>
+                this.Inner.Write(buffer, offset, count);
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    this.Inner.Dispose();
+                    this.OnDispose();
+                }
+
+                base.Dispose(disposing);
+            }
         }
     }
 }

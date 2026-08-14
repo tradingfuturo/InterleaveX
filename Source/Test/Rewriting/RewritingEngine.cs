@@ -515,6 +515,7 @@ namespace Microsoft.Coyote.Rewriting
                     {
                         assemblyOutputDirectory = Path.Combine(outputDirectory,
                             "assembly-" + Guid.NewGuid().ToString("N"));
+                        this.OutputJournal.CaptureDirectory(assemblyOutputDirectory);
                         this.FileSystem.CreateDirectory(assemblyOutputDirectory);
                     }
 
