@@ -112,6 +112,28 @@ namespace Microsoft.Coyote.BugFinding.Tests
             });
         }
 
+        [Fact(Timeout = 5000)]
+        public void TestPublicBackgroundServiceInterfacesKeepTheirImplementations()
+        {
+            this.Test(async () =>
+            {
+                var service = new PublicInterfaceService();
+                IHostedService hosted = service;
+                await hosted.StartAsync(CancellationToken.None);
+                await hosted.StopAsync(CancellationToken.None);
+                ((IDisposable)service).Dispose();
+
+                Specification.Assert(service.StartCount is 1,
+                    "The public IHostedService.StartAsync implementation was replaced.");
+                Specification.Assert(service.StopCount is 1,
+                    "The public IHostedService.StopAsync implementation was replaced.");
+                Specification.Assert(service.DisposeCount is 1,
+                    "The public IDisposable.Dispose implementation was replaced.");
+                Specification.Assert(service.ExecuteCount is 0,
+                    "The controlled BackgroundService lifecycle ran instead of the public interface implementation.");
+            });
+        }
+
         private sealed class OrderedService : BackgroundService
         {
             private readonly List<string> Events;
@@ -189,6 +211,34 @@ namespace Microsoft.Coyote.BugFinding.Tests
             void IDisposable.Dispose() => this.DisposeCount++;
 
             protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.CompletedTask;
+        }
+
+        private sealed class PublicInterfaceService : BackgroundService, IHostedService, IDisposable
+        {
+            internal int StartCount;
+            internal int StopCount;
+            internal int DisposeCount;
+            internal int ExecuteCount;
+
+            public new Task StartAsync(CancellationToken cancellationToken)
+            {
+                this.StartCount++;
+                return Task.CompletedTask;
+            }
+
+            public new Task StopAsync(CancellationToken cancellationToken)
+            {
+                this.StopCount++;
+                return Task.CompletedTask;
+            }
+
+            public new void Dispose() => this.DisposeCount++;
+
+            protected override Task ExecuteAsync(CancellationToken stoppingToken)
+            {
+                this.ExecuteCount++;
+                return Task.CompletedTask;
+            }
         }
     }
 }

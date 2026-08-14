@@ -273,28 +273,25 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         internal static bool UsesHostedServiceSlot(
             SystemBackgroundService instance, string interfaceMethodName)
         {
-            InterfaceMapping mapping = instance.GetType().GetInterfaceMap(typeof(SystemHostedService));
-            for (int idx = 0; idx < mapping.InterfaceMethods.Length; idx++)
-            {
-                if (mapping.InterfaceMethods[idx].Name == interfaceMethodName)
-                {
-                    // An explicit interface reimplementation is emitted as a private final method.
-                    // Public virtual targets retain BackgroundService's dispatch slot, including overrides.
-                    return !mapping.TargetMethods[idx].IsPrivate;
-                }
-            }
-
-            return false;
+            return UsesFrameworkInterfaceSlot(instance, typeof(SystemHostedService), interfaceMethodName);
         }
 
         internal static bool UsesDisposableSlot(SystemBackgroundService instance)
         {
-            InterfaceMapping mapping = instance.GetType().GetInterfaceMap(typeof(IDisposable));
+            return UsesFrameworkInterfaceSlot(instance, typeof(IDisposable), nameof(IDisposable.Dispose));
+        }
+
+        private static bool UsesFrameworkInterfaceSlot(
+            SystemBackgroundService instance, Type interfaceType, string interfaceMethodName)
+        {
+            InterfaceMapping mapping = instance.GetType().GetInterfaceMap(interfaceType);
             for (int idx = 0; idx < mapping.InterfaceMethods.Length; idx++)
             {
-                if (mapping.InterfaceMethods[idx].Name == nameof(IDisposable.Dispose))
+                if (mapping.InterfaceMethods[idx].Name == interfaceMethodName)
                 {
-                    return !mapping.TargetMethods[idx].IsPrivate;
+                    MethodInfo target = mapping.TargetMethods[idx];
+                    MethodInfo slot = target.IsVirtual ? target.GetBaseDefinition() : target;
+                    return slot.DeclaringType == typeof(SystemBackgroundService);
                 }
             }
 
