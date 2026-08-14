@@ -705,13 +705,17 @@ namespace Microsoft.Coyote.Runtime
         /// </summary>
         internal Task ScheduleDelay(TimeSpan delay, CancellationToken cancellationToken)
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Task.FromCanceled(cancellationToken);
+            }
+
             if (delay.TotalMilliseconds is 0)
             {
                 // If the delay is 0, then complete synchronously.
                 return Task.CompletedTask;
             }
 
-            // TODO: support cancellations during testing.
             if (this.SchedulingPolicy is SchedulingPolicy.Interleaving)
             {
                 uint timeout = (uint)this.GetNextNondeterministicIntegerChoice((int)this.Configuration.TimeoutDelay, null, null);
@@ -728,8 +732,9 @@ namespace Microsoft.Coyote.Runtime
                 return this.TaskFactory.StartNew(state =>
                 {
                     var delayedOp = state as ControlledOperation;
-                    delayedOp.PauseWithDelay(timeout);
+                    delayedOp.PauseWithDelay(timeout, cancellationToken);
                     this.ScheduleNextOperation(delayedOp, SchedulingPointType.Yield);
+                    cancellationToken.ThrowIfCancellationRequested();
                 },
                 op,
                 cancellationToken,
@@ -746,7 +751,7 @@ namespace Microsoft.Coyote.Runtime
             // TODO: we need to come up with something better!
             // Fuzz the delay.
             return Task.Delay(TimeSpan.FromMilliseconds(
-                this.GetNondeterministicDelay(current, (int)delay.TotalMilliseconds)));
+                this.GetNondeterministicDelay(current, (int)delay.TotalMilliseconds)), cancellationToken);
         }
 
         /// <summary>
@@ -2077,6 +2082,13 @@ namespace Microsoft.Coyote.Runtime
             if (op.Status is OperationStatus.PausedOnDelay ||
                 op.Status is OperationStatus.PausedOnResourceOrDelay)
             {
+                if (op.Status is OperationStatus.PausedOnDelay &&
+                    op.DelayCancellationToken.IsCancellationRequested)
+                {
+                    op.EnableAfterDelay();
+                    return true;
+                }
+
                 if (op.DelayedStepsCount > 0)
                 {
                     op.DelayedStepsCount--;

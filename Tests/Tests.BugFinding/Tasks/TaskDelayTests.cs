@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Coyote.Specifications;
 using Xunit;
@@ -14,6 +15,86 @@ namespace Microsoft.Coyote.BugFinding.Tests
         public TaskDelayTests(ITestOutputHelper output)
             : base(output)
         {
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestZeroDelayObservesPreCanceledToken()
+        {
+            this.Test(async () =>
+            {
+                using var source = new CancellationTokenSource();
+                source.Cancel();
+
+                Task delay = Task.Delay(TimeSpan.Zero, source.Token);
+                Specification.Assert(delay.IsCanceled, "A zero delay ignored its pre-canceled token.");
+
+                OperationCanceledException failure = null;
+                try
+                {
+                    await delay;
+                }
+                catch (OperationCanceledException ex)
+                {
+                    failure = ex;
+                }
+
+                Specification.Assert(failure != null && failure.CancellationToken == source.Token,
+                    "The zero delay did not preserve its cancellation token.");
+            });
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestPendingDelayObservesCancellation()
+        {
+            this.Test(async () =>
+            {
+                using var source = new CancellationTokenSource();
+                Task delay = Task.Delay(TimeSpan.FromMinutes(1), source.Token);
+
+                // Let the controlled delay operation start. If this schedule selected a synchronous
+                // timeout there is no pending delay to cancel, which is a valid completion race.
+                await Task.Yield();
+                if (!delay.IsCompleted)
+                {
+                    source.Cancel();
+                    OperationCanceledException failure = null;
+                    try
+                    {
+                        await delay;
+                    }
+                    catch (OperationCanceledException ex)
+                    {
+                        failure = ex;
+                    }
+
+                    Specification.Assert(failure != null && failure.CancellationToken == source.Token,
+                        "A pending delay ignored cancellation or lost its token.");
+                }
+            }, configuration: this.GetConfiguration().WithTestingIterations(100).WithTimeoutDelay(10));
+        }
+
+        [Fact(Timeout = 5000)]
+        public void TestPositiveDelayObservesPreCanceledToken()
+        {
+            this.Test(async () =>
+            {
+                using var source = new CancellationTokenSource();
+                source.Cancel();
+
+                Task delay = Task.Delay(TimeSpan.FromMinutes(1), source.Token);
+                OperationCanceledException failure = null;
+                try
+                {
+                    await delay;
+                }
+                catch (OperationCanceledException ex)
+                {
+                    failure = ex;
+                }
+
+                Specification.Assert(failure != null && failure.CancellationToken == source.Token,
+                    "A positive delay ignored its pre-canceled token.");
+            });
         }
 
         private static async Task WriteWithLoopAndDelayAsync(SharedEntry entry, int value, int delay)

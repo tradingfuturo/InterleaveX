@@ -159,6 +159,12 @@ namespace Microsoft.Coyote.Runtime
         internal int DelayedStepsCount;
 
         /// <summary>
+        /// Token that can cancel an ordinary asynchronous delay. Resource timeouts and thread sleeps
+        /// leave this unset because their existing wake-up contracts are not cancellation based.
+        /// </summary>
+        internal CancellationToken DelayCancellationToken;
+
+        /// <summary>
         /// True if this is the root operation, else false.
         /// </summary>
         internal bool IsRoot => this.Id is 0;
@@ -213,6 +219,7 @@ namespace Microsoft.Coyote.Runtime
             this.LastAccessedSharedStateComparer = null;
             this.OperationCreationCount = 0;
             this.DelayedStepsCount = 0;
+            this.DelayCancellationToken = default;
             this.IsSourceUncontrolled = false;
             this.IsDependencyUncontrolled = false;
 
@@ -256,8 +263,17 @@ namespace Microsoft.Coyote.Runtime
         /// </summary>
         internal void PauseWithDelay(uint delay)
         {
+            this.PauseWithDelay(delay, default);
+        }
+
+        /// <summary>
+        /// Pauses this operation with a delay that can also be resolved by cancellation.
+        /// </summary>
+        internal void PauseWithDelay(uint delay, CancellationToken cancellationToken)
+        {
             this.Status = OperationStatus.PausedOnDelay;
             this.DelayedStepsCount = delay > int.MaxValue ? int.MaxValue : (int)delay;
+            this.DelayCancellationToken = cancellationToken;
         }
 
         /// <summary>
