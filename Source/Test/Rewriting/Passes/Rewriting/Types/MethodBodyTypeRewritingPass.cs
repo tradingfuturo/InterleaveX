@@ -249,10 +249,10 @@ namespace Microsoft.Coyote.Rewriting
 
                 // Create and return the new instruction.
                 // Cecil marks value-type interface implementations as virtual, but a direct member
-                // call on the value-type receiver still requires 'call'. Emitting 'callvirt' here
-                // produces unverifiable IL because the stack contains the receiver address.
-                bool useVirtualDispatch = resolvedMethod.IsVirtual &&
-                    !resolvedMethod.DeclaringType.IsValueType;
+                // call on the value-type receiver still requires 'call'. A retained 'constrained.'
+                // prefix, however, requires the original virtual dispatch semantics.
+                bool useVirtualDispatch = instruction.Previous?.OpCode == OpCodes.Constrained ||
+                    (resolvedMethod.IsVirtual && !resolvedMethod.DeclaringType.IsValueType);
                 Instruction newInstruction = Instruction.Create(useVirtualDispatch ?
                     OpCodes.Callvirt : OpCodes.Call, newMethod);
 
