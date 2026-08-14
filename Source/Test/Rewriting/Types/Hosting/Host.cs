@@ -128,10 +128,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             IStartupValidator validator = GetOptional<IStartupValidator>(instance.Services);
             validator?.Validate();
             await InvokeAsync(state.LifecycleServices, item => item.StartingAsync(token),
-                state.Options.ServicesStartConcurrently, abortOnFirstException: !state.Options.ServicesStartConcurrently);
+                token, state.Options.ServicesStartConcurrently,
+                abortOnFirstException: !state.Options.ServicesStartConcurrently);
 #endif
             await InvokeAsync(state.Services, item => StartHostedServiceAsync(
                 item, token, applicationLifetime, state.Options),
+                token,
 #if NET8_0_OR_GREATER
                 state.Options.ServicesStartConcurrently, abortOnFirstException: !state.Options.ServicesStartConcurrently);
 #else
@@ -140,7 +142,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
 
 #if NET8_0_OR_GREATER
             await InvokeAsync(state.LifecycleServices, item => item.StartedAsync(token),
-                state.Options.ServicesStartConcurrently, abortOnFirstException: !state.Options.ServicesStartConcurrently);
+                token, state.Options.ServicesStartConcurrently,
+                abortOnFirstException: !state.Options.ServicesStartConcurrently);
 #endif
             Notify(applicationLifetime, "NotifyStarted");
             state.Starting = false;
@@ -160,11 +163,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
 #if NET8_0_OR_GREATER
                 await CaptureAsync(exceptions, () => InvokeAsync(
                     state.LifecycleServices.AsEnumerable().Reverse(), item => item.StoppingAsync(token),
-                    state.Options.ServicesStopConcurrently, abortOnFirstException: false));
+                    token, state.Options.ServicesStopConcurrently, abortOnFirstException: false));
 #endif
                 state.ApplicationLifetime.StopApplication();
                 await CaptureAsync(exceptions, () => InvokeAsync(
                     state.Services.AsEnumerable().Reverse(), item => HostedService.StopAsync(item, token),
+                    token,
 #if NET8_0_OR_GREATER
                     state.Options.ServicesStopConcurrently, abortOnFirstException: false));
 #else
@@ -173,7 +177,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
 #if NET8_0_OR_GREATER
                 await CaptureAsync(exceptions, () => InvokeAsync(
                     state.LifecycleServices.AsEnumerable().Reverse(), item => item.StoppedAsync(token),
-                    state.Options.ServicesStopConcurrently, abortOnFirstException: false));
+                    token, state.Options.ServicesStopConcurrently, abortOnFirstException: false));
 #endif
             }
             else
@@ -188,60 +192,149 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         }
 
         private static async Task InvokeAsync<T>(IEnumerable<T> items, Func<T, Task> action,
-            bool concurrently, bool abortOnFirstException)
+            CancellationToken cancellationToken, bool concurrently, bool abortOnFirstException)
         {
             var exceptions = new List<Exception>();
-            var tasks = new List<Task>();
-            foreach (T item in items ?? Enumerable.Empty<T>())
+            if (concurrently)
             {
-                try
+                await InvokeConcurrentAsync(items, action, cancellationToken, exceptions);
+            }
+            else
+            {
+                foreach (T item in items ?? Enumerable.Empty<T>())
                 {
-                    Task task = action(item) ?? throw new InvalidOperationException("A host lifecycle callback returned null.");
-                    if (concurrently)
+                    try
                     {
-#if !NET10_0_OR_GREATER
-                        if (task.IsCanceled)
-                        {
-                            continue;
-                        }
-#endif
-                        tasks.Add(task);
-                    }
-                    else
-                    {
+                        Task task = action(item) ?? throw new InvalidOperationException(
+                            "A host lifecycle callback returned null.");
                         await task;
                     }
-                }
-                catch (Exception ex)
-                {
-                    exceptions.Add(ex);
-                    if (abortOnFirstException)
+                    catch (Exception ex)
                     {
-                        break;
-                    }
-                }
-            }
-
-            if (concurrently && tasks.Count > 0)
-            {
-                try
-                {
-                    await ControlledTask.WhenAll(tasks);
-                }
-                catch
-                {
-                    foreach (Task task in tasks.Where(task => task.IsFaulted))
-                    {
-                        exceptions.AddRange(task.Exception.InnerExceptions);
-                    }
-                    foreach (Task task in tasks.Where(task => task.IsCanceled))
-                    {
-                        exceptions.Add(new TaskCanceledException(task));
+                        exceptions.Add(ex);
+                        if (abortOnFirstException)
+                        {
+                            break;
+                        }
                     }
                 }
             }
 
             ThrowCollected(exceptions, "One or more hosted services failed to start.");
+        }
+
+        private static async Task InvokeConcurrentAsync<T>(IEnumerable<T> items, Func<T, Task> action,
+            CancellationToken cancellationToken, List<Exception> exceptions)
+        {
+            var tasks = new List<Task>();
+#if NET8_0
+            foreach (T item in items ?? Enumerable.Empty<T>())
+            {
+                Task task;
+                try
+                {
+                    task = action(item) ?? throw new InvalidOperationException(
+                        "A host lifecycle callback returned null.");
+                }
+                catch (Exception ex)
+                {
+                    exceptions.Add(ex);
+                    continue;
+                }
+
+                if (task.IsCompleted)
+                {
+                    AddCompletedTaskExceptions(task, exceptions, includeCancellation: false);
+                }
+                else
+                {
+                    tasks.Add(ControlledTask.Run(() => task, cancellationToken));
+                }
+            }
+#elif NET9_0
+            foreach (T item in items ?? Enumerable.Empty<T>())
+            {
+                Task task;
+                try
+                {
+                    task = action(item) ?? throw new InvalidOperationException(
+                        "A host lifecycle callback returned null.");
+                }
+                catch (Exception ex)
+                {
+                    exceptions.Add(ex);
+                    continue;
+                }
+
+                if (task.IsCompleted)
+                {
+                    AddCompletedTaskExceptions(task, exceptions, includeCancellation: false);
+                }
+                else
+                {
+                    tasks.Add(task);
+                }
+            }
+#else
+            foreach (T item in items ?? Enumerable.Empty<T>())
+            {
+                Task task;
+                try
+                {
+                    task = action(item) ?? throw new InvalidOperationException(
+                        "A host lifecycle callback returned null.");
+                }
+                catch (Exception ex)
+                {
+                    exceptions.Add(ex);
+                    continue;
+                }
+
+                if (task.IsCompleted)
+                {
+                    AddCompletedTaskExceptions(task, exceptions, includeCancellation: true);
+                }
+                else
+                {
+                    tasks.Add(task);
+                }
+            }
+#endif
+
+            if (tasks.Count is 0)
+            {
+                return;
+            }
+
+            Task groupedTasks = ControlledTask.WhenAll(tasks);
+            try
+            {
+                await groupedTasks;
+            }
+            catch (Exception ex)
+            {
+                if (groupedTasks.IsFaulted)
+                {
+                    exceptions.AddRange(groupedTasks.Exception.InnerExceptions);
+                }
+                else
+                {
+                    exceptions.Add(ex);
+                }
+            }
+        }
+
+        private static void AddCompletedTaskExceptions(
+            Task task, List<Exception> exceptions, bool includeCancellation)
+        {
+            if (task.IsFaulted)
+            {
+                exceptions.AddRange(task.Exception.InnerExceptions);
+            }
+            else if (includeCancellation && task.IsCanceled)
+            {
+                exceptions.Add(new TaskCanceledException(task));
+            }
         }
 
         private static async Task StartHostedServiceAsync(
