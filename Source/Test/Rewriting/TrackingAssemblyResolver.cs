@@ -124,10 +124,45 @@ namespace Microsoft.Coyote.Rewriting
         }
 
         /// <inheritdoc/>
+        /// <remarks>
+        /// Every resolution funnels through here, including the parameterless overload above: Cecil's
+        /// <see cref="BaseAssemblyResolver"/> implements that one by calling this one virtually with a
+        /// fresh <see cref="ReaderParameters"/>, so setting InMemory here covers both without
+        /// bypassing the <see cref="DefaultAssemblyResolver"/> cache that the other overload consults.
+        /// </remarks>
         public override AssemblyDefinition Resolve(AssemblyNameReference name, ReaderParameters parameters)
         {
             this.StampCandidates(name);
-            return this.Track(base.Resolve(name, parameters));
+            return this.Track(base.Resolve(name, WithoutHoldingTheFileOpen(parameters)));
+        }
+
+        /// <summary>
+        /// Returns reader parameters that do not leave the resolved file open.
+        /// </summary>
+        /// <remarks>
+        /// Rewriting overwrites the files it resolves. A batch that replaces its assemblies in place
+        /// copies each rewritten assembly back over the snapshot copy it was read from, so that batch
+        /// members rewritten later resolve signatures from the transformed dependency rather than the
+        /// original. The whole batch is loaded before the first assembly is rewritten and nothing is
+        /// disposed until the last one finishes, so a resolution taken while loading is still cached
+        /// when that overwrite runs.
+        ///
+        /// The base implementation reads with a <see cref="ReaderParameters"/> of its own making, where
+        /// InMemory is false, so the module keeps a FileStream on the file and
+        /// <see cref="DefaultAssemblyResolver"/> caches that module for this resolver's lifetime. The
+        /// overwrite then fails with "The process cannot access the file ... because it is being used
+        /// by another process", and takes the run with it. Reading the bytes into memory instead costs
+        /// the file's size and keeps the file writable, which is the state rewriting needs it in.
+        ///
+        /// Note that this is not the same read as the one <see cref="AssemblyInfo"/> performs for the
+        /// assembly it owns: that one already sets InMemory, but it covers only that assembly, not
+        /// anything reached through resolution.
+        /// </remarks>
+        private static ReaderParameters WithoutHoldingTheFileOpen(ReaderParameters parameters)
+        {
+            parameters ??= new ReaderParameters();
+            parameters.InMemory = true;
+            return parameters;
         }
 
         private void StampCandidates(AssemblyNameReference name)
