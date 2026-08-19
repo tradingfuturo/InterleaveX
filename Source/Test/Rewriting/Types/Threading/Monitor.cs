@@ -161,7 +161,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 runtime.TryGetExecutingOperation(out _))
             {
                 // A held lock is modelled as the timeout expiring rather than as a blocking acquire.
-                lockTaken = TryLockBlock(runtime, obj)?.IsLockTaken ?? true;
+                lockTaken = TryLockBlock(runtime, obj) ?? true;
             }
             else
             {
@@ -186,7 +186,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 runtime.TryGetExecutingOperation(out _))
             {
                 // A held lock is modelled as the timeout expiring rather than as a blocking acquire.
-                return TryLockBlock(runtime, obj)?.IsLockTaken ?? true;
+                return TryLockBlock(runtime, obj) ?? true;
             }
             else if (runtime.SchedulingPolicy is SchedulingPolicy.Fuzzing &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
@@ -208,7 +208,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 runtime.TryGetExecutingOperation(out _))
             {
                 // A held lock is modelled as the timeout expiring rather than as a blocking acquire.
-                lockTaken = TryLockBlock(runtime, obj)?.IsLockTaken ?? true;
+                lockTaken = TryLockBlock(runtime, obj) ?? true;
             }
             else
             {
@@ -232,9 +232,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                // A held lock is modelled as the timeout expiring rather than as a blocking acquire: both
-                // are outcomes the caller must handle, and only the refusal reaches its else-branch.
-                lockTaken = TryLockBlock(runtime, obj)?.IsLockTaken ?? true;
+                // A held lock refuses rather than queuing this operation behind its owner, so the caller's
+                // "the lock was busy" branch is reachable.
+                lockTaken = TryLockBlock(runtime, obj) ?? true;
             }
             else
             {
@@ -257,7 +257,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                return TryLockBlock(runtime, obj)?.IsLockTaken ?? true;
+                return TryLockBlock(runtime, obj) ?? true;
             }
             else if (runtime.SchedulingPolicy is SchedulingPolicy.Fuzzing &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
@@ -374,7 +374,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// Probes the synchronized block for the specified object on behalf of the executing operation,
         /// without blocking. See <see cref="SynchronizedBlock.TryEnterLock"/>.
         /// </summary>
-        internal static SynchronizedBlock TryLockBlock(CoyoteRuntime runtime, object obj) =>
+        internal static bool? TryLockBlock(CoyoteRuntime runtime, object obj) =>
             SynchronizedBlock.TryLock(runtime, obj);
 
         /// <summary>
@@ -546,7 +546,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// Probes the lock for the specified object without blocking, or returns null if that runtime
             /// has stopped executing its test iteration. See <see cref="TryEnterLock"/>.
             /// </summary>
-            internal static SynchronizedBlock TryLock(CoyoteRuntime runtime, object syncObject) =>
+            internal static bool? TryLock(CoyoteRuntime runtime, object syncObject) =>
                 Resolve(runtime, syncObject, create: true)?.TryEnterLock();
 
             /// <summary>
@@ -680,7 +680,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
             /// <summary>
             /// Acquires the lock WITHOUT blocking, as <see cref="SystemThreading.Monitor.TryEnter(object)"/>
-            /// does, reporting the outcome through <see cref="IsLockTaken"/>.
+            /// does, returning whether it was taken.
             /// </summary>
             /// <remarks>
             /// <para>
@@ -697,8 +697,17 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// asserts the caller holds the lock, so a refused probe has no matching release and must not
             /// take a reference (one leaked reference keeps the block from ever being evicted).
             /// </para>
+            /// <para>
+            /// The outcome is RETURNED rather than reported through <see cref="IsLockTaken"/>. That field is
+            /// shared by every operation using this block, and <see cref="EnterLock"/> sets it BEFORE it
+            /// blocks — so a refusal written into it while an <c>Enter</c> waiter is queued is still there
+            /// when that waiter finally takes the lock. <c>Monitor.Enter(obj, ref lockTaken)</c>, which is
+            /// what a C# <c>lock</c> statement compiles to, would then hand its caller
+            /// <see langword="false"/> for a lock it actually holds, and the generated <c>finally</c> would
+            /// skip the matching <c>Monitor.Exit</c> — holding the lock for the rest of the iteration.
+            /// </para>
             /// </remarks>
-            private SynchronizedBlock TryEnterLock()
+            private bool TryEnterLock()
             {
                 CoyoteRuntime runtime = this.GetRuntime();
 
@@ -719,19 +728,19 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         this.LockCountMap[op]++;
                         SystemInterlocked.Increment(ref this.UseCount);
                         this.IsLockTaken = true;
-                        return this;
+                        return true;
                     }
 
-                    // Held by ANOTHER operation: refuse, and leave this operation enabled.
-                    this.IsLockTaken = false;
-                    return this;
+                    // Held by ANOTHER operation: refuse, and leave this operation enabled. IsLockTaken is
+                    // deliberately NOT written here — see the remarks above.
+                    return false;
                 }
 
                 this.Owner = runtime.GetExecutingOperation();
                 this.LockCountMap.Add(this.Owner, 1);
                 SystemInterlocked.Increment(ref this.UseCount);
                 this.IsLockTaken = true;
-                return this;
+                return true;
             }
 
             private SynchronizedBlock EnterLock()
