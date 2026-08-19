@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Specifications;
 using Xunit;
 using Xunit.Abstractions;
@@ -368,6 +369,103 @@ namespace Microsoft.Coyote.BugFinding.Tests
             }
 
             internal static int GetCurrentTaskId() => Task.CurrentId ?? 0;
+        }
+
+        /// <summary>
+        /// TryEnter is a PROBE, not an acquisition: when another operation owns the lock it must report
+        /// failure and leave the caller running, so the caller can take its other branch.
+        /// </summary>
+        /// <remarks>
+        /// Routing TryEnter through the blocking Enter model made this unobservable — it queued the probing
+        /// operation behind the owner and then reported success unconditionally, so every
+        /// "the lock was busy, do something else" branch in a program under test was unreachable and the
+        /// probing operation parked inside a call the program wrote as non-blocking. Asserted ACROSS
+        /// schedules, because whether the probe lands while the lock is held is itself a scheduling choice.
+        /// </remarks>
+        [Fact(Timeout = 5000)]
+        public void TestMonitorTryEnterCanRefuseALockHeldByAnotherOperation()
+        {
+            bool refusedAtLeastOnce = false;
+
+            this.Test(
+                async () =>
+                {
+                    object syncObject = new object();
+
+                    Task holder = Task.Run(() =>
+                    {
+                        lock (syncObject)
+                        {
+                            // Hold it across a scheduling point, so the prober can run while it is taken.
+                            SchedulingPoint.Interleave();
+                        }
+                    });
+
+                    Task prober = Task.Run(() =>
+                    {
+                        if (Monitor.TryEnter(syncObject))
+                        {
+                            Monitor.Exit(syncObject);
+                        }
+                        else
+                        {
+                            refusedAtLeastOnce = true;
+                        }
+                    });
+
+                    await Task.WhenAll(holder, prober);
+                },
+                this.GetConfiguration().WithTestingIterations(100));
+
+            Assert.True(
+                refusedAtLeastOnce,
+                "Monitor.TryEnter never refused a lock held by another operation across 100 schedules: it is " +
+                "being modelled as a blocking Enter that always succeeds.");
+        }
+
+        /// <summary>Monitor is reentrant, so the owner's own probe still succeeds.</summary>
+        [Fact(Timeout = 5000)]
+        public void TestMonitorTryEnterSucceedsReentrantly()
+        {
+            this.Test(
+                () =>
+                {
+                    object syncObject = new object();
+                    lock (syncObject)
+                    {
+                        bool taken = Monitor.TryEnter(syncObject);
+                        Specification.Assert(taken, "TryEnter refused the operation that already owns the lock.");
+                        if (taken)
+                        {
+                            Monitor.Exit(syncObject);
+                        }
+                    }
+                },
+                this.GetConfiguration().WithTestingIterations(100));
+        }
+
+        /// <summary>An uncontended probe takes the lock, and releasing it leaves the lock free.</summary>
+        [Fact(Timeout = 5000)]
+        public void TestMonitorTryEnterAcquiresAFreeLock()
+        {
+            this.Test(
+                () =>
+                {
+                    object syncObject = new object();
+
+                    bool taken = Monitor.TryEnter(syncObject);
+                    Specification.Assert(taken, "TryEnter refused a free lock.");
+                    Specification.Assert(Monitor.IsEntered(syncObject), "TryEnter reported success without taking the lock.");
+                    Monitor.Exit(syncObject);
+
+                    Specification.Assert(!Monitor.IsEntered(syncObject), "The lock was still held after Exit.");
+
+                    // Reacquiring proves the refused/acquired bookkeeping left nothing behind.
+                    bool retaken = Monitor.TryEnter(syncObject);
+                    Specification.Assert(retaken, "TryEnter refused a lock that had been released.");
+                    Monitor.Exit(syncObject);
+                },
+                this.GetConfiguration().WithTestingIterations(100));
         }
     }
 }
