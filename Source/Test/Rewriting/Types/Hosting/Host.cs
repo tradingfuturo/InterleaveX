@@ -31,10 +31,18 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         private static readonly Dictionary<(Type, string), MethodInfo> NotificationMethods =
             new Dictionary<(Type, string), MethodInfo>();
 
+        // The name is the IL property accessor's, because that is what the rewriter substitutes; it cannot
+        // be made to look like a normal method name. Same pragma block the other accessor shims use.
+#pragma warning disable CA1707 // Identifiers should not contain underscores
+#pragma warning disable SA1300 // Element should begin with upper-case letter
+#pragma warning disable IDE1006 // Naming Styles
         public static IServiceProvider get_Services<T>(ref T instance)
             where T : IHost => instance.Services;
 
         public static IServiceProvider get_Services(IHost instance) => instance.Services;
+#pragma warning restore IDE1006 // Naming Styles
+#pragma warning restore SA1300 // Element should begin with upper-case letter
+#pragma warning restore CA1707 // Identifiers should not contain underscores
 
         public static bool IsFrameworkHost(IHost instance) =>
             instance != null && instance.GetType() == FrameworkHostType;
@@ -128,22 +136,24 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             IStartupValidator validator = GetOptional<IStartupValidator>(instance.Services);
             validator?.Validate();
             await InvokeAsync(state.LifecycleServices, item => item.StartingAsync(token),
-                token, state.Options.ServicesStartConcurrently,
-                abortOnFirstException: !state.Options.ServicesStartConcurrently);
+                state.Options.ServicesStartConcurrently,
+                abortOnFirstException: !state.Options.ServicesStartConcurrently,
+                cancellationToken: token);
 #endif
             await InvokeAsync(state.Services, item => StartHostedServiceAsync(
-                item, token, applicationLifetime, state.Options),
-                token,
+                item, applicationLifetime, state.Options, token),
 #if NET8_0_OR_GREATER
-                state.Options.ServicesStartConcurrently, abortOnFirstException: !state.Options.ServicesStartConcurrently);
+                state.Options.ServicesStartConcurrently,
+                abortOnFirstException: !state.Options.ServicesStartConcurrently, cancellationToken: token);
 #else
-                false, abortOnFirstException: true);
+                false, abortOnFirstException: true, cancellationToken: token);
 #endif
 
 #if NET8_0_OR_GREATER
             await InvokeAsync(state.LifecycleServices, item => item.StartedAsync(token),
-                token, state.Options.ServicesStartConcurrently,
-                abortOnFirstException: !state.Options.ServicesStartConcurrently);
+                state.Options.ServicesStartConcurrently,
+                abortOnFirstException: !state.Options.ServicesStartConcurrently,
+                cancellationToken: token);
 #endif
             Notify(applicationLifetime, "NotifyStarted");
             state.Starting = false;
@@ -163,21 +173,20 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
 #if NET8_0_OR_GREATER
                 await CaptureAsync(exceptions, () => InvokeAsync(
                     state.LifecycleServices.AsEnumerable().Reverse(), item => item.StoppingAsync(token),
-                    token, state.Options.ServicesStopConcurrently, abortOnFirstException: false));
+                    state.Options.ServicesStopConcurrently, abortOnFirstException: false, cancellationToken: token));
 #endif
                 state.ApplicationLifetime.StopApplication();
                 await CaptureAsync(exceptions, () => InvokeAsync(
                     state.Services.AsEnumerable().Reverse(), item => HostedService.StopAsync(item, token),
-                    token,
 #if NET8_0_OR_GREATER
-                    state.Options.ServicesStopConcurrently, abortOnFirstException: false));
+                    state.Options.ServicesStopConcurrently, abortOnFirstException: false, cancellationToken: token));
 #else
-                    false, abortOnFirstException: false));
+                    false, abortOnFirstException: false, cancellationToken: token));
 #endif
 #if NET8_0_OR_GREATER
                 await CaptureAsync(exceptions, () => InvokeAsync(
                     state.LifecycleServices.AsEnumerable().Reverse(), item => item.StoppedAsync(token),
-                    token, state.Options.ServicesStopConcurrently, abortOnFirstException: false));
+                    state.Options.ServicesStopConcurrently, abortOnFirstException: false, cancellationToken: token));
 #endif
             }
             else
@@ -192,12 +201,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         }
 
         private static async Task InvokeAsync<T>(IEnumerable<T> items, Func<T, Task> action,
-            CancellationToken cancellationToken, bool concurrently, bool abortOnFirstException)
+            bool concurrently, bool abortOnFirstException, CancellationToken cancellationToken)
         {
             var exceptions = new List<Exception>();
             if (concurrently)
             {
-                await InvokeConcurrentAsync(items, action, cancellationToken, exceptions);
+                await InvokeConcurrentAsync(items, action, exceptions, cancellationToken);
             }
             else
             {
@@ -224,9 +233,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         }
 
         private static async Task InvokeConcurrentAsync<T>(IEnumerable<T> items, Func<T, Task> action,
-            CancellationToken cancellationToken, List<Exception> exceptions)
+            List<Exception> exceptions, CancellationToken cancellationToken)
         {
             var tasks = new List<Task>();
+#if !NET8_0
+            // Only the NET8_0 path below hands the token to ControlledTask.Run; the later runtimes await the
+            // callback's own task directly. The parameter stays in the signature so all three paths share one
+            // shape, so discard it explicitly here rather than let it read as an overlooked argument.
+            _ = cancellationToken;
+#endif
 #if NET8_0
             foreach (T item in items ?? Enumerable.Empty<T>())
             {
@@ -338,8 +353,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
         }
 
         private static async Task StartHostedServiceAsync(
-            IHostedService service, CancellationToken cancellationToken,
-            IHostApplicationLifetime lifetime, HostOptions options)
+            IHostedService service, IHostApplicationLifetime lifetime, HostOptions options,
+            CancellationToken cancellationToken)
         {
             await HostedService.StartAsync(service, cancellationToken);
             if (service is SystemBackgroundService backgroundService)
@@ -409,11 +424,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             return default;
         }
 
-        private static T GetRequired<T>(IServiceProvider provider) where T : class =>
+        private static T GetRequired<T>(IServiceProvider provider)
+            where T : class =>
             provider.GetService(typeof(T)) as T ??
             throw new InvalidOperationException($"No service for type '{typeof(T)}' has been registered.");
 
-        private static T GetOptional<T>(IServiceProvider provider) where T : class =>
+        private static T GetOptional<T>(IServiceProvider provider)
+            where T : class =>
             provider.GetService(typeof(T)) as T;
 
         private static void Notify(IHostApplicationLifetime lifetime, string name)
@@ -450,6 +467,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             {
                 ExceptionDispatchInfo.Capture(exceptions[0]).Throw();
             }
+
             if (exceptions.Count > 1)
             {
                 throw new AggregateException(message, exceptions);
@@ -476,7 +494,6 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             internal bool Starting { get; set; }
             internal bool Stopped { get; set; }
         }
-
     }
 }
 #pragma warning restore CS1591

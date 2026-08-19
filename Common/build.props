@@ -25,8 +25,14 @@
   <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0' or '$(TargetFramework)' == 'net6.0'">
     <LangVersion>10.0</LangVersion>
   </PropertyGroup>
+  <!-- netstandard2.0 / net462. 9.0 rather than 8.0 for the pattern combinators ('not', 'or') the
+       shared sources use: they are purely syntactic, need no runtime support, and so compile for these
+       targets just as they do for the modern ones. At 8.0 any shared file that uses one fails with
+       CS8400 on these targets alone, which reads as a broken file rather than a language-version
+       setting. Features that DO need runtime support (records, init accessors) remain unavailable
+       regardless, because the required types are absent — the compiler still rejects them. -->
   <PropertyGroup Condition="'$(TargetFramework)' != 'net10.0' and '$(TargetFramework)' != 'net9.0' and '$(TargetFramework)' != 'net8.0' and '$(TargetFramework)' != 'net6.0'">
-    <LangVersion>8.0</LangVersion>
+    <LangVersion>9.0</LangVersion>
   </PropertyGroup>
   <PropertyGroup>
     <PublishRelease>true</PublishRelease>

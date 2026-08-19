@@ -44,9 +44,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             return ControlledTask.Run(async () =>
             {
                 using (source)
-                await using (lease)
                 {
-                    await Host.StopAsync(host, source.Token);
+                    await using (lease)
+                    {
+                        await Host.StopAsync(host, source.Token);
+                    }
                 }
             });
         }
@@ -90,6 +92,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             {
                 source.TrySetResult(true);
             }
+
             await source.Task;
             await Host.StopAsync(host, CancellationToken.None);
         });

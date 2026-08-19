@@ -9,6 +9,12 @@
     <Net6Supported>false</Net6Supported>
     <IsPackable>false</IsPackable>
     <NoWarn>$(NoWarn),1591</NoWarn>
+    <!-- The rewrite step resolves this assembly's dependencies from the COPY-LOCAL set (see
+         Common/rewrite.targets, which builds the dependency search paths from it). A library project
+         does not copy package assets to its output, so BenchmarkDotNet was absent from that set and
+         rewriting failed with "Failed to resolve assembly: 'BenchmarkDotNet'" — the compile having
+         succeeded, since compilation resolves from the package folder directly. -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
   <Import Project="..\..\Common\build.props" />
   <Import Project="..\..\Common\key.props" />

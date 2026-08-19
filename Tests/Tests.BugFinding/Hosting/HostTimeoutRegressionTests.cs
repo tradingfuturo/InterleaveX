@@ -81,8 +81,11 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 CoyoteRuntime.Current.RegisterKnownControlledTask(started.Task);
                 CoyoteRuntime.Current.RegisterKnownControlledTask(delay.Task);
 
-                Task DelayAsync(TimeSpan _, CancellationToken token)
+                Task DelayAsync(TimeSpan duration, CancellationToken token)
                 {
+                    // The duration is ignored on purpose: this stand-in completes when the test says so,
+                    // not when a timeout elapses.
+                    _ = duration;
                     started.TrySetResult(token);
                     token.Register(() => delay.TrySetCanceled(token));
                     return delay.Task;

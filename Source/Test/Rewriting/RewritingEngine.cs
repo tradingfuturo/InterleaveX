@@ -445,7 +445,6 @@ namespace Microsoft.Coyote.Rewriting
                         }
                     }
                 }
-
             }
         }
 
@@ -1204,10 +1203,12 @@ namespace Microsoft.Coyote.Rewriting
                     {
                         byte[] content;
                         using (var stream = this.FileSystem.OpenRead(candidate, FileReadSharing.DenyWriters))
-                        using (var memory = new MemoryStream())
                         {
-                            stream.CopyTo(memory);
-                            content = memory.ToArray();
+                            using (var memory = new MemoryStream())
+                            {
+                                stream.CopyTo(memory);
+                                content = memory.ToArray();
+                            }
                         }
 
                         this.CurrentCache?.RecordConsumedResolution(candidate, content);

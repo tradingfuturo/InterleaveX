@@ -474,7 +474,6 @@ namespace Microsoft.Coyote.Rewriting
                 }
             }
 
-
             foreach (string directory in Enumerable.Reverse(this.CreatedDirectories))
             {
                 try

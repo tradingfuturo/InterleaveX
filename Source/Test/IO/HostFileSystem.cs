@@ -379,7 +379,10 @@ namespace Microsoft.Coyote.IO
             {
                 if (descriptor >= 0)
                 {
-                    NativeMethods.Close(descriptor);
+                    // Nothing useful can be done if close fails on a descriptor this method is abandoning,
+                    // and the probe's own result is already decided; discard it explicitly rather than
+                    // leaving it to read as an overlooked error code.
+                    _ = NativeMethods.Close(descriptor);
                 }
             }
         }
@@ -460,10 +463,18 @@ namespace Microsoft.Coyote.IO
                 out IoStatusBlock ioStatusBlock, ref FileCaseSensitiveInformation fileInformation,
                 uint length, int fileInformationClass);
 
-            [DllImport("libc", EntryPoint = "pathconf", SetLastError = true)]
+            // Marshalling is stated rather than defaulted: the default for a string parameter is best-fit
+            // mapping, which silently substitutes look-alike characters for any path the target encoding
+            // cannot represent — so a path that cannot be marshalled faithfully now throws instead of
+            // quietly addressing a DIFFERENT file. CharSet.Ansi rather than UnmanagedType.LPUTF8Str because
+            // that enum member does not exist on netstandard2.0; on Unix, where libc is the only thing
+            // loading these, the runtime marshals CharSet.Ansi as UTF-8 anyway.
+            [DllImport("libc", EntryPoint = "pathconf", SetLastError = true, CharSet = CharSet.Ansi,
+                BestFitMapping = false, ThrowOnUnmappableChar = true)]
             internal static extern long PathConf(string path, int name);
 
-            [DllImport("libc", EntryPoint = "open", SetLastError = true)]
+            [DllImport("libc", EntryPoint = "open", SetLastError = true, CharSet = CharSet.Ansi,
+                BestFitMapping = false, ThrowOnUnmappableChar = true)]
             internal static extern int Open(string path, int flags);
 
             [DllImport("libc", EntryPoint = "ioctl", SetLastError = true)]

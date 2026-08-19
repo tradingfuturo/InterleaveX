@@ -10,9 +10,9 @@ using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using Microsoft.Coyote.Runtime;
 using SystemBackgroundService = Microsoft.Extensions.Hosting.BackgroundService;
-using SystemHostedService = Microsoft.Extensions.Hosting.IHostedService;
 using SystemCancellationToken = System.Threading.CancellationToken;
 using SystemCancellationTokenSource = System.Threading.CancellationTokenSource;
+using SystemHostedService = Microsoft.Extensions.Hosting.IHostedService;
 using SystemTask = System.Threading.Tasks.Task;
 
 namespace Microsoft.Coyote.Rewriting.Types.Hosting
@@ -365,7 +365,6 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             internal SystemCancellationTokenSource StoppingSource { get; set; }
 
             internal SystemTask ExecuteTask { get; set; }
-
         }
     }
 }

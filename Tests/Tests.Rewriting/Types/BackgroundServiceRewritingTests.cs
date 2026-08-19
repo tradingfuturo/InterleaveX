@@ -191,7 +191,7 @@ namespace Microsoft.Coyote.Rewriting.Tests
             StartAndStopService(ref classService);
             Assert.Equal(2, classService.CallCount);
 
-            var structService = new GenericHostedServiceStruct();
+            var structService = default(GenericHostedServiceStruct);
             StartAndStopService(ref structService);
             Assert.Equal(2, structService.CallCount);
 
@@ -199,7 +199,7 @@ namespace Microsoft.Coyote.Rewriting.Tests
             StartAndStopHost(ref classHost);
             Assert.Equal(2, classHost.CallCount);
 
-            var structHost = new GenericHostStruct();
+            var structHost = default(GenericHostStruct);
             StartAndStopHost(ref structHost);
             Assert.Equal(2, structHost.CallCount);
         }

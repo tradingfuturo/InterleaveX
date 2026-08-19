@@ -97,14 +97,18 @@ namespace Microsoft.Coyote.BugFinding.Tests
         {
             internal int HiddenCallCount;
 
+            // The parameters mirror the hidden base signatures — that is the whole point of these shims —
+            // so they are discarded rather than removed.
             public new Task StartAsync(CancellationToken cancellationToken)
             {
+                _ = cancellationToken;
                 this.HiddenCallCount++;
                 return Task.CompletedTask;
             }
 
             public new Task StopAsync(CancellationToken cancellationToken)
             {
+                _ = cancellationToken;
                 this.HiddenCallCount++;
                 return Task.CompletedTask;
             }

@@ -319,7 +319,7 @@ namespace Microsoft.Coyote.Tools.Tests
             var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(
                 fileSystem, Out());
             int replacements = 0;
-            fileSystem.BeforeReplaceFile = (_, __, ___) =>
+            fileSystem.BeforeReplaceFile = (source, destination, backup) =>
             {
                 if (++replacements is 2)
                 {
@@ -348,7 +348,7 @@ namespace Microsoft.Coyote.Tools.Tests
             var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(
                 fileSystem, Out());
             int replacements = 0;
-            fileSystem.BeforeReplaceFile = (_, __, ___) =>
+            fileSystem.BeforeReplaceFile = (source, destination, backup) =>
             {
                 if (++replacements is 2)
                 {
