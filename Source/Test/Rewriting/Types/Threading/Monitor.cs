@@ -711,6 +711,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             {
                 CoyoteRuntime runtime = this.GetRuntime();
 
+                // The reference is taken BEFORE the scheduling point below, exactly as EnterLock takes it
+                // before it blocks. Without it, another operation can acquire AND fully release this lock
+                // while this one is paused, dropping the use count to zero and EVICTING this block from the
+                // cache — after which this operation registers its ownership on an orphaned instance, and
+                // the Monitor.Exit that matches its successful probe resolves a different block (or none)
+                // and throws SynchronizationLockException, or trips the "cannot invoke Dispose without
+                // acquiring the lock" assertion.
+                SystemInterlocked.Increment(ref this.UseCount);
+
                 if (runtime.Configuration.IsLockAccessRaceCheckingEnabled && this.Owner is null)
                 {
                     // Same race window as EnterLock: while the lock is free, let another enabled operation
@@ -726,19 +735,20 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     {
                         // Monitor is reentrant, so the owner's own probe succeeds.
                         this.LockCountMap[op]++;
-                        SystemInterlocked.Increment(ref this.UseCount);
                         this.IsLockTaken = true;
                         return true;
                     }
 
-                    // Held by ANOTHER operation: refuse, and leave this operation enabled. IsLockTaken is
-                    // deliberately NOT written here — see the remarks above.
+                    // Held by ANOTHER operation: refuse, and leave this operation enabled. The reference
+                    // taken above is released, because no Exit will ever match this probe; it cannot reach
+                    // zero here, since the operation that owns the lock is still holding one of its own.
+                    // IsLockTaken is deliberately NOT written — see the remarks above.
+                    SystemInterlocked.Decrement(ref this.UseCount);
                     return false;
                 }
 
                 this.Owner = runtime.GetExecutingOperation();
                 this.LockCountMap.Add(this.Owner, 1);
-                SystemInterlocked.Increment(ref this.UseCount);
                 this.IsLockTaken = true;
                 return true;
             }
