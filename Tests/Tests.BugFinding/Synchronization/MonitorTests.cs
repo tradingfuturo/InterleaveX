@@ -8,12 +8,14 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Specifications;
 using Xunit;
 using Xunit.Abstractions;
+using ControlledMonitor = Microsoft.Coyote.Rewriting.Types.Threading.Monitor;
 
 using Monitor = System.Threading.Monitor;
 using SynchronizedBlock = Microsoft.Coyote.Rewriting.Types.Threading.Monitor.SynchronizedBlock;
@@ -466,6 +468,76 @@ namespace Microsoft.Coyote.BugFinding.Tests
                     Monitor.Exit(syncObject);
                 },
                 this.GetConfiguration().WithTestingIterations(100));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestControlledMonitorValidatesLockTakenAndTimeouts()
+        {
+            this.Test(() =>
+            {
+                object syncObject = new object();
+                bool lockTaken = true;
+                Assert.Throws<ArgumentException>(() => Monitor.Enter(syncObject, ref lockTaken));
+                Assert.Throws<ArgumentException>(() => Monitor.TryEnter(syncObject, 1, ref lockTaken));
+                Assert.Throws<ArgumentOutOfRangeException>(() => Monitor.TryEnter(syncObject, -2));
+                Assert.Throws<ArgumentOutOfRangeException>(() =>
+                    Monitor.TryEnter(syncObject, TimeSpan.FromMilliseconds(-2)));
+                Assert.Throws<ArgumentNullException>(() => Monitor.TryEnter(null, 0));
+            });
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestControlledMonitorValidationMatchesTheBclOracle()
+        {
+            this.Test(() =>
+            {
+                AssertSameException(
+                    () =>
+                    {
+                        bool lockTaken = true;
+                        ControlledMonitor.Enter(null, ref lockTaken);
+                    },
+                    "Enter", new[] { typeof(object), typeof(bool).MakeByRefType() },
+                    new object[] { null, true });
+                AssertSameException(
+                    () => ControlledMonitor.TryEnter(null, -2),
+                    "TryEnter", new[] { typeof(object), typeof(int) },
+                    new object[] { null, -2 });
+                AssertSameException(
+                    () => ControlledMonitor.TryEnter(new object(), -2),
+                    "TryEnter", new[] { typeof(object), typeof(int) },
+                    new object[] { new object(), -2 });
+                AssertSameException(
+                    () => ControlledMonitor.TryEnter(
+                        new object(), TimeSpan.FromMilliseconds((double)int.MaxValue + 1)),
+                    "TryEnter", new[] { typeof(object), typeof(TimeSpan) },
+                    new object[] { new object(), TimeSpan.FromMilliseconds((double)int.MaxValue + 1) });
+            });
+        }
+
+        private static void AssertSameException(Action modelCall, string methodName,
+            Type[] parameterTypes, object[] arguments)
+        {
+            Exception model = Record.Exception(modelCall);
+            Type bclMonitor = Type.GetType("System.Threading.Monitor, System.Private.CoreLib", throwOnError: true);
+            MethodInfo method = bclMonitor.GetMethod(methodName, parameterTypes);
+            Exception oracle = Record.Exception(() => method.Invoke(null, arguments));
+            if (oracle is TargetInvocationException invocation)
+            {
+                oracle = invocation.InnerException;
+            }
+
+            Specification.Assert(model != null && oracle != null && model.GetType() == oracle.GetType(),
+                "Monitor validation produced '{0}' instead of BCL exception '{1}'.",
+                model?.GetType().FullName ?? "no exception", oracle?.GetType().FullName ?? "no exception");
+            Specification.Assert(
+                string.Equals((model as ArgumentException)?.ParamName,
+                    (oracle as ArgumentException)?.ParamName, StringComparison.Ordinal),
+                "Monitor validation parameter '{0}' differed from BCL parameter '{1}'.",
+                (model as ArgumentException)?.ParamName ?? "<null>",
+                (oracle as ArgumentException)?.ParamName ?? "<null>");
         }
     }
 }
