@@ -17,7 +17,9 @@ namespace Microsoft.Coyote.Rewriting
     /// </summary>
     internal sealed class RewritingOutputChangeJournal
     {
-        private const int SchemaVersion = 3;
+        private const int SchemaVersion = 4;
+
+        private const int FingerprintedPublicationSchemaVersion = 3;
 
         private const int PublicationSchemaVersion = 2;
 
@@ -68,6 +70,12 @@ namespace Microsoft.Coyote.Rewriting
             public string TargetPath { get; set; }
 
             public bool ExpectedToExist { get; set; }
+
+            public long ExpectedLength { get; set; }
+
+            public string ExpectedFingerprint { get; set; }
+
+            public string ReplacementBackupPath { get; set; }
 
             public long StagedLength { get; set; }
 
@@ -125,10 +133,22 @@ namespace Microsoft.Coyote.Rewriting
             {
                 TargetPath = target,
                 ExpectedToExist = expected.HasValue,
+                ExpectedLength = expected?.Length ?? 0,
+                ExpectedFingerprint = expected?.Fingerprint,
                 StagedLength = this.FileSystem.GetFile(source).Length,
                 StagedFingerprint = RewritingCacheValidator.ComputeFileFingerprint(
                     this.FileSystem, source)
             };
+
+            if (expected.HasValue)
+            {
+                string relative = target.Substring(this.OutputDirectory.Length)
+                    .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                pending.ReplacementBackupPath = Path.Combine(
+                    this.BackupDirectory, relative + ".publish-" + Guid.NewGuid().ToString("N") + ".bak");
+                this.FileSystem.CreateDirectory(Path.GetDirectoryName(pending.ReplacementBackupPath));
+            }
+
             this.PendingPublications.Add(pending);
             this.SaveManifest();
 
@@ -152,45 +172,77 @@ namespace Microsoft.Coyote.Rewriting
                 return pending;
             }
 
+            MirroredFile baseline = expected.Value;
             try
             {
-                // This probe is not trusted for identity. It gives injected file systems the same
-                // mutation boundary as the host open; the exclusive handle below is what closes it.
-                if (!this.FileSystem.FileExists(target))
+                if (!this.ContainsBytes(target, baseline.Length, baseline.Fingerprint))
                 {
                     throw new IOException(
                         $"The source directory '{this.OutputDirectory}' changed after its rewrite snapshot was created.");
                 }
 
-                using Stream targetStream = this.FileSystem.OpenWriteExclusive(target);
-                MirroredFile baseline = expected.Value;
-                if (targetStream.Length != baseline.Length || !string.Equals(
-                    RewritingCacheValidator.ComputeStreamFingerprint(targetStream),
-                    baseline.Fingerprint, StringComparison.Ordinal))
-                {
-                    throw new IOException(
-                        $"The source directory '{this.OutputDirectory}' changed after its rewrite snapshot was created.");
-                }
-
-                this.Capture(target, targetStream);
-                using Stream sourceStream = this.FileSystem.OpenRead(source, FileReadSharing.DenyWriters);
-                targetStream.Position = 0;
-                targetStream.SetLength(0);
-                sourceStream.CopyTo(targetStream);
-                this.FileSystem.FlushWrite(targetStream);
-
-                this.SaveManifest();
-                return pending;
+                this.FileSystem.ReplaceFile(source, target, pending.ReplacementBackupPath);
             }
-            catch
+            catch (Exception replacementFailure)
             {
-                if (!this.CapturedPaths.Contains(target))
+                bool tookEffect = this.FileSystem.FileExists(pending.ReplacementBackupPath) &&
+                    this.ContainsBytes(target, pending.StagedLength, pending.StagedFingerprint);
+                if (!tookEffect)
                 {
+                    if (!this.FileSystem.FileExists(pending.ReplacementBackupPath))
+                    {
+                        this.RemovePendingPublication(pending);
+                    }
+
+                    throw;
+                }
+
+                // ReplaceFile can report an error after the atomic rename took effect. The durable
+                // pending record plus the captured backup make that state unambiguous, so finish
+                // publication instead of exposing a false failure to the caller.
+                _ = replacementFailure;
+            }
+
+            IFileEntry captured = this.FileSystem.GetFile(pending.ReplacementBackupPath);
+            string capturedFingerprint = captured.Exists ?
+                RewritingCacheValidator.ComputeFileFingerprint(
+                    this.FileSystem, pending.ReplacementBackupPath) : null;
+            if (!captured.Exists || captured.Length != baseline.Length ||
+                !string.Equals(capturedFingerprint, baseline.Fingerprint, StringComparison.Ordinal))
+            {
+                // A pre-replace race was captured atomically in the backup. Only put those actual
+                // bytes back while the target still contains the bytes owned by this journal.
+                if (captured.Exists &&
+                    this.ContainsBytes(target, pending.StagedLength, pending.StagedFingerprint))
+                {
+                    this.FileSystem.ReplaceFile(pending.ReplacementBackupPath, target, null);
                     this.RemovePendingPublication(pending);
                 }
 
-                throw;
+                throw new IOException(
+                    $"The source directory '{this.OutputDirectory}' changed after its rewrite snapshot was created.");
             }
+
+            var publishedChange = new Change()
+            {
+                TargetPath = target,
+                BackupPath = pending.ReplacementBackupPath,
+                Existed = true,
+                BackupLength = captured.Length,
+                BackupFingerprint = capturedFingerprint
+            };
+            this.Changes.Add(publishedChange);
+            this.CapturedPaths.Add(target);
+            this.SaveManifest();
+            return pending;
+        }
+
+        private bool ContainsBytes(string path, long length, string fingerprint)
+        {
+            IFileEntry file = this.FileSystem.GetFile(path);
+            return file.Exists && file.Length == length &&
+                string.Equals(RewritingCacheValidator.ComputeFileFingerprint(
+                    this.FileSystem, path), fingerprint, StringComparison.Ordinal);
         }
 
         private void RemovePendingPublication(PendingPublication pending)
@@ -367,17 +419,15 @@ namespace Microsoft.Coyote.Rewriting
                     $"Cannot capture output changes while the rewrite journal is '{this.State}'.");
             }
 
-            string previousState = this.State;
-            this.State = ActiveState;
-            try
-            {
-                this.SaveManifest();
-            }
-            catch
-            {
-                this.State = previousState;
-                throw;
-            }
+            // Restore atomically consumes backups. A retry is therefore a new transaction in the
+            // same journal directory and must recapture every target instead of reusing the stale
+            // change records from the completed rollback.
+            JournalManifest rearmed = this.CreateManifest(new List<Change>());
+            rearmed.State = ActiveState;
+            rearmed.CreatedDirectories.Clear();
+            rearmed.PendingPublications.Clear();
+            this.SaveManifest(rearmed);
+            this.ApplyManifest(rearmed);
         }
 
         internal void Restore()
@@ -390,23 +440,71 @@ namespace Microsoft.Coyote.Rewriting
             {
                 Change change = this.Changes.LastOrDefault(candidate =>
                     comparer.Equals(candidate.TargetPath, pending.TargetPath));
-                if (change != null || pending.ExpectedToExist ||
-                    !this.FileSystem.FileExists(pending.TargetPath))
+                if (change != null)
                 {
                     continue;
                 }
 
                 try
                 {
-                    string fingerprint = RewritingCacheValidator.ComputeFileFingerprint(
-                        this.FileSystem, pending.TargetPath);
-                    if (!string.Equals(fingerprint, pending.StagedFingerprint, StringComparison.Ordinal))
+                    if (!pending.ExpectedToExist)
                     {
+                        if (!this.FileSystem.FileExists(pending.TargetPath))
+                        {
+                            continue;
+                        }
+
+                        if (!this.ContainsBytes(
+                            pending.TargetPath, pending.StagedLength, pending.StagedFingerprint))
+                        {
+                            throw new IOException(
+                                $"Pending publication target '{pending.TargetPath}' no longer contains journal-owned bytes.");
+                        }
+
+                        this.FileSystem.DeleteFile(pending.TargetPath);
+                        continue;
+                    }
+
+                    bool containsExpectedBytes = this.Version >= SchemaVersion &&
+                        this.ContainsBytes(pending.TargetPath,
+                            pending.ExpectedLength, pending.ExpectedFingerprint);
+                    bool hasReplacementBackup = this.Version >= SchemaVersion &&
+                        !string.IsNullOrEmpty(pending.ReplacementBackupPath) &&
+                        this.FileSystem.FileExists(pending.ReplacementBackupPath);
+                    if (!hasReplacementBackup)
+                    {
+                        // Either replacement never happened, or an earlier recovery already
+                        // restored the target and atomically consumed the backup.
+                        if (containsExpectedBytes || this.Version < SchemaVersion)
+                        {
+                            continue;
+                        }
+
+                        throw new IOException(
+                            $"Pending publication backup for '{pending.TargetPath}' is missing or corrupt.");
+                    }
+
+                    if (!this.ContainsBytes(
+                        pending.TargetPath, pending.StagedLength, pending.StagedFingerprint))
+                    {
+                        // Never overwrite a target changed after publication.
                         throw new IOException(
                             $"Pending publication target '{pending.TargetPath}' no longer contains journal-owned bytes.");
                     }
 
-                    this.FileSystem.DeleteFile(pending.TargetPath);
+                    // Restore the bytes atomically captured by ReplaceFile. They can intentionally
+                    // differ from ExpectedFingerprint when the target raced immediately before the
+                    // replacement; restoring those actual bytes is still the only lossless action.
+                    this.FileSystem.ReplaceFile(
+                        pending.ReplacementBackupPath, pending.TargetPath, null);
+
+                    if (!this.ContainsBytes(pending.TargetPath,
+                        pending.ExpectedLength, pending.ExpectedFingerprint))
+                    {
+                        throw new IOException(
+                            $"Pending publication target '{pending.TargetPath}' raced before replacement; " +
+                            "the atomically captured bytes were restored.");
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -450,6 +548,7 @@ namespace Microsoft.Coyote.Rewriting
 
                     if (change.Existed)
                     {
+                        bool exists = this.FileSystem.FileExists(change.TargetPath);
                         IFileEntry backup = this.FileSystem.GetFile(change.BackupPath);
                         if (!backup.Exists || backup.Length != change.BackupLength ||
                             !string.Equals(RewritingCacheValidator.ComputeFileFingerprint(
@@ -461,7 +560,14 @@ namespace Microsoft.Coyote.Rewriting
                         }
 
                         this.FileSystem.CreateDirectory(Path.GetDirectoryName(change.TargetPath));
-                        this.FileSystem.CopyFile(change.BackupPath, change.TargetPath, true);
+                        if (exists)
+                        {
+                            this.FileSystem.ReplaceFile(change.BackupPath, change.TargetPath, null);
+                        }
+                        else
+                        {
+                            this.FileSystem.MoveFile(change.BackupPath, change.TargetPath);
+                        }
                     }
                     else
                     {
@@ -601,6 +707,7 @@ namespace Microsoft.Coyote.Rewriting
 
                 if (manifest is null ||
                     (manifest.Version != SchemaVersion &&
+                     manifest.Version != FingerprintedPublicationSchemaVersion &&
                      manifest.Version != PublicationSchemaVersion &&
                      manifest.Version != LegacySchemaVersion) ||
                     !string.Equals(RewritingCacheValidator.NormalizeDirectory(manifest.OutputDirectory),
@@ -650,6 +757,7 @@ namespace Microsoft.Coyote.Rewriting
                     fileSystem.ReadAllText(temporaryManifestPath));
                 if (manifest is null ||
                     (manifest.Version != SchemaVersion &&
+                     manifest.Version != FingerprintedPublicationSchemaVersion &&
                      manifest.Version != PublicationSchemaVersion &&
                      manifest.Version != LegacySchemaVersion) ||
                     manifest.State != ActiveState || manifest.Changes is null ||
@@ -713,7 +821,15 @@ namespace Microsoft.Coyote.Rewriting
                 if (manifest.Version < PublicationSchemaVersion || pending is null ||
                     string.IsNullOrEmpty(pending.TargetPath) ||
                     string.IsNullOrEmpty(pending.StagedFingerprint) ||
-                    (manifest.Version >= SchemaVersion && pending.StagedLength < 0) ||
+                    (manifest.Version >= FingerprintedPublicationSchemaVersion && pending.StagedLength < 0) ||
+                    (manifest.Version >= SchemaVersion && pending.ExpectedToExist &&
+                     (pending.ExpectedLength < 0 || string.IsNullOrEmpty(pending.ExpectedFingerprint) ||
+                      string.IsNullOrEmpty(pending.ReplacementBackupPath) ||
+                      !RewritingOutputMirror.IsWithin(
+                          pending.ReplacementBackupPath, backupDirectory, comparer))) ||
+                    (manifest.Version >= SchemaVersion && !pending.ExpectedToExist &&
+                     (!string.IsNullOrEmpty(pending.ExpectedFingerprint) ||
+                      !string.IsNullOrEmpty(pending.ReplacementBackupPath))) ||
                     !RewritingOutputMirror.IsWithin(pending.TargetPath, outputDirectory, comparer) ||
                     !pendingTargets.Add(pending.TargetPath))
                 {
@@ -836,8 +952,15 @@ namespace Microsoft.Coyote.Rewriting
                 (left.PendingPublications ?? new List<PendingPublication>()).Zip(
                     right.PendingPublications ?? new List<PendingPublication>(), (first, second) =>
                         first.ExpectedToExist == second.ExpectedToExist &&
+                        first.ExpectedLength == second.ExpectedLength &&
                         first.StagedLength == second.StagedLength &&
                         comparer.Equals(first.TargetPath, second.TargetPath) &&
+                        string.Equals(first.ExpectedFingerprint, second.ExpectedFingerprint,
+                            StringComparison.Ordinal) &&
+                        ((!first.ExpectedToExist && string.IsNullOrEmpty(first.ReplacementBackupPath) &&
+                          string.IsNullOrEmpty(second.ReplacementBackupPath)) ||
+                         (first.ExpectedToExist && comparer.Equals(
+                             first.ReplacementBackupPath, second.ReplacementBackupPath))) &&
                         string.Equals(first.StagedFingerprint, second.StagedFingerprint,
                             StringComparison.Ordinal)).All(isSame => isSame) &&
                 left.CreatedDirectories.Count == right.CreatedDirectories.Count &&

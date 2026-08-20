@@ -382,7 +382,7 @@ namespace Microsoft.Coyote.Tools.Tests
             fileSystem.WriteAllText(target, "after");
             string manifestPath = Path.Combine(journal.BackupDirectory, "journal.json");
             fileSystem.WriteAllText(manifestPath, fileSystem.ReadAllText(manifestPath)
-                .Replace("\"Version\": 3", "\"Version\": 1", StringComparison.Ordinal)
+                .Replace("\"Version\": 4", "\"Version\": 1", StringComparison.Ordinal)
                 .Replace(",\n  \"PendingPublications\": []", string.Empty,
                     StringComparison.Ordinal));
 
@@ -391,6 +391,145 @@ namespace Microsoft.Coyote.Tools.Tests
             Assert.Equal("before", fileSystem.ReadAllText(target));
             Assert.Empty(Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
                 fileSystem, Out()));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestExistingTargetPublicationDoesNotDestructivelyWriteTheTargetStream()
+        {
+            string staged = Out("staged.txt");
+            string target = Out("target.txt");
+            var inner = new InMemoryFileSystem()
+                .WithDirectory(Out())
+                .WithFile(staged, "replacement")
+                .WithFile(target, "original");
+            var fileSystem = new RejectingTargetWriteFileSystem(inner, target);
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(fileSystem, Out());
+            IFileEntry targetEntry = inner.GetFile(target);
+            var expected = new Microsoft.Coyote.Rewriting.MirroredFile(
+                targetEntry.Length, targetEntry.LastWriteTimeUtc,
+                Microsoft.Coyote.Rewriting.RewritingCacheValidator.ComputeFileFingerprint(inner, target));
+
+            journal.Publish(staged, target, expected);
+            Assert.Equal("replacement", inner.ReadAllText(target));
+
+            journal.Restore();
+            Assert.Equal("original", inner.ReadAllText(target));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestExistingTargetPublicationReconcilesPostEffectReplaceFailure()
+        {
+            string staged = Out("staged.txt");
+            string target = Out("target.txt");
+            var inner = new InMemoryFileSystem()
+                .WithDirectory(Out())
+                .WithFile(staged, "replacement")
+                .WithFile(target, "original");
+            var fileSystem = new RejectingTargetWriteFileSystem(inner, target)
+            {
+                ThrowAfterTargetReplace = true
+            };
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(fileSystem, Out());
+            IFileEntry targetEntry = inner.GetFile(target);
+            var expected = new Microsoft.Coyote.Rewriting.MirroredFile(
+                targetEntry.Length, targetEntry.LastWriteTimeUtc,
+                Microsoft.Coyote.Rewriting.RewritingCacheValidator.ComputeFileFingerprint(inner, target));
+
+            journal.Publish(staged, target, expected);
+            Assert.Equal("replacement", inner.ReadAllText(target));
+            journal.Restore();
+            Assert.Equal("original", inner.ReadAllText(target));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestExistingTargetPublicationRestoresAtomicPreReplaceRace()
+        {
+            string staged = Out("staged.txt");
+            string target = Out("target.txt");
+            var inner = new InMemoryFileSystem()
+                .WithDirectory(Out())
+                .WithFile(staged, "replacement")
+                .WithFile(target, "original");
+            var fileSystem = new RejectingTargetWriteFileSystem(inner, target)
+            {
+                BeforeTargetReplace = () => inner.WriteAllText(target, "external")
+            };
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(fileSystem, Out());
+            IFileEntry targetEntry = inner.GetFile(target);
+            var expected = new Microsoft.Coyote.Rewriting.MirroredFile(
+                targetEntry.Length, targetEntry.LastWriteTimeUtc,
+                Microsoft.Coyote.Rewriting.RewritingCacheValidator.ComputeFileFingerprint(inner, target));
+
+            Assert.Throws<IOException>(() => journal.Publish(staged, target, expected));
+            Assert.Equal("external", inner.ReadAllText(target));
+            journal.Restore();
+            journal.Complete();
+            Assert.Equal("external", inner.ReadAllText(target));
+        }
+
+        private sealed class RejectingTargetWriteFileSystem : IFileSystem
+        {
+            private readonly IFileSystem Inner;
+            private readonly string Target;
+
+            internal bool ThrowAfterTargetReplace { get; set; }
+
+            internal Action BeforeTargetReplace { get; set; }
+
+            internal RejectingTargetWriteFileSystem(IFileSystem inner, string target)
+            {
+                this.Inner = inner;
+                this.Target = Path.GetFullPath(target);
+            }
+
+            public bool FileExists(string path) => this.Inner.FileExists(path);
+            public bool DirectoryExists(string path) => this.Inner.DirectoryExists(path);
+            public IFileEntry GetFile(string path) => this.Inner.GetFile(path);
+            public string ReadAllText(string path) => this.Inner.ReadAllText(path);
+            public void WriteAllText(string path, string contents) => this.Inner.WriteAllText(path, contents);
+            public Stream OpenRead(string path, FileReadSharing sharing) => this.Inner.OpenRead(path, sharing);
+            public Stream OpenWriteExclusive(string path) => string.Equals(
+                Path.GetFullPath(path), this.Target, StringComparison.OrdinalIgnoreCase) ?
+                throw new IOException("Destructive target writes are forbidden by this regression test.") :
+                this.Inner.OpenWriteExclusive(path);
+            public Stream OpenWriteNewExclusive(string path) => this.Inner.OpenWriteNewExclusive(path);
+            public void FlushWrite(Stream stream) => this.Inner.FlushWrite(stream);
+            public void CopyFile(string sourcePath, string targetPath, bool overwrite) =>
+                this.Inner.CopyFile(sourcePath, targetPath, overwrite);
+            public void MoveFile(string sourcePath, string targetPath) => this.Inner.MoveFile(sourcePath, targetPath);
+            public void ReplaceFile(string sourcePath, string targetPath, string backupPath)
+            {
+                bool isTarget = string.Equals(
+                    Path.GetFullPath(targetPath), this.Target, StringComparison.OrdinalIgnoreCase) &&
+                    !string.IsNullOrEmpty(backupPath);
+                if (isTarget)
+                {
+                    Action before = this.BeforeTargetReplace;
+                    this.BeforeTargetReplace = null;
+                    before?.Invoke();
+                }
+
+                this.Inner.ReplaceFile(sourcePath, targetPath, backupPath);
+                if (isTarget && this.ThrowAfterTargetReplace)
+                {
+                    this.ThrowAfterTargetReplace = false;
+                    throw new IOException("Simulated failure after atomic replacement took effect.");
+                }
+            }
+
+            public void DeleteFile(string path) => this.Inner.DeleteFile(path);
+            public void CreateDirectory(string path) => this.Inner.CreateDirectory(path);
+            public void DeleteDirectory(string path, bool recursive) => this.Inner.DeleteDirectory(path, recursive);
+            public string[] GetFiles(string directory, string searchPattern) =>
+                this.Inner.GetFiles(directory, searchPattern);
+            public IReadOnlyList<IFileEntry> GetFileEntries(string directory, string searchPattern) =>
+                this.Inner.GetFileEntries(directory, searchPattern);
+            public string[] GetDirectories(string directory, string searchPattern, bool recursive) =>
+                this.Inner.GetDirectories(directory, searchPattern, recursive);
+            public bool IsCaseInsensitive(string directory) => this.Inner.IsCaseInsensitive(directory);
         }
 
         private sealed class InterruptingInitialManifestFileSystem : IFileSystem

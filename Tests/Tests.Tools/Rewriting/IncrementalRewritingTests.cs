@@ -510,7 +510,7 @@ namespace Microsoft.Coyote.Tools.Tests
             bool publicationReady = false;
             bool mutated = false;
             var fileSystem = new CallbackFileSystem(HostFileSystem.Instance,
-                beforeFileExists: path =>
+                beforeReplaceFile: (_, path, __) =>
                 {
                     if (publicationReady && !mutated && string.Equals(
                         path, workspace.InputAssemblyPath, StringComparison.OrdinalIgnoreCase))
@@ -545,7 +545,7 @@ namespace Microsoft.Coyote.Tools.Tests
             bool publicationInterrupted = false;
             bool cleanupInterrupted = false;
             var fileSystem = new CallbackFileSystem(HostFileSystem.Instance,
-                beforeOpenWriteExclusive: path =>
+                beforeReplaceFile: (_, path, __) =>
                 {
                     if (stagingCreated && !publicationInterrupted && string.Equals(
                         path, workspace.InputAssemblyPath, StringComparison.OrdinalIgnoreCase))
@@ -597,7 +597,7 @@ namespace Microsoft.Coyote.Tools.Tests
             bool mutated = false;
             var disposedPaths = new List<string>();
             var fileSystem = new CallbackFileSystem(HostFileSystem.Instance,
-                afterOpenWriteExclusiveDisposed: path =>
+                afterReplaceFile: (_, path, __) =>
                 {
                     disposedPaths.Add(path);
                     if (!mutated && string.Equals(
@@ -631,18 +631,23 @@ namespace Microsoft.Coyote.Tools.Tests
             workspace.Rewrite();
             Dictionary<string, byte[]> before = CaptureFiles(workspace.OutputDirectory);
             string failedTarget = Path.Combine(workspace.OutputDirectory, failedManifestName);
+            bool injected = false;
             var fileSystem = new CallbackFileSystem(HostFileSystem.Instance,
                 beforeMoveFile: (_, target) =>
                 {
-                    if (string.Equals(target, failedTarget, StringComparison.OrdinalIgnoreCase))
+                    if (!injected && string.Equals(
+                        target, failedTarget, StringComparison.OrdinalIgnoreCase))
                     {
+                        injected = true;
                         throw new IOException("injected publication failure");
                     }
                 },
                 beforeReplaceFile: (_, target, __) =>
                 {
-                    if (string.Equals(target, failedTarget, StringComparison.OrdinalIgnoreCase))
+                    if (!injected && string.Equals(
+                        target, failedTarget, StringComparison.OrdinalIgnoreCase))
                     {
+                        injected = true;
                         throw new IOException("injected publication failure");
                     }
                 });
@@ -1053,6 +1058,7 @@ namespace Microsoft.Coyote.Tools.Tests
             private readonly Action<string, string, bool> BeforeCopyFile;
             private readonly Action<string, string> BeforeMoveFile;
             private readonly Action<string, string, string> BeforeReplaceFile;
+            private readonly Action<string, string, string> AfterReplaceFile;
             private readonly Action<string> BeforeOpenWriteExclusive;
             private readonly Action<string> AfterOpenWriteExclusiveDisposed;
             private readonly Action<string, bool> BeforeDeleteDirectory;
@@ -1063,6 +1069,7 @@ namespace Microsoft.Coyote.Tools.Tests
                 Action<string, string, bool> beforeCopyFile = null,
                 Action<string, string> beforeMoveFile = null,
                 Action<string, string, string> beforeReplaceFile = null,
+                Action<string, string, string> afterReplaceFile = null,
                 Action<string> beforeFileExists = null,
                 Action<string> beforeOpenWriteExclusive = null,
                 Action<string> afterOpenWriteExclusiveDisposed = null,
@@ -1075,6 +1082,7 @@ namespace Microsoft.Coyote.Tools.Tests
                 this.BeforeCopyFile = beforeCopyFile;
                 this.BeforeMoveFile = beforeMoveFile;
                 this.BeforeReplaceFile = beforeReplaceFile;
+                this.AfterReplaceFile = afterReplaceFile;
                 this.BeforeOpenWriteExclusive = beforeOpenWriteExclusive;
                 this.AfterOpenWriteExclusiveDisposed = afterOpenWriteExclusiveDisposed;
                 this.BeforeDeleteDirectory = beforeDeleteDirectory;
@@ -1130,6 +1138,7 @@ namespace Microsoft.Coyote.Tools.Tests
             {
                 this.BeforeReplaceFile?.Invoke(sourcePath, targetPath, backupPath);
                 this.Inner.ReplaceFile(sourcePath, targetPath, backupPath);
+                this.AfterReplaceFile?.Invoke(sourcePath, targetPath, backupPath);
             }
 
             public void DeleteFile(string path) => this.Inner.DeleteFile(path);
