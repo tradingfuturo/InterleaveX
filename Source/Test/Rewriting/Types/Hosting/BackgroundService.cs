@@ -163,10 +163,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Hosting
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
             {
                 // The real wait is WhenAny(executeTask, Delay(Infinite, token)), expressed here as the one
-                // dependency it really is. It is NOT written as a delay: ScheduleDelay ignores its token and
-                // draws a finite budget from Configuration.TimeoutDelay, so an "infinite" delay would resolve
-                // on its own and let shutdown walk past a loop that is still running. A service that never
-                // observes its token leaves this unresolved, which is a deadlock and is reported as one.
+                // dependency it really is. A service that never observes its token leaves this unresolved,
+                // which is a deadlock and is reported as one.
                 bool isExecuteUncontrolled = runtime.CheckIfAwaitedTaskIsUncontrolled(execute);
                 runtime.PauseOperationUntil(
                     default,

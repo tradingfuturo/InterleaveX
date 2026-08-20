@@ -170,6 +170,32 @@ namespace Microsoft.Coyote.Rewriting.Tests
         }
 
         [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestGateRejectsAnInterceptorWithTheWrongReceiver()
+        {
+            MethodInfo real = typeof(SystemBackgroundService).GetMethod(
+                nameof(SystemBackgroundService.StartAsync), new[] { typeof(CancellationToken) });
+
+            Assert.False(
+                HasMatchingStatic(typeof(WrongReceiverModel), real.Name, real.GetParameters(),
+                    real.ReturnType, instanceFirst: true),
+                "The gate accepted object as the receiver of a BackgroundService instance call.");
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestGateRejectsAnUnrelatedTypeWithTheSameSimpleName()
+        {
+            MethodInfo real = typeof(SystemBackgroundService).GetMethod(
+                nameof(SystemBackgroundService.StartAsync), new[] { typeof(CancellationToken) });
+
+            Assert.False(
+                HasMatchingStatic(typeof(SameSimpleNameModel), real.Name, real.GetParameters(),
+                    real.ReturnType, instanceFirst: true),
+                "The gate compared only Type.Name and accepted an unrelated CancellationToken type.");
+        }
+
+        [Fact(Timeout = 5000)]
         public async Task TestBaseCallsKeepNonvirtualDispatchWithoutSystematicExecution()
         {
             var service = new BaseCallingService();
@@ -216,6 +242,34 @@ namespace Microsoft.Coyote.Rewriting.Tests
         {
             public static Task StartAsync(SystemBackgroundService instance, CancellationToken token) =>
                 instance.StartAsync(token);
+        }
+
+        private static class WrongReceiverModel
+        {
+            public static Task StartAsync(object instance, CancellationToken cancellationToken)
+            {
+                _ = instance;
+                _ = cancellationToken;
+                return Task.CompletedTask;
+            }
+        }
+
+        private static class SameSimpleNameModel
+        {
+            public static Task StartAsync(SystemBackgroundService instance,
+                FakeTypes.CancellationToken cancellationToken)
+            {
+                _ = instance;
+                _ = cancellationToken;
+                return Task.CompletedTask;
+            }
+        }
+
+        private static class FakeTypes
+        {
+            internal sealed class CancellationToken
+            {
+            }
         }
 
         private sealed class BaseCallingService : SystemBackgroundService
@@ -371,12 +425,20 @@ namespace Microsoft.Coyote.Rewriting.Tests
                     continue;
                 }
 
+                if (instanceFirst && candidateParameters[0].ParameterType !=
+                    typeof(SystemBackgroundService))
+                {
+                    continue;
+                }
+
                 bool match = true;
                 for (int idx = 0; idx < parameters.Length; ++idx)
                 {
                     ParameterInfo candidateParameter = candidateParameters[idx + offset];
                     if (!SameShape(candidateParameter.ParameterType, parameters[idx].ParameterType) ||
-                        !string.Equals(candidateParameter.Name, parameters[idx].Name, StringComparison.Ordinal))
+                        !string.Equals(candidateParameter.Name, parameters[idx].Name, StringComparison.Ordinal) ||
+                        candidateParameter.IsIn != parameters[idx].IsIn ||
+                        candidateParameter.IsOut != parameters[idx].IsOut)
                     {
                         match = false;
                         break;
@@ -392,8 +454,35 @@ namespace Microsoft.Coyote.Rewriting.Tests
             return false;
         }
 
-        private static bool SameShape(Type left, Type right) =>
-            string.Equals(left.Name, right.Name, StringComparison.Ordinal);
+        private static bool SameShape(Type left, Type right)
+        {
+            if (left.IsByRef != right.IsByRef || left.IsPointer != right.IsPointer ||
+                left.IsArray != right.IsArray || left.IsGenericParameter != right.IsGenericParameter)
+            {
+                return false;
+            }
+
+            if (left.HasElementType || right.HasElementType)
+            {
+                return left.HasElementType && right.HasElementType &&
+                    SameShape(left.GetElementType(), right.GetElementType());
+            }
+
+            if (left.IsGenericParameter)
+            {
+                return left.GenericParameterPosition == right.GenericParameterPosition;
+            }
+
+            if (!string.Equals(left.FullName, right.FullName, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            Type[] leftArguments = left.IsGenericType ? left.GetGenericArguments() : Type.EmptyTypes;
+            Type[] rightArguments = right.IsGenericType ? right.GetGenericArguments() : Type.EmptyTypes;
+            return leftArguments.Length == rightArguments.Length &&
+                leftArguments.Zip(rightArguments, SameShape).All(value => value);
+        }
 
         private static string DescribeParameters(ParameterInfo[] parameters) =>
             string.Join(", ", parameters.Select(p => $"{p.ParameterType.Name} {p.Name}"));
