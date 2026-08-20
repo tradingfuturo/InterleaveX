@@ -61,6 +61,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static bool WaitOne(SystemWaitHandle instance, int millisecondsTimeout, bool exitContext)
         {
+            if (millisecondsTimeout < SystemTimeout.Infinite)
+            {
+                throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
+            }
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 Resource.TryFind(instance, out Resource resource))
@@ -113,6 +118,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static bool WaitAll(SystemWaitHandle[] waitHandles, int millisecondsTimeout, bool exitContext)
         {
+            if (millisecondsTimeout < SystemTimeout.Infinite)
+            {
+                throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
+            }
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
             {
@@ -164,6 +174,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static int WaitAny(SystemWaitHandle[] waitHandles, int millisecondsTimeout, bool exitContext)
         {
+            if (millisecondsTimeout < SystemTimeout.Infinite)
+            {
+                throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
+            }
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
             {
@@ -299,12 +314,29 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         runtime.LogWriter.LogDebug(
                             "[coyote::debug] Operation {0} is waiting for '{1}' to get signaled on thread '{2}'.",
                             current.DebugInfo, this.DebugName, SystemThread.CurrentThread.ManagedThreadId);
-                        // TODO: model the timeout here using OperationStatus.PausedOnResourceOrDelay, which
-                        // now exists (see ControlledOperation.PauseWithResourcesOrDelay). This wait still
-                        // treats any non-zero timeout as infinite; BlockingCollection shows the shape.
-                        current.PauseWithResource(this.ResourceId);
+                        long deadline = millisecondsTimeout is SystemTimeout.Infinite ? 0 :
+                            runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout));
+                        if (millisecondsTimeout is SystemTimeout.Infinite)
+                        {
+                            current.PauseWithResource(this.ResourceId);
+                        }
+                        else
+                        {
+                            current.PauseWithResourcesOrDelay(new[] { this.ResourceId }, deadline);
+                        }
+
                         this.PausedOperations.Add(current);
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
+                        this.PausedOperations.Remove(current);
+                        if (current.WakeReason is OperationWakeReason.Deadline)
+                        {
+                            return false;
+                        }
+
+                        if (this.Mode is SignalMode.AutoResetSignal)
+                        {
+                            this.IsSignaled = false;
+                        }
                     }
                     else if (this.Mode is SignalMode.AutoResetSignal)
                     {
@@ -344,18 +376,37 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                             "[coyote::debug] Operation {0} is waiting for all 'WaitHandles' to get signaled on thread '{1}'.",
                             current.DebugInfo, SystemThread.CurrentThread.ManagedThreadId);
 
-                        // TODO: model the timeout here using OperationStatus.PausedOnResourceOrDelay, which
-                        // now exists (see ControlledOperation.PauseWithResourcesOrDelay). This wait still
-                        // treats any non-zero timeout as infinite; BlockingCollection shows the shape.
                         var nonSignaled = resources.Where(r => !r.IsSignaled);
-                        current.PauseWithResources(nonSignaled.Select(r => r.ResourceId), true);
+                        if (millisecondsTimeout is SystemTimeout.Infinite)
+                        {
+                            current.PauseWithResources(nonSignaled.Select(r => r.ResourceId), true);
+                        }
+                        else
+                        {
+                            current.PauseWithResourcesOrDelay(
+                                nonSignaled.Select(r => r.ResourceId),
+                                runtime.CreateVirtualDeadline(
+                                    TimeSpan.FromMilliseconds(millisecondsTimeout)),
+                                waitForAll: true);
+                        }
+
                         foreach (Resource resource in nonSignaled)
                         {
                             resource.PausedOperations.Add(current);
                         }
 
-                        TryResetSignal(resources, true);
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
+                        foreach (Resource resource in resources)
+                        {
+                            resource.PausedOperations.Remove(current);
+                        }
+
+                        if (current.WakeReason is OperationWakeReason.Deadline)
+                        {
+                            return false;
+                        }
+
+                        TryResetSignal(resources, true);
                     }
                     else
                     {
@@ -383,7 +434,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Acquire);
                     }
 
-                    int result = millisecondsTimeout;
+                    int result = SystemWaitHandle.WaitTimeout;
                     Resource[] resources = GetResources(runtime, waitHandles);
                     if (resources.All(r => !r.IsSignaled))
                     {
@@ -399,10 +450,18 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
                         try
                         {
-                            // TODO: model the timeout here using OperationStatus.PausedOnResourceOrDelay, which
-                        // now exists (see ControlledOperation.PauseWithResourcesOrDelay). This wait still
-                        // treats any non-zero timeout as infinite; BlockingCollection shows the shape.
-                            current.PauseWithResources(resources.Select(r => r.ResourceId), false);
+                            if (millisecondsTimeout is SystemTimeout.Infinite)
+                            {
+                                current.PauseWithResources(resources.Select(r => r.ResourceId), false);
+                            }
+                            else
+                            {
+                                current.PauseWithResourcesOrDelay(
+                                    resources.Select(r => r.ResourceId),
+                                    runtime.CreateVirtualDeadline(
+                                        TimeSpan.FromMilliseconds(millisecondsTimeout)));
+                            }
+
                             foreach (Resource resource in resources)
                             {
                                 resource.PausedOperations.Add(current);
@@ -412,11 +471,20 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         }
                         finally
                         {
+                            foreach (Resource resource in resources)
+                            {
+                                resource.PausedOperations.Remove(current);
+                            }
+
                             // Find the index of the signaling resource and clean up the cache.
                             SignalCache.TryGetValue(current.Id, out Guid signalingResource);
-                            result = signalingResource == Guid.Empty ?
-                                Array.FindIndex(resources, r => r.IsSignaled) :
-                                Array.FindIndex(resources, r => r.ResourceId == signalingResource);
+                            if (current.WakeReason is not OperationWakeReason.Deadline)
+                            {
+                                result = signalingResource == Guid.Empty ?
+                                    Array.FindIndex(resources, r => r.IsSignaled) :
+                                    Array.FindIndex(resources, r => r.ResourceId == signalingResource);
+                            }
+
                             SignalCache.TryRemove(current.Id, out _);
                         }
                     }
@@ -444,7 +512,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 if (operation != null)
                 {
                     OperationStatus status = operation.Status;
-                    if (operation.TryEnable(this.ResourceId) && status is OperationStatus.PausedOnAnyResource)
+                    if (operation.TryEnable(this.ResourceId) &&
+                        status is OperationStatus.PausedOnAnyResource or OperationStatus.PausedOnResourceOrDelay)
                     {
                         // This signal successfully enabled the operation.
                         SignalCache.TryAdd(operation.Id, this.ResourceId);
@@ -465,7 +534,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 foreach (ControlledOperation operation in this.PausedOperations)
                 {
                     OperationStatus status = operation.Status;
-                    if (operation.TryEnable(this.ResourceId) && status is OperationStatus.PausedOnAnyResource)
+                    if (operation.TryEnable(this.ResourceId) &&
+                        status is OperationStatus.PausedOnAnyResource or OperationStatus.PausedOnResourceOrDelay)
                     {
                         // This signal successfully enabled the operation.
                         SignalCache.TryAdd(operation.Id, this.ResourceId);

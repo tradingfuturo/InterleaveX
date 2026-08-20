@@ -654,7 +654,6 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy != SchedulingPolicy.None)
             {
-                // TODO: support timeouts during testing.
                 TaskServices.WaitUntilAllTasksComplete(runtime, tasks.ToArray());
             }
 
@@ -700,9 +699,30 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             SystemCancellationToken cancellationToken)
         {
             var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving && tasks != null &&
+                millisecondsTimeout != SystemTimeout.Infinite)
+            {
+                if (millisecondsTimeout < SystemTimeout.Infinite)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                bool completed = Array.TrueForAll(tasks, task => task.IsCompleted);
+                if (!completed && millisecondsTimeout > 0)
+                {
+                    long deadline = runtime.CreateVirtualDeadline(
+                        TimeSpan.FromMilliseconds(millisecondsTimeout));
+                    completed = runtime.PauseOperationUntilDeadline(null,
+                        () => Array.TrueForAll(tasks, task => task.IsCompleted), deadline,
+                        debugMsg: "all tasks to complete", cancellationToken: cancellationToken);
+                }
+
+                return completed && SystemTask.WaitAll(tasks, 0, cancellationToken);
+            }
+
             if (runtime.SchedulingPolicy != SchedulingPolicy.None && tasks != null)
             {
-                // TODO: support timeouts during testing, this would become false if there is a timeout.
                 TaskServices.WaitUntilAllTasksComplete(runtime, tasks);
             }
 
@@ -753,9 +773,36 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             SystemCancellationToken cancellationToken)
         {
             var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving && tasks != null &&
+                millisecondsTimeout != SystemTimeout.Infinite)
+            {
+                if (millisecondsTimeout < SystemTimeout.Infinite)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                int index = Array.FindIndex(tasks, task => task.IsCompleted);
+                if (index < 0 && millisecondsTimeout > 0)
+                {
+                    long deadline = runtime.CreateVirtualDeadline(
+                        TimeSpan.FromMilliseconds(millisecondsTimeout));
+                    _ = runtime.PauseOperationUntilDeadline(null,
+                        () => Array.Exists(tasks, task => task.IsCompleted), deadline,
+                        debugMsg: "any task to complete", cancellationToken: cancellationToken);
+                    index = Array.FindIndex(tasks, task => task.IsCompleted);
+                }
+
+                if (index >= 0)
+                {
+                    _ = SystemTask.WaitAny(tasks, 0, cancellationToken);
+                }
+
+                return index;
+            }
+
             if (runtime.SchedulingPolicy != SchedulingPolicy.None && tasks != null)
             {
-                // TODO: support timeouts during testing, this would become -1 if there is a timeout.
                 TaskServices.WaitUntilAnyTaskCompletes(runtime, tasks);
             }
 
@@ -805,6 +852,28 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             SystemCancellationToken cancellationToken)
         {
             var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
+                millisecondsTimeout != SystemTimeout.Infinite)
+            {
+                if (millisecondsTimeout < SystemTimeout.Infinite)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                bool completed = task.IsCompleted;
+                if (!completed && millisecondsTimeout > 0)
+                {
+                    long deadline = runtime.CreateVirtualDeadline(
+                        TimeSpan.FromMilliseconds(millisecondsTimeout));
+                    completed = runtime.PauseOperationUntilDeadline(null, () => task.IsCompleted,
+                        deadline, debugMsg: $"task '{task.Id}' to complete",
+                        cancellationToken: cancellationToken);
+                }
+
+                return completed && task.Wait(0, cancellationToken);
+            }
+
             if (runtime.SchedulingPolicy != SchedulingPolicy.None)
             {
                 TaskServices.WaitUntilTaskCompletes(runtime, task);

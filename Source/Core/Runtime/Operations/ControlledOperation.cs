@@ -154,15 +154,25 @@ namespace Microsoft.Coyote.Runtime
         internal ulong OperationCreationCount;
 
         /// <summary>
-        /// Value denoting the number of scheduling steps this operation must remain delayed.
-        /// </summary>
-        internal int DelayedStepsCount;
-
-        /// <summary>
         /// Token that can cancel an ordinary asynchronous delay. Resource timeouts and thread sleeps
         /// leave this unset because their existing wake-up contracts are not cancellation based.
         /// </summary>
         internal CancellationToken DelayCancellationToken;
+
+        /// <summary>
+        /// Absolute virtual-time deadline, in <see cref="TimeSpan"/> ticks.
+        /// </summary>
+        internal long VirtualDeadlineTicks;
+
+        internal bool HasVirtualDeadline;
+
+        /// <summary>
+        /// True when this operation publishes completion of a virtual <c>Task.Delay</c>.
+        /// A due timer must complete before the clock can advance past its deadline.
+        /// </summary>
+        internal bool IsVirtualTimerOperation;
+
+        internal OperationWakeReason WakeReason;
 
         /// <summary>
         /// True if this is the root operation, else false.
@@ -188,6 +198,8 @@ namespace Microsoft.Coyote.Runtime
             this.Status is OperationStatus.PausedOnAnyResource ||
             this.Status is OperationStatus.PausedOnAllResources ||
             this.Status is OperationStatus.PausedOnResourceOrDelay ||
+            this.Status is OperationStatus.PausedOnAllResourcesOrDelay ||
+            this.Status is OperationStatus.PausedOnDependencyOrDelay ||
             this.Status is OperationStatus.PausedOnReceive;
 
         /// <summary>
@@ -218,8 +230,11 @@ namespace Microsoft.Coyote.Runtime
             this.LastAccessedSharedState = string.Empty;
             this.LastAccessedSharedStateComparer = null;
             this.OperationCreationCount = 0;
-            this.DelayedStepsCount = 0;
             this.DelayCancellationToken = default;
+            this.VirtualDeadlineTicks = 0;
+            this.HasVirtualDeadline = false;
+            this.IsVirtualTimerOperation = false;
+            this.WakeReason = OperationWakeReason.None;
             this.IsSourceUncontrolled = false;
             this.IsDependencyUncontrolled = false;
 
@@ -255,24 +270,28 @@ namespace Microsoft.Coyote.Runtime
             this.Status = OperationStatus.Paused;
             this.Dependency = callback;
             this.IsDependencyUncontrolled = !isControlled;
+            this.HasVirtualDeadline = false;
+            this.WakeReason = OperationWakeReason.None;
         }
 
         /// <summary>
         /// Pauses this operation and sets a delay counter that decrements in each scheduling step.
         /// When the counter reaches 0, the operation can become enabled again.
         /// </summary>
-        internal void PauseWithDelay(uint delay)
+        internal void PauseWithDelay(long deadline)
         {
-            this.PauseWithDelay(delay, default);
+            this.PauseWithDelay(deadline, default);
         }
 
         /// <summary>
         /// Pauses this operation with a delay that can also be resolved by cancellation.
         /// </summary>
-        internal void PauseWithDelay(uint delay, CancellationToken cancellationToken)
+        internal void PauseWithDelay(long deadline, CancellationToken cancellationToken)
         {
             this.Status = OperationStatus.PausedOnDelay;
-            this.DelayedStepsCount = delay > int.MaxValue ? int.MaxValue : (int)delay;
+            this.VirtualDeadlineTicks = deadline;
+            this.HasVirtualDeadline = true;
+            this.WakeReason = OperationWakeReason.None;
             this.DelayCancellationToken = cancellationToken;
         }
 
@@ -298,29 +317,46 @@ namespace Microsoft.Coyote.Runtime
         /// Pauses this operation until any of the specified resources is released OR the delay completes,
         /// whichever happens first. This is a resource wait with a finite timeout: it can be signaled, and
         /// it can also give up on its own.
-        /// <para><paramref name="delay"/> is an ABSTRACT step budget, not milliseconds — the caller draws it
-        /// from <c>Configuration.TimeoutDelay</c> via a nondeterministic choice, the same way
-        /// <c>Thread.Sleep</c> and <c>Task.Delay</c> do. A budget of 0 means the timeout has already
-        /// elapsed, so the caller must not pause at all.</para>
+        /// <para><paramref name="deadline"/> is an absolute deadline in the owning runtime's virtual clock.</para>
         /// </summary>
-        internal void PauseWithResourcesOrDelay(IEnumerable<Guid> resourceIds, uint delay)
+        internal void PauseWithResourcesOrDelay(IEnumerable<Guid> resourceIds, long deadline,
+            bool waitForAll = false)
         {
-            this.Status = OperationStatus.PausedOnResourceOrDelay;
+            this.Status = waitForAll ? OperationStatus.PausedOnAllResourcesOrDelay :
+                OperationStatus.PausedOnResourceOrDelay;
             this.AwaitedResources.UnionWith(resourceIds);
-            this.DelayedStepsCount = delay > int.MaxValue ? int.MaxValue : (int)delay;
+            this.VirtualDeadlineTicks = deadline;
+            this.HasVirtualDeadline = true;
+            this.WakeReason = OperationWakeReason.None;
         }
 
         /// <summary>
-        /// Enables this operation because its delay elapsed, rather than because a resource signaled it.
-        /// <para>Clearing the awaited resources is what distinguishes the two wakes for a
-        /// <see cref="OperationStatus.PausedOnResourceOrDelay"/> waiter: a resource wake leaves the
-        /// remaining budget intact, while this one zeroes it, so the waiter can tell a signal from a
-        /// timeout without the runtime having to report a reason.</para>
+        /// Pauses until a dependency resolves or an absolute virtual deadline is reached.
         /// </summary>
-        internal void EnableAfterDelay()
+        internal void PauseWithDependencyOrDelay(Func<bool> callback, bool isControlled, long deadline)
         {
-            this.DelayedStepsCount = 0;
+            this.Status = OperationStatus.PausedOnDependencyOrDelay;
+            this.Dependency = callback;
+            this.IsDependencyUncontrolled = !isControlled;
+            this.VirtualDeadlineTicks = deadline;
+            this.HasVirtualDeadline = true;
+            this.WakeReason = OperationWakeReason.None;
+        }
+
+        /// <summary>
+        /// Enables this operation because its deadline elapsed or cancellation was requested.
+        /// </summary>
+        internal void EnableAfterDelay(bool isCancellation = false)
+        {
+            if (!this.IsVirtualTimerOperation)
+            {
+                this.HasVirtualDeadline = false;
+            }
+
+            this.WakeReason = isCancellation ? OperationWakeReason.Cancellation : OperationWakeReason.Deadline;
             this.AwaitedResources.Clear();
+            this.Dependency = null;
+            this.IsDependencyUncontrolled = false;
             this.Status = OperationStatus.Enabled;
         }
 
@@ -329,10 +365,14 @@ namespace Microsoft.Coyote.Runtime
         /// </summary>
         internal bool TryEnable()
         {
-            if (this.Status is OperationStatus.Paused && (this.Dependency?.Invoke() ?? true))
+            if ((this.Status is OperationStatus.Paused ||
+                 this.Status is OperationStatus.PausedOnDependencyOrDelay) &&
+                (this.Dependency?.Invoke() ?? true))
             {
                 this.Dependency = null;
                 this.IsDependencyUncontrolled = false;
+                this.HasVirtualDeadline = false;
+                this.WakeReason = OperationWakeReason.Dependency;
                 this.Status = OperationStatus.Enabled;
             }
 
@@ -350,14 +390,9 @@ namespace Microsoft.Coyote.Runtime
                 if (this.Status is OperationStatus.PausedOnAnyResource ||
                     this.Status is OperationStatus.PausedOnResourceOrDelay)
                 {
-                    // PausedOnResourceOrDelay is enabled by ANY resource, like PausedOnAnyResource — but its
-                    // DelayedStepsCount is deliberately LEFT ALONE. That remaining budget is how a timed
-                    // waiter knows it was woken by a signal rather than by its timeout, and how much of the
-                    // timeout it has left. Zeroing it here would silently restart the timeout every time a
-                    // waiter is woken and then loses the item to someone else, turning a finite wait into an
-                    // unbounded one. The delay path in CoyoteRuntime.TryEnableOperation is the only place
-                    // that clears it, precisely because there the timeout really has elapsed.
                     this.AwaitedResources.Clear();
+                    this.HasVirtualDeadline = false;
+                    this.WakeReason = OperationWakeReason.Resource;
                     this.Status = OperationStatus.Enabled;
                     enabled = true;
                 }
@@ -366,6 +401,18 @@ namespace Microsoft.Coyote.Runtime
                     this.AwaitedResources.Remove(resourceId);
                     if (this.AwaitedResources.Count is 0)
                     {
+                        this.Status = OperationStatus.Enabled;
+                        this.WakeReason = OperationWakeReason.Resource;
+                        enabled = true;
+                    }
+                }
+                else if (this.Status is OperationStatus.PausedOnAllResourcesOrDelay)
+                {
+                    this.AwaitedResources.Remove(resourceId);
+                    if (this.AwaitedResources.Count is 0)
+                    {
+                        this.HasVirtualDeadline = false;
+                        this.WakeReason = OperationWakeReason.Resource;
                         this.Status = OperationStatus.Enabled;
                         enabled = true;
                     }
@@ -498,6 +545,9 @@ namespace Microsoft.Coyote.Runtime
                     hash = (hash * 31) + this.LastCallSiteHash;
                     hash = (hash * 31) + this.LastSchedulingPoint.GetHashCode();
                     hash = (hash * 31) + this.Status.GetHashCode();
+                    hash = (hash * 31) + this.HasVirtualDeadline.GetHashCode();
+                    hash = (hash * 31) + this.VirtualDeadlineTicks.GetHashCode();
+                    hash = (hash * 31) + this.WakeReason.GetHashCode();
                 }
 
                 return hash;

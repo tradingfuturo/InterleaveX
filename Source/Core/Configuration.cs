@@ -925,6 +925,7 @@ namespace Microsoft.Coyote
         /// <remarks>
         /// Increase the value to decrease the probability. This value is not a unit of time.
         /// </remarks>
+        [Obsolete("Exact interleaving virtual time ignores this setting; it remains active for fuzzing compatibility.", false)]
         public Configuration WithTimeoutDelay(uint delay)
         {
             this.TimeoutDelay = delay;

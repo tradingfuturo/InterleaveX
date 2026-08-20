@@ -107,11 +107,18 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static void Sleep(int millisecondsTimeout)
         {
+            if (millisecondsTimeout < SystemTimeout.Infinite)
+            {
+                throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
+            }
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
             {
-                DelayCurrentOperation(current, runtime, millisecondsTimeout);
+                DelayCurrentOperation(current, runtime,
+                    millisecondsTimeout is SystemTimeout.Infinite ?
+                        SystemTimeout.InfiniteTimeSpan : TimeSpan.FromMilliseconds(millisecondsTimeout));
             }
             else
             {
@@ -124,11 +131,17 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static void Sleep(TimeSpan timeout)
         {
+            long totalMilliseconds = (long)timeout.TotalMilliseconds;
+            if (totalMilliseconds < SystemTimeout.Infinite || totalMilliseconds > int.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(nameof(timeout));
+            }
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
             {
-                DelayCurrentOperation(current, runtime, (int)timeout.TotalMilliseconds);
+                DelayCurrentOperation(current, runtime, timeout);
             }
             else
             {
@@ -146,7 +159,10 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
             {
                 // We model 'SpinWait' by delaying the current operation, similar to 'Sleep'.
-                DelayCurrentOperation(current, runtime, iterations);
+                if (iterations > 0)
+                {
+                    runtime.ScheduleNextOperation(current, SchedulingPointType.Yield, isYielding: true);
+                }
             }
             else
             {
@@ -157,20 +173,22 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// <summary>
         /// Delays the currently executing controlled operation for the specified amount of time.
         /// </summary>
-        private static void DelayCurrentOperation(ControlledOperation op, CoyoteRuntime runtime, int millisecondsTimeout)
+        private static void DelayCurrentOperation(ControlledOperation op, CoyoteRuntime runtime, TimeSpan timeout)
         {
-            if (millisecondsTimeout is 0)
+            if (timeout is { Ticks: 0 })
             {
                 return;
             }
 
-            uint timeout = (uint)runtime.GetNextNondeterministicIntegerChoice((int)runtime.Configuration.TimeoutDelay, null, null);
-            if (timeout is 0)
+            if (timeout == SystemTimeout.InfiniteTimeSpan)
             {
-                return;
+                op.PauseWithDependency(() => false, true);
+            }
+            else
+            {
+                op.PauseWithDelay(runtime.CreateVirtualDeadline(timeout));
             }
 
-            op.PauseWithDelay(timeout);
             runtime.ScheduleNextOperation(op, SchedulingPointType.Yield);
         }
 
@@ -210,6 +228,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static bool Join(SystemThread instance, int millisecondsTimeout)
         {
+            if (millisecondsTimeout < SystemTimeout.Infinite)
+            {
+                throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
+            }
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
@@ -225,11 +248,17 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static bool Join(SystemThread instance, TimeSpan timeout)
         {
+            long totalMilliseconds = (long)timeout.TotalMilliseconds;
+            if (totalMilliseconds < SystemTimeout.Infinite || totalMilliseconds > int.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(nameof(timeout));
+            }
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
             {
-                return PauseUntilThreadCompletes(current, runtime, instance, (int)timeout.TotalMilliseconds);
+                return PauseUntilThreadCompletes(current, runtime, instance, (int)totalMilliseconds);
             }
 
             return instance.Join(timeout);
@@ -241,13 +270,25 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         private static bool PauseUntilThreadCompletes(ControlledOperation current, CoyoteRuntime runtime,
             SystemThread thread, int millisecondsTimeout)
         {
-            // TODO: support timeouts during testing.
-            millisecondsTimeout = SystemTimeout.Infinite;
+            if (millisecondsTimeout < SystemTimeout.Infinite)
+            {
+                throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
+            }
+
             bool isThreadUncontrolled = runtime.CheckIfAwaitedThreadIsUncontrolled(thread);
             ControlledOperation threadOp = isThreadUncontrolled ? null : runtime.GetOperationExecutingOnThread(thread);
             Func<bool> condition = threadOp is null ? () => thread.Join(0) : (Func<bool>)(() => threadOp.Status is OperationStatus.Completed);
-            runtime.PauseOperationUntil(current, condition, !isThreadUncontrolled, $"thread '{thread.ManagedThreadId}' to complete");
-            return true;
+            if (millisecondsTimeout is SystemTimeout.Infinite)
+            {
+                runtime.PauseOperationUntil(current, condition, !isThreadUncontrolled,
+                    $"thread '{thread.ManagedThreadId}' to complete");
+                return true;
+            }
+
+            return condition() || (millisecondsTimeout > 0 &&
+                runtime.PauseOperationUntilDeadline(current, condition,
+                    runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout)),
+                    !isThreadUncontrolled, $"thread '{thread.ManagedThreadId}' to complete"));
         }
     }
 }

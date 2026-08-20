@@ -756,7 +756,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
             private bool IsCancellationRegistered;
             private WaiterKind RegisteredKind;
             private ControlledOperation Operation;
-            private uint RemainingBudget;
+            private long Deadline;
             private bool IsExpired;
 
             internal Wait(CoyoteRuntime runtime, int millisecondsTimeout, SystemCancellationToken cancellationToken)
@@ -776,14 +776,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
                 }
                 else if (!this.IsInfinite)
                 {
-                    // The requested duration only distinguishes zero from non-zero; the actual wait is an
-                    // ABSTRACT step budget drawn from Configuration.TimeoutDelay, exactly as Thread.Sleep
-                    // and Task.Delay do under this runtime. There is no clock to honour milliseconds
-                    // against, so a proportional mapping would be false precision. A budget of zero means
-                    // the scheduler chose "this timeout has already elapsed".
-                    this.RemainingBudget = (uint)runtime.GetNextNondeterministicIntegerChoice(
-                        (int)runtime.Configuration.TimeoutDelay, null, null);
-                    this.IsExpired = this.RemainingBudget is 0;
+                    this.Deadline = runtime.CreateVirtualDeadline(
+                        TimeSpan.FromMilliseconds(millisecondsTimeout));
                 }
             }
 
@@ -863,24 +857,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
                     }
                     else
                     {
-                        current.PauseWithResourcesOrDelay(resources, this.RemainingBudget);
+                        current.PauseWithResourcesOrDelay(resources, this.Deadline);
                     }
 
                     this.Runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
 
-                    // Awake again. A zero remaining budget means the delay is what enabled us, so the
-                    // timeout fired; anything else is a resource (or cancellation) wake and the remainder
-                    // carries over. Carrying it is what stops a waiter that is repeatedly woken and then
-                    // beaten to the item from restarting its timeout each time and waiting forever.
                     this.ReleaseWaiterSets();
-                    if (!this.IsInfinite)
+                    if (!this.IsInfinite && current.WakeReason is OperationWakeReason.Deadline)
                     {
-                        this.RemainingBudget = (uint)Math.Max(0, current.DelayedStepsCount);
-                        if (this.RemainingBudget is 0)
-                        {
-                            this.IsExpired = true;
-                            return false;
-                        }
+                        this.IsExpired = true;
+                        return false;
                     }
 
                     return true;

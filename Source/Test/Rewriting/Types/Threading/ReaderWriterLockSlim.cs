@@ -274,6 +274,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// </summary>
             internal bool EnterRead(int millisecondsTimeout)
             {
+                ValidateMillisecondsTimeout(millisecondsTimeout);
                 CoyoteRuntime runtime = this.GetRuntime();
                 using (runtime.EnterSynchronizedSection())
                 {
@@ -294,6 +295,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Acquire);
                     }
 
+                    long deadline = millisecondsTimeout is SystemTimeout.Infinite ? 0 :
+                        runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout));
                     while (this.Writer != null)
                     {
                         if (millisecondsTimeout is 0)
@@ -304,9 +307,22 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         runtime.LogWriter.LogDebug(
                             "[coyote::debug] Operation {0} is waiting to read-acquire '{1}' on thread '{2}'.",
                             current.DebugInfo, this.DebugName, SystemThread.CurrentThread.ManagedThreadId);
-                        current.PauseWithResource(this.ResourceId);
+                        if (millisecondsTimeout is SystemTimeout.Infinite)
+                        {
+                            current.PauseWithResource(this.ResourceId);
+                        }
+                        else
+                        {
+                            current.PauseWithResourcesOrDelay(new[] { this.ResourceId }, deadline);
+                        }
+
                         this.PausedReaders.Enqueue(current);
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
+                        if (current.WakeReason is OperationWakeReason.Deadline)
+                        {
+                            Remove(this.PausedReaders, current);
+                            return false;
+                        }
                     }
 
                     this.Readers.Add(current);
@@ -348,6 +364,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// </summary>
             internal bool EnterWrite(int millisecondsTimeout)
             {
+                ValidateMillisecondsTimeout(millisecondsTimeout);
                 CoyoteRuntime runtime = this.GetRuntime();
                 using (runtime.EnterSynchronizedSection())
                 {
@@ -368,6 +385,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Acquire);
                     }
 
+                    long deadline = millisecondsTimeout is SystemTimeout.Infinite ? 0 :
+                        runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout));
                     while (this.Writer != null || this.Readers.Count > 0 ||
                         (this.UpgradeableReader != null && this.UpgradeableReader != current))
                     {
@@ -379,9 +398,22 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         runtime.LogWriter.LogDebug(
                             "[coyote::debug] Operation {0} is waiting to write-acquire '{1}' on thread '{2}'.",
                             current.DebugInfo, this.DebugName, SystemThread.CurrentThread.ManagedThreadId);
-                        current.PauseWithResource(this.ResourceId);
+                        if (millisecondsTimeout is SystemTimeout.Infinite)
+                        {
+                            current.PauseWithResource(this.ResourceId);
+                        }
+                        else
+                        {
+                            current.PauseWithResourcesOrDelay(new[] { this.ResourceId }, deadline);
+                        }
+
                         this.PausedWriters.Enqueue(current);
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
+                        if (current.WakeReason is OperationWakeReason.Deadline)
+                        {
+                            Remove(this.PausedWriters, current);
+                            return false;
+                        }
                     }
 
                     this.Writer = current;
@@ -418,6 +450,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// </summary>
             internal bool EnterUpgradeableRead(int millisecondsTimeout)
             {
+                ValidateMillisecondsTimeout(millisecondsTimeout);
                 CoyoteRuntime runtime = this.GetRuntime();
                 using (runtime.EnterSynchronizedSection())
                 {
@@ -450,6 +483,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Acquire);
                     }
 
+                    long deadline = millisecondsTimeout is SystemTimeout.Infinite ? 0 :
+                        runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout));
                     while (this.Writer != null || this.UpgradeableReader != null)
                     {
                         if (millisecondsTimeout is 0)
@@ -460,9 +495,22 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         runtime.LogWriter.LogDebug(
                             "[coyote::debug] Operation {0} is waiting to upgradeable-read-acquire '{1}' on thread '{2}'.",
                             current.DebugInfo, this.DebugName, SystemThread.CurrentThread.ManagedThreadId);
-                        current.PauseWithResource(this.ResourceId);
+                        if (millisecondsTimeout is SystemTimeout.Infinite)
+                        {
+                            current.PauseWithResource(this.ResourceId);
+                        }
+                        else
+                        {
+                            current.PauseWithResourcesOrDelay(new[] { this.ResourceId }, deadline);
+                        }
+
                         this.PausedUpgradeableReaders.Enqueue(current);
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
+                        if (current.WakeReason is OperationWakeReason.Deadline)
+                        {
+                            Remove(this.PausedUpgradeableReaders, current);
+                            return false;
+                        }
                     }
 
                     this.UpgradeableReader = current;
@@ -524,6 +572,27 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 while (this.PausedReaders.Count > 0)
                 {
                     this.PausedReaders.Dequeue().TryEnable(this.ResourceId);
+                }
+            }
+
+            private static void ValidateMillisecondsTimeout(int millisecondsTimeout)
+            {
+                if (millisecondsTimeout < SystemTimeout.Infinite)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
+                }
+            }
+
+            private static void Remove(Queue<ControlledOperation> queue, ControlledOperation operation)
+            {
+                int count = queue.Count;
+                for (int idx = 0; idx < count; ++idx)
+                {
+                    ControlledOperation candidate = queue.Dequeue();
+                    if (candidate != operation)
+                    {
+                        queue.Enqueue(candidate);
+                    }
                 }
             }
 

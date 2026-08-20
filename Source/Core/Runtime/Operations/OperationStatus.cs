@@ -51,6 +51,16 @@ namespace Microsoft.Coyote.Runtime
         PausedOnResourceOrDelay,
 
         /// <summary>
+        /// The operation is paused until all resources signal or its virtual deadline is reached.
+        /// </summary>
+        PausedOnAllResourcesOrDelay,
+
+        /// <summary>
+        /// The operation is paused until a dependency resolves or its virtual deadline is reached.
+        /// </summary>
+        PausedOnDependencyOrDelay,
+
+        /// <summary>
         /// The operation is paused until receives an event.
         /// </summary>
         PausedOnReceive,
@@ -59,5 +69,17 @@ namespace Microsoft.Coyote.Runtime
         /// The operation is completed.
         /// </summary>
         Completed
+    }
+
+    /// <summary>
+    /// Identifies why a timed operation became runnable.
+    /// </summary>
+    internal enum OperationWakeReason
+    {
+        None = 0,
+        Resource,
+        Dependency,
+        Deadline,
+        Cancellation
     }
 }

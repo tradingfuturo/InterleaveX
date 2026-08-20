@@ -230,14 +230,13 @@ namespace Microsoft.Coyote.BugFinding.Tests
             });
         }
 
-        // RESOURCE-WINS, and the witness for BUDGET PRESERVATION. A timed wait draws its abstract budget
-        // once and carries the remainder across every wake; re-drawing it on each pause instead makes this
-        // test fail, because a redraw can land on zero and expire a wait that a concurrent add was about to
-        // satisfy. (Verified by mutation: replacing the carried remainder with a fresh draw fails exactly
-        // this test.)
+        // Exact time competes with the producer. Across schedules, both the resource and the deadline must
+        // be able to win; requiring only the resource outcome would suppress timeout-before-release.
         [Fact(Timeout = 5000)]
         public void TestFiniteTimeoutSucceedsWhenAnAddArrives()
         {
+            bool observedResource = false;
+            bool observedDeadline = false;
             this.Test(() =>
             {
                 var collection = new BlockingCollection<int>(4);
@@ -247,9 +246,12 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 Task producer = Task.Run(() => collection.Add(1));
 
                 Task.WaitAll(consumer, producer);
+                observedResource |= took;
+                observedDeadline |= !took;
+            }, this.GetConfiguration().WithTestingIterations(200));
 
-                Specification.Assert(took, "A finite-timeout take was not satisfied by a concurrent add.");
-            });
+            Assert.True(observedResource, "No schedule let the add satisfy the finite-timeout take.");
+            Assert.True(observedDeadline, "No schedule let the exact deadline beat the concurrent add.");
         }
 
         // WAKE-THEN-LOSE: a timed waiter repeatedly woken and then beaten to the item must still TERMINATE,

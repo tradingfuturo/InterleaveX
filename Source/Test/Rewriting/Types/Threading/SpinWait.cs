@@ -105,15 +105,29 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static bool SpinUntil(Func<bool> condition, int millisecondsTimeout)
         {
+            if (condition is null)
+            {
+                throw new ArgumentNullException(nameof(condition));
+            }
+
+            if (millisecondsTimeout < -1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
+            }
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
             {
-                // TODO: model the timeout here using OperationStatus.PausedOnResourceOrDelay, which now
-                // exists (see ControlledOperation.PauseWithResourcesOrDelay). This wait still treats any
-                // non-zero timeout as infinite; BlockingCollection shows the shape.
-                runtime.PauseOperationUntil(current, condition);
-                return true;
+                if (millisecondsTimeout is -1)
+                {
+                    runtime.PauseOperationUntil(current, condition);
+                    return true;
+                }
+
+                return condition() || (millisecondsTimeout > 0 &&
+                    runtime.PauseOperationUntilDeadline(current, condition,
+                        runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout))));
             }
             else
             {
@@ -126,15 +140,30 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static bool SpinUntil(Func<bool> condition, TimeSpan timeout)
         {
+            if (condition is null)
+            {
+                throw new ArgumentNullException(nameof(condition));
+            }
+
+            long totalMilliseconds = (long)timeout.TotalMilliseconds;
+            if (totalMilliseconds < -1 || totalMilliseconds > int.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(nameof(timeout));
+            }
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
             {
-                // TODO: model the timeout here using OperationStatus.PausedOnResourceOrDelay, which now
-                // exists (see ControlledOperation.PauseWithResourcesOrDelay). This wait still treats any
-                // non-zero timeout as infinite; BlockingCollection shows the shape.
-                runtime.PauseOperationUntil(current, condition);
-                return true;
+                if (totalMilliseconds is -1)
+                {
+                    runtime.PauseOperationUntil(current, condition);
+                    return true;
+                }
+
+                return condition() || (totalMilliseconds > 0 &&
+                    runtime.PauseOperationUntilDeadline(current, condition,
+                        runtime.CreateVirtualDeadline(timeout)));
             }
             else
             {

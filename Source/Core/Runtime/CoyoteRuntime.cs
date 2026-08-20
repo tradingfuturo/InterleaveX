@@ -211,6 +211,11 @@ namespace Microsoft.Coyote.Runtime
         private int OperationRegistrationCounter;
 
         /// <summary>
+        /// Current exact virtual time, in <see cref="TimeSpan"/> ticks.
+        /// </summary>
+        private long VirtualTimeTicks;
+
+        /// <summary>
         /// Orders operations by <see cref="ControlledOperation.RegistrationIndex"/>, which is the
         /// order that <see cref="SchedulableOperations"/> is kept sorted by.
         /// </summary>
@@ -449,6 +454,7 @@ namespace Microsoft.Coyote.Runtime
             this.OperationMap = new Dictionary<ulong, ControlledOperation>();
             this.SchedulableOperations = new List<ControlledOperation>();
             this.OperationRegistrationCounter = 0;
+            this.VirtualTimeTicks = 0;
             this.PendingStartOperationMap = new Dictionary<ControlledOperation, ManualResetEventSlim>();
             this.ControlledThreads = new ConcurrentDictionary<string, ControlledOperation>();
             this.ControlledTasks = new ConcurrentDictionary<Task, ControlledOperation>();
@@ -736,28 +742,33 @@ namespace Microsoft.Coyote.Runtime
 
             if (this.SchedulingPolicy is SchedulingPolicy.Interleaving)
             {
-                uint timeout = (uint)this.GetNextNondeterministicIntegerChoice((int)this.Configuration.TimeoutDelay, null, null);
-                if (timeout is 0)
-                {
-                    // If the delay is 0, then complete synchronously.
-                    return Task.CompletedTask;
-                }
-
-                // TODO: cache the dummy delay action to optimize memory.
-                // TODO: figure out a good strategy for grouping delays, especially if they
-                // are shared in different contexts and not awaited immediately.
+                long deadline = this.CreateVirtualDeadline(delay);
                 ControlledOperation op = this.CreateControlledOperation(group: ExecutingOperation?.Group);
-                return this.TaskFactory.StartNew(state =>
+                op.IsVirtualTimerOperation = true;
+                op.VirtualDeadlineTicks = deadline;
+                op.HasVirtualDeadline = true;
+                this.SuppressScheduling();
+                try
                 {
-                    var delayedOp = state as ControlledOperation;
-                    delayedOp.PauseWithDelay(timeout, cancellationToken);
-                    this.ScheduleNextOperation(delayedOp, SchedulingPointType.Yield);
-                    cancellationToken.ThrowIfCancellationRequested();
-                },
-                op,
-                cancellationToken,
-                this.TaskFactory.CreationOptions | TaskCreationOptions.DenyChildAttach,
-                this.TaskFactory.Scheduler);
+                    // Registering a delay is synchronous in the BCL. Suppress the TaskFactory's
+                    // creation point so sequential Delay calls observe the same virtual instant;
+                    // the timer operation itself remains schedulable afterwards.
+                    return this.TaskFactory.StartNew(state =>
+                    {
+                        var delayedOp = state as ControlledOperation;
+                        delayedOp.PauseWithDelay(deadline, cancellationToken);
+                        this.ScheduleNextOperation(delayedOp, SchedulingPointType.Yield);
+                        cancellationToken.ThrowIfCancellationRequested();
+                    },
+                    op,
+                    cancellationToken,
+                    this.TaskFactory.CreationOptions | TaskCreationOptions.DenyChildAttach,
+                    this.TaskFactory.Scheduler);
+                }
+                finally
+                {
+                    this.ResumeScheduling();
+                }
             }
 
             if (!this.TryGetExecutingOperation(out ControlledOperation current))
@@ -1847,6 +1858,48 @@ namespace Microsoft.Coyote.Runtime
         }
 
         /// <summary>
+        /// Pauses the executing operation until a dependency resolves or the specified absolute
+        /// virtual deadline is reached. Returns true only when the dependency won.
+        /// </summary>
+        internal bool PauseOperationUntilDeadline(ControlledOperation current, Func<bool> condition,
+            long deadline, bool isConditionControlled = true, string debugMsg = null,
+            CancellationToken cancellationToken = default)
+        {
+            using (SynchronizedSection.Enter(this.RuntimeLock))
+            {
+                if (this.SchedulingPolicy is not SchedulingPolicy.Interleaving)
+                {
+                    return condition();
+                }
+
+                current ??= this.GetExecutingOperation();
+                while (current != null && !condition() &&
+                    this.ExecutionStatus is ExecutionStatus.Running)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (deadline <= this.VirtualTimeTicks)
+                    {
+                        return false;
+                    }
+
+                    this.LogWriter.LogDebug(
+                        "[coyote::debug] Operation {0} is waiting for {1} or virtual deadline '{2}' on thread '{3}'.",
+                        current.DebugInfo, debugMsg ?? "condition to get resolved", deadline,
+                        Thread.CurrentThread.ManagedThreadId);
+                    current.PauseWithDependencyOrDelay(condition, isConditionControlled, deadline);
+                    this.ScheduleNextOperation(current, SchedulingPointType.Pause);
+                    if (current.WakeReason is OperationWakeReason.Deadline && !condition())
+                    {
+                        return false;
+                    }
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                return condition();
+            }
+        }
+
+        /// <summary>
         /// Returns the configured fuzzing ceiling in the representation used by delay strategies.
         /// </summary>
         private int GetMaxFuzzingDelay() => this.Configuration.MaxFuzzingDelay > int.MaxValue ?
@@ -1891,6 +1944,8 @@ namespace Microsoft.Coyote.Runtime
                 // up front and then keep it up to date as operations become enabled, instead of
                 // rescanning every operation for each delayed one.
                 bool isAnyOperationEnabled = IsAnyOperationEnabled(this.SchedulableOperations);
+                this.TryAdvanceVirtualTime(current, isAnyOperationEnabled);
+                isAnyOperationEnabled = IsAnyOperationEnabled(this.SchedulableOperations);
 
                 // A dependency predicate is arbitrary user code that can add to the collection while
                 // this walk runs, in either of two ways. Registering appends, because the new
@@ -1924,7 +1979,7 @@ namespace Microsoft.Coyote.Runtime
                     var previousStatus = op.Status;
                     if (op.IsPaused)
                     {
-                        TryEnableOperation(op, isAnyOperationEnabled);
+                        this.TryEnableOperation(op);
                         if (previousStatus == op.Status)
                         {
                             this.LogWriter.LogDebug("[coyote::debug] Operation {0} has status '{1}'.", op.DebugInfo, op.Status);
@@ -2103,44 +2158,97 @@ namespace Microsoft.Coyote.Runtime
         /// It is assumed that this method runs in the scope of a <see cref="SynchronizedSection"/>.
         /// </remarks>
         /// <param name="op">The operation to try enable.</param>
-        /// <param name="isAnyOperationEnabled">True if some operation is currently enabled, else false.</param>
-        private static bool TryEnableOperation(ControlledOperation op, bool isAnyOperationEnabled)
+        private void TryEnableOperation(ControlledOperation op)
         {
             if (op.Status is OperationStatus.PausedOnDelay ||
-                op.Status is OperationStatus.PausedOnResourceOrDelay)
+                op.Status is OperationStatus.PausedOnResourceOrDelay ||
+                op.Status is OperationStatus.PausedOnAllResourcesOrDelay ||
+                op.Status is OperationStatus.PausedOnDependencyOrDelay)
             {
                 if (op.Status is OperationStatus.PausedOnDelay &&
                     op.DelayCancellationToken.IsCancellationRequested)
                 {
-                    op.EnableAfterDelay();
-                    return true;
+                    op.EnableAfterDelay(isCancellation: true);
+                    return;
                 }
 
-                if (op.DelayedStepsCount > 0)
+                if (op.Status is OperationStatus.PausedOnDependencyOrDelay && op.TryEnable())
                 {
-                    op.DelayedStepsCount--;
+                    return;
                 }
 
-                // The operation is delayed, so it is enabled either if the delay completes
-                // or if no other operation is enabled.
-                //
-                // PausedOnResourceOrDelay takes the SAME path: it is a resource wait carrying a finite
-                // timeout, so reaching here means the timeout fired rather than a signal arriving. Clearing
-                // the awaited resources is what tells the waiter apart from a resource wake — it observes a
-                // zero budget and reports a timeout. The "no other operation is enabled" escape is what
-                // makes a real timeout fire instead of the program deadlocking, and it is also what keeps
-                // the scheduler's step count advancing so the periodic hang monitor stays satisfied.
-                if (op.DelayedStepsCount is 0 || !isAnyOperationEnabled)
+                if (op.HasVirtualDeadline && op.VirtualDeadlineTicks <= this.VirtualTimeTicks)
                 {
                     op.EnableAfterDelay();
-                    return true;
                 }
 
-                return false;
+                return;
             }
 
             // If the operation is paused, then check if its dependency has been resolved.
-            return op.TryEnable();
+            _ = op.TryEnable();
+        }
+
+        /// <summary>
+        /// Creates an absolute deadline from the runtime's current virtual time.
+        /// </summary>
+        internal long CreateVirtualDeadline(TimeSpan timeout)
+        {
+            using (SynchronizedSection.Enter(this.RuntimeLock))
+            {
+                long remaining = long.MaxValue - this.VirtualTimeTicks;
+                return timeout.Ticks >= remaining ? long.MaxValue :
+                    this.VirtualTimeTicks + timeout.Ticks;
+            }
+        }
+
+        /// <summary>
+        /// Advances virtual time to the earliest active deadline when the clock wins its scheduler choice.
+        /// The boolean decision is recorded in the execution trace, making time advancement replayable.
+        /// </summary>
+        private void TryAdvanceVirtualTime(ControlledOperation current, bool isAnyOperationEnabled)
+        {
+            long earliest = long.MaxValue;
+            for (int idx = 0; idx < this.SchedulableOperations.Count; ++idx)
+            {
+                ControlledOperation op = this.SchedulableOperations[idx];
+                if (op.IsVirtualTimerOperation && op.HasVirtualDeadline &&
+                    op.Status is OperationStatus.Enabled &&
+                    op.VirtualDeadlineTicks <= this.VirtualTimeTicks)
+                {
+                    // Completion of a due Task.Delay is part of this virtual instant. User
+                    // operations can still compete with it, but the clock cannot skip over it and
+                    // make a later timer complete first.
+                    return;
+                }
+
+                if (op.HasVirtualDeadline &&
+                    (op.IsPaused || op.IsVirtualTimerOperation) &&
+                    op.VirtualDeadlineTicks < earliest)
+                {
+                    earliest = op.VirtualDeadlineTicks;
+                }
+            }
+
+            if (earliest is long.MaxValue)
+            {
+                return;
+            }
+
+            bool advance = earliest <= this.VirtualTimeTicks || !isAnyOperationEnabled;
+            if (!advance && !this.Scheduler.GetNextBoolean(current, out advance))
+            {
+                this.Detach(ExecutionStatus.BoundReached);
+                return;
+            }
+
+            if (advance)
+            {
+                this.VirtualTimeTicks = Math.Max(this.VirtualTimeTicks, earliest);
+                this.LogWriter.LogDebug(
+                    "[coyote::debug] Advanced virtual time to '{0}' ticks in runtime '{1}'.",
+                    this.VirtualTimeTicks, this.Id);
+            }
         }
 
         /// <summary>
@@ -2356,7 +2464,7 @@ namespace Microsoft.Coyote.Runtime
                 if (this.Scheduler.IsImplicitProgramStateHashingEnabled)
                 {
                     isStateHashed = true;
-
+                    hash = (hash * 31) + this.VirtualTimeTicks.GetHashCode();
                     // By default every registered operation contributes, including the completed
                     // ones, so that the state distinguishes how far the execution has progressed.
                     // Restricting this to the operations that are still schedulable makes the cost
@@ -2690,12 +2798,8 @@ namespace Microsoft.Coyote.Runtime
                 return;
             }
 
-            // OperationStatus.PausedOnDelay and OperationStatus.PausedOnResourceOrDelay are deliberately
-            // ABSENT from every list below, and must stay absent. Both carry a delay that
-            // TryEnableOperation decrements each step and that self-enables once it elapses or once nothing
-            // else can run, so such an operation is never deadlocked — it is waiting for a timeout that is
-            // guaranteed to fire. Adding either here would report a bug on a program that, in reality,
-            // simply times out and carries on.
+            // Deadline-bearing states are deliberately absent from the lists below: the virtual clock
+            // advances to their earliest deadline when no user operation can run, so they self-resolve.
             var pausedOperations = ops.Where(op => op.Status is OperationStatus.Paused).ToList();
             var pausedOnResources = ops.Where(op =>
                 op.Status is OperationStatus.PausedOnAnyResource ||

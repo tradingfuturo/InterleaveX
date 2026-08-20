@@ -29,6 +29,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static void Enter(object obj)
         {
+            ValidateObject(obj, parameterName: null);
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -52,6 +53,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static void Enter(object obj, ref bool lockTaken)
         {
+            ValidateLockTaken(lockTaken);
+            ValidateObject(obj, parameterName: null);
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -75,6 +78,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static void Exit(object obj)
         {
+            ValidateObject(obj, parameterName: null);
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -106,6 +110,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </remarks>
         public static bool IsEntered(object obj)
         {
+            ValidateObject(obj, nameof(obj));
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -121,6 +126,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static void Pulse(object obj)
         {
+            ValidateObject(obj, nameof(obj));
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -138,6 +144,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static void PulseAll(object obj)
         {
+            ValidateObject(obj, nameof(obj));
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -156,12 +163,14 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static void TryEnter(object obj, TimeSpan timeout, ref bool lockTaken)
         {
+            ValidateLockTaken(lockTaken);
+            ValidateObject(obj, parameterName: null);
+            ValidateTimeout(timeout);
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                // A held lock is modelled as the timeout expiring rather than as a blocking acquire.
-                lockTaken = TryLockBlock(runtime, obj) ?? true;
+                lockTaken = TryLockBlock(runtime, obj, timeout) ?? true;
             }
             else
             {
@@ -181,12 +190,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static bool TryEnter(object obj, TimeSpan timeout)
         {
+            ValidateObject(obj, parameterName: null);
+            ValidateTimeout(timeout);
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                // A held lock is modelled as the timeout expiring rather than as a blocking acquire.
-                return TryLockBlock(runtime, obj) ?? true;
+                return TryLockBlock(runtime, obj, timeout) ?? true;
             }
             else if (runtime.SchedulingPolicy is SchedulingPolicy.Fuzzing &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
@@ -203,12 +213,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static void TryEnter(object obj, int millisecondsTimeout, ref bool lockTaken)
         {
+            ValidateLockTaken(lockTaken);
+            ValidateObject(obj, parameterName: null);
+            ValidateTimeout(millisecondsTimeout, parameterName: null);
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
             {
-                // A held lock is modelled as the timeout expiring rather than as a blocking acquire.
-                lockTaken = TryLockBlock(runtime, obj) ?? true;
+                lockTaken = TryLockBlock(runtime, obj,
+                    TimeSpan.FromMilliseconds(millisecondsTimeout)) ?? true;
             }
             else
             {
@@ -223,11 +236,36 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         }
 
         /// <summary>
+        /// Attempts, for the specified number of milliseconds, to acquire an exclusive lock on the specified object.
+        /// </summary>
+        public static bool TryEnter(object obj, int millisecondsTimeout)
+        {
+            ValidateObject(obj, parameterName: null);
+            ValidateTimeout(millisecondsTimeout, parameterName: null);
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
+                runtime.TryGetExecutingOperation(out _))
+            {
+                return TryLockBlock(runtime, obj,
+                    TimeSpan.FromMilliseconds(millisecondsTimeout)) ?? true;
+            }
+            else if (runtime.SchedulingPolicy is SchedulingPolicy.Fuzzing &&
+                runtime.TryGetExecutingOperation(out ControlledOperation current))
+            {
+                runtime.DelayOperation(current);
+            }
+
+            return SystemThreading.Monitor.TryEnter(obj, millisecondsTimeout);
+        }
+
+        /// <summary>
         /// Attempts to acquire an exclusive lock on the specified object, and atomically
         /// sets a value that indicates whether the lock was taken.
         /// </summary>
         public static void TryEnter(object obj, ref bool lockTaken)
         {
+            ValidateLockTaken(lockTaken);
+            ValidateObject(obj, parameterName: null);
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -253,6 +291,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static bool TryEnter(object obj)
         {
+            ValidateObject(obj, parameterName: null);
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -273,6 +312,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static bool Wait(object obj)
         {
+            ValidateObject(obj, nameof(obj));
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -289,6 +329,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static bool Wait(object obj, int millisecondsTimeout)
         {
+            ValidateObject(obj, nameof(obj));
+            ValidateTimeout(millisecondsTimeout, nameof(millisecondsTimeout));
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -307,6 +349,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static bool Wait(object obj, int millisecondsTimeout, bool exitContext)
         {
+            ValidateObject(obj, nameof(obj));
+            ValidateTimeout(millisecondsTimeout, nameof(millisecondsTimeout));
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -324,6 +368,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static bool Wait(object obj, TimeSpan timeout)
         {
+            ValidateObject(obj, nameof(obj));
+            ValidateTimeout(timeout);
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -342,6 +388,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static bool Wait(object obj, TimeSpan timeout, bool exitContext)
         {
+            ValidateObject(obj, nameof(obj));
+            ValidateTimeout(timeout);
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -351,6 +399,39 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             }
 
             return SystemThreading.Monitor.Wait(obj, timeout, exitContext);
+        }
+
+        private static void ValidateObject(object obj, string parameterName)
+        {
+            if (obj is null)
+            {
+                throw new ArgumentNullException(parameterName);
+            }
+        }
+
+        private static void ValidateLockTaken(bool lockTaken)
+        {
+            if (lockTaken)
+            {
+                throw new ArgumentException("Argument must be initialized to false", nameof(lockTaken));
+            }
+        }
+
+        private static void ValidateTimeout(int millisecondsTimeout, string parameterName)
+        {
+            if (millisecondsTimeout < SystemThreading.Timeout.Infinite)
+            {
+                throw new ArgumentOutOfRangeException(parameterName);
+            }
+        }
+
+        private static void ValidateTimeout(TimeSpan timeout)
+        {
+            long milliseconds = (long)timeout.TotalMilliseconds;
+            if (milliseconds < SystemThreading.Timeout.Infinite || milliseconds > int.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(nameof(timeout));
+            }
         }
 
         /// <summary>
@@ -372,10 +453,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
         /// <summary>
         /// Probes the synchronized block for the specified object on behalf of the executing operation,
-        /// without blocking. See <see cref="SynchronizedBlock.TryEnterLock"/>.
+        /// without blocking. See <see cref="SynchronizedBlock.TryEnterLock()"/>.
         /// </summary>
         internal static bool? TryLockBlock(CoyoteRuntime runtime, object obj) =>
             SynchronizedBlock.TryLock(runtime, obj);
+
+        internal static bool? TryLockBlock(CoyoteRuntime runtime, object obj, TimeSpan timeout) =>
+            SynchronizedBlock.TryLock(runtime, obj, timeout);
 
         /// <summary>
         /// Finds the synchronized block for the specified object on behalf of the executing operation,
@@ -544,10 +628,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
             /// <summary>
             /// Probes the lock for the specified object without blocking, or returns null if that runtime
-            /// has stopped executing its test iteration. See <see cref="TryEnterLock"/>.
+            /// has stopped executing its test iteration. See <see cref="TryEnterLock()"/>.
             /// </summary>
             internal static bool? TryLock(CoyoteRuntime runtime, object syncObject) =>
                 Resolve(runtime, syncObject, create: true)?.TryEnterLock();
+
+            internal static bool? TryLock(CoyoteRuntime runtime, object syncObject, TimeSpan timeout) =>
+                Resolve(runtime, syncObject, create: true)?.TryEnterLock(timeout);
 
             /// <summary>
             /// Finds the synchronized block associated with the specified synchronization object.
@@ -753,6 +840,67 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 return true;
             }
 
+            /// <summary>
+            /// Tries to enter this monitor until the exact virtual deadline corresponding to
+            /// <paramref name="timeout"/>. The one deadline survives every wake and retry.
+            /// </summary>
+            private bool TryEnterLock(TimeSpan timeout)
+            {
+                if (timeout == SystemThreading.Timeout.InfiniteTimeSpan)
+                {
+                    this.EnterLock();
+                    return true;
+                }
+
+                if (timeout is { Ticks: 0 })
+                {
+                    return this.TryEnterLock();
+                }
+
+                CoyoteRuntime runtime = this.GetRuntime();
+                long deadline = runtime.CreateVirtualDeadline(timeout);
+                SystemInterlocked.Increment(ref this.UseCount);
+
+                if (runtime.Configuration.IsLockAccessRaceCheckingEnabled && this.Owner is null)
+                {
+                    runtime.ScheduleNextOperation(default, SchedulingPointType.Acquire);
+                }
+
+                ControlledOperation op = runtime.GetExecutingOperation();
+                if (this.Owner == op)
+                {
+                    this.LockCountMap[op]++;
+                    this.IsLockTaken = true;
+                    return true;
+                }
+
+                if (this.Owner != null)
+                {
+                    if (!this.ReadyQueue.Contains(op))
+                    {
+                        this.ReadyQueue.Add(op);
+                    }
+
+                    op.PauseWithResourcesOrDelay(new[] { this.ResourceId }, deadline);
+                    runtime.ScheduleNextOperation(op, SchedulingPointType.Pause);
+                    if (op.WakeReason is OperationWakeReason.Deadline)
+                    {
+                        this.ReadyQueue.Remove(op);
+                        SystemInterlocked.Decrement(ref this.UseCount);
+                        return false;
+                    }
+
+                    this.LockCountMap.Add(op, 1);
+                    this.IsLockTaken = true;
+                    return true;
+                }
+
+                this.Owner = op;
+                this.LockCountMap.Add(op, 1);
+                this.IsLockTaken = true;
+                return true;
+            }
+
             private SynchronizedBlock EnterLock()
             {
                 CoyoteRuntime runtime = this.GetRuntime();
@@ -918,35 +1066,59 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// the lock. If the specified time-out interval elapses, the thread enters the ready
             /// queue.
             /// </summary>
-#pragma warning disable CA1801 // Parameter not used
             internal bool Wait(int millisecondsTimeout)
             {
-                // TODO: how to implement timeout?
-                // This is a bit more tricky to model, one way is to have a loop that checks
-                // for controlled random boolean choice, and if it becomes true then it fails
-                // the wait. This would be similar to timers in actors, so we want to use a
-                // lower probability to not fail very frequently during systematic testing.
-                // In the future we might want to introduce a RandomTimeout choice (similar to
-                // RandomBoolean and RandomInteger), with the benefit being that the underlying
-                // testing strategy will know that this is a timeout and perhaps treat it in a
-                // more intelligent manner, but for now piggybacking on the other randoms should
-                // work (as long as its not with a high probability).
-                return this.Wait();
+                return millisecondsTimeout is SystemThreading.Timeout.Infinite ? this.Wait() :
+                    this.Wait(TimeSpan.FromMilliseconds(millisecondsTimeout));
             }
-#pragma warning restore CA1801 // Parameter not used
 
             /// <summary>
             /// Releases the lock on an object and blocks the current thread until it reacquires
             /// the lock. If the specified time-out interval elapses, the thread enters the ready
             /// queue.
             /// </summary>
-#pragma warning disable CA1801 // Parameter not used
             internal bool Wait(TimeSpan timeout)
             {
-                // TODO: how to implement timeout?
-                return this.Wait();
+                CoyoteRuntime runtime = this.GetRuntime();
+                ControlledOperation op = runtime.GetExecutingOperation();
+                if (this.Owner != op)
+                {
+                    throw new SystemSynchronizationLockException();
+                }
+
+                long deadline = runtime.CreateVirtualDeadline(timeout);
+                this.ReadyQueue.Remove(op);
+                if (!this.WaitQueue.Contains(op))
+                {
+                    this.WaitQueue.Add(op);
+                }
+
+                this.UnlockNextReady();
+                op.PauseWithResourcesOrDelay(new[] { this.ResourceId }, deadline);
+                runtime.ScheduleNextOperation(op, SchedulingPointType.Pause);
+                bool wasPulsed = op.WakeReason is OperationWakeReason.Resource;
+                if (!wasPulsed)
+                {
+                    this.WaitQueue.Remove(op);
+                    if (this.Owner != op && !this.ReadyQueue.Contains(op))
+                    {
+                        this.ReadyQueue.Add(op);
+                    }
+
+                    if (this.Owner is null)
+                    {
+                        this.ReadyQueue.Remove(op);
+                        this.Owner = op;
+                    }
+                    else if (this.Owner != op)
+                    {
+                        op.PauseWithResource(this.ResourceId);
+                        runtime.ScheduleNextOperation(op, SchedulingPointType.Pause);
+                    }
+                }
+
+                return wasPulsed;
             }
-#pragma warning restore CA1801 // Parameter not used
 
             /// <summary>
             /// Assigns the lock to the next operation waiting in the ready queue, if there is one,
@@ -956,13 +1128,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             {
                 // Preparing to unlock so give up ownership.
                 this.Owner = null;
-                if (this.ReadyQueue.Count > 0)
+                while (this.ReadyQueue.Count > 0)
                 {
-                    // If there is a operation waiting in the ready queue, then awake it.
                     ControlledOperation op = this.ReadyQueue[0];
-                    op.TryEnable(this.ResourceId);
                     this.ReadyQueue.RemoveAt(0);
-                    this.Owner = op;
+                    if (op.TryEnable(this.ResourceId))
+                    {
+                        this.Owner = op;
+                        break;
+                    }
                 }
             }
 

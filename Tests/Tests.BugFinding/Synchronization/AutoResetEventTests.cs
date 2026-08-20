@@ -223,7 +223,8 @@ namespace Microsoft.Coyote.BugFinding.Tests
 
                 try
                 {
-                    Specification.Assert(WaitHandle.WaitAny(handles, 0) is 0, "1st assertion failed.");
+                    Specification.Assert(WaitHandle.WaitAny(handles, 0) is WaitHandle.WaitTimeout,
+                        "1st assertion failed.");
                     // Specification.Assert(WaitHandle.WaitAny(handles) is 0, "2nd assertion failed.");
                     Specification.Assert(!WaitHandle.WaitAll(handles, 0), "3rd assertion failed.");
                     // Specification.Assert(!WaitHandle.WaitAll(handles), "4th assertion failed.");

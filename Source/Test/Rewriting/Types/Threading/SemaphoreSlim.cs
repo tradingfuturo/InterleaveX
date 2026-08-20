@@ -135,9 +135,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static bool Wait(SystemSemaphoreSlim instance, int millisecondsTimeout, SystemCancellationToken cancellationToken)
         {
+            if (millisecondsTimeout < SystemTimeout.Infinite)
+            {
+                throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
             if (instance is Wrapper wrapper)
             {
-                return wrapper.Enter(millisecondsTimeout);
+                return wrapper.Enter(millisecondsTimeout, cancellationToken);
             }
 
             var runtime = CoyoteRuntime.Current;
@@ -196,9 +202,19 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static SystemTasks.Task<bool> WaitAsync(SystemSemaphoreSlim instance, int millisecondsTimeout, SystemCancellationToken cancellationToken)
         {
+            if (millisecondsTimeout < SystemTimeout.Infinite)
+            {
+                throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Tasks.Task.FromCanceled<bool>(cancellationToken);
+            }
+
             if (instance is Wrapper wrapper)
             {
-                return wrapper.EnterAsync(millisecondsTimeout);
+                return wrapper.EnterAsync(millisecondsTimeout, cancellationToken);
             }
 
             var runtime = CoyoteRuntime.Current;
@@ -282,7 +298,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// <summary>
             /// Pauses the current operation until it can enter the semaphore.
             /// </summary>
-            internal bool Enter(int millisecondsTimeout)
+            internal bool Enter(int millisecondsTimeout, SystemCancellationToken cancellationToken)
             {
                 CoyoteRuntime runtime = this.GetRuntime();
                 using (runtime.EnterSynchronizedSection())
@@ -296,8 +312,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Acquire);
                     }
 
+                    long deadline = millisecondsTimeout is SystemTimeout.Infinite ? 0 :
+                        runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout));
                     while (this.LockCount is 0)
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         if (millisecondsTimeout is 0)
                         {
                             return false;
@@ -306,9 +325,22 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         runtime.LogWriter.LogDebug(
                             "[coyote::debug] Operation {0} is waiting for '{1}' to get released on thread '{2}'.",
                             current.DebugInfo, this.DebugName, SystemThread.CurrentThread.ManagedThreadId);
-                        current.PauseWithResource(this.ResourceId);
+                        if (millisecondsTimeout is SystemTimeout.Infinite)
+                        {
+                            current.PauseWithResource(this.ResourceId);
+                        }
+                        else
+                        {
+                            current.PauseWithResourcesOrDelay(new[] { this.ResourceId }, deadline);
+                        }
+
                         this.PausedOperations.Enqueue(current);
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
+                        if (current.WakeReason is OperationWakeReason.Deadline)
+                        {
+                            this.RemovePausedOperation(current);
+                            return false;
+                        }
                     }
 
                     this.LockCount--;
@@ -319,7 +351,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// <summary>
             /// Pauses the current operation asynchronously until it can enter the semaphore.
             /// </summary>
-            internal SystemTasks.Task<bool> EnterAsync(int millisecondsTimeout)
+            internal SystemTasks.Task<bool> EnterAsync(int millisecondsTimeout,
+                SystemCancellationToken cancellationToken)
             {
                 CoyoteRuntime runtime = this.GetRuntime();
                 using (runtime.EnterSynchronizedSection())
@@ -340,15 +373,41 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                             return Tasks.Task.FromResult(false);
                         }
 
-                        var tcs = new SystemTasks.TaskCompletionSource<bool>(SystemTaskCreationOptions.RunContinuationsAsynchronously);
-                        this.AsyncAwaiters.Enqueue(tcs);
-                        runtime.RegisterKnownControlledTask(tcs.Task);
-                        return AsyncConditionAwaiterStateMachine.RunAsync(runtime, () => tcs.Task.IsCompleted,
-                            debugMsg: $"'{this.DebugName}' to get released");
+                        if (millisecondsTimeout is SystemTimeout.Infinite)
+                        {
+                            var tcs = new SystemTasks.TaskCompletionSource<bool>(
+                                SystemTaskCreationOptions.RunContinuationsAsynchronously);
+                            this.AsyncAwaiters.Enqueue(tcs);
+                            runtime.RegisterKnownControlledTask(tcs.Task);
+                            return AsyncConditionAwaiterStateMachine.RunAsync(runtime,
+                                () => tcs.Task.IsCompleted,
+                                debugMsg: $"'{this.DebugName}' to get released");
+                        }
+
+                        SystemTasks.Task<bool> task = runtime.TaskFactory.StartNew(
+                            () => this.Enter(millisecondsTimeout, cancellationToken),
+                            cancellationToken,
+                            runtime.TaskFactory.CreationOptions,
+                            runtime.TaskFactory.Scheduler);
+                        runtime.RegisterKnownControlledTask(task);
+                        return task;
                     }
 
                     this.LockCount--;
                     return Tasks.Task.FromResult(true);
+                }
+            }
+
+            private void RemovePausedOperation(ControlledOperation operation)
+            {
+                int count = this.PausedOperations.Count;
+                for (int idx = 0; idx < count; ++idx)
+                {
+                    ControlledOperation candidate = this.PausedOperations.Dequeue();
+                    if (candidate != operation)
+                    {
+                        this.PausedOperations.Enqueue(candidate);
+                    }
                 }
             }
 
