@@ -13,6 +13,7 @@ using Microsoft.Coyote.Runtime.CompilerServices;
 using MethodImpl = System.Runtime.CompilerServices.MethodImplAttribute;
 using MethodImplOptions = System.Runtime.CompilerServices.MethodImplOptions;
 using SystemCancellationToken = System.Threading.CancellationToken;
+using SystemCancellationTokenSource = System.Threading.CancellationTokenSource;
 using SystemTask = System.Threading.Tasks.Task;
 using SystemTaskContinuationOptions = System.Threading.Tasks.TaskContinuationOptions;
 using SystemTaskCreationOptions = System.Threading.Tasks.TaskCreationOptions;
@@ -882,6 +883,296 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             return task.Wait(millisecondsTimeout, cancellationToken);
         }
 
+#if NET6_0_OR_GREATER
+        /// <summary>
+        /// Gets a task that completes when the specified task completes or cancellation is requested.
+        /// </summary>
+        public static SystemTask WaitAsync(SystemTask task, SystemCancellationToken cancellationToken)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return task.WaitAsync(cancellationToken);
+            }
+
+            if (task.IsCompleted || !cancellationToken.CanBeCanceled)
+            {
+                return task;
+            }
+
+            return WaitAsyncCore(task, SystemTimeout.InfiniteTimeSpan, static () => true, cancellationToken);
+        }
+
+        /// <summary>
+        /// Gets a task that completes when the specified task completes or the timeout expires.
+        /// </summary>
+        public static SystemTask WaitAsync(SystemTask task, TimeSpan timeout)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return task.WaitAsync(timeout);
+            }
+
+            TimeSpan normalized = NormalizeWaitAsyncTimeout(timeout);
+            if (task.IsCompleted || normalized == SystemTimeout.InfiniteTimeSpan)
+            {
+                return task;
+            }
+
+            return WaitAsyncCore(task, normalized, static () => true, default);
+        }
+
+        /// <summary>
+        /// Gets a task that completes when the specified task completes, the timeout expires or cancellation is requested.
+        /// </summary>
+        public static SystemTask WaitAsync(SystemTask task, TimeSpan timeout,
+            SystemCancellationToken cancellationToken)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return task.WaitAsync(timeout, cancellationToken);
+            }
+
+            TimeSpan normalized = NormalizeWaitAsyncTimeout(timeout);
+            if (task.IsCompleted || (!cancellationToken.CanBeCanceled && normalized == SystemTimeout.InfiniteTimeSpan))
+            {
+                return task;
+            }
+
+            return WaitAsyncCore(task, normalized, static () => true, cancellationToken);
+        }
+
+#if NET8_0_OR_GREATER
+        /// <summary>
+        /// Gets a task that completes when the specified task completes or the timeout expires according
+        /// to the specified time provider.
+        /// </summary>
+        public static SystemTask WaitAsync(SystemTask task, TimeSpan timeout, TimeProvider timeProvider)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return task.WaitAsync(timeout, timeProvider);
+            }
+
+            ArgumentNullException.ThrowIfNull(timeProvider);
+            TimeSpan normalized = NormalizeWaitAsyncTimeout(timeout);
+            if (task.IsCompleted || normalized == SystemTimeout.InfiniteTimeSpan)
+            {
+                return task;
+            }
+
+            return WaitAsyncCore(task, normalized, static () => true, default);
+        }
+
+        /// <summary>
+        /// Gets a task that completes when the specified task completes, the timeout expires according
+        /// to the specified time provider or cancellation is requested.
+        /// </summary>
+        public static SystemTask WaitAsync(SystemTask task, TimeSpan timeout, TimeProvider timeProvider,
+            SystemCancellationToken cancellationToken)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return task.WaitAsync(timeout, timeProvider, cancellationToken);
+            }
+
+            ArgumentNullException.ThrowIfNull(timeProvider);
+            TimeSpan normalized = NormalizeWaitAsyncTimeout(timeout);
+            if (task.IsCompleted || (!cancellationToken.CanBeCanceled && normalized == SystemTimeout.InfiniteTimeSpan))
+            {
+                return task;
+            }
+
+            return WaitAsyncCore(task, normalized, static () => true, cancellationToken);
+        }
+#endif
+
+        /// <summary>
+        /// Implements the scheduler-owned task, timeout and cancellation race shared by generic and
+        /// non-generic task waits.
+        /// </summary>
+        internal static SystemTasks.Task<TResult> WaitAsyncCore<TResult>(SystemTask task, TimeSpan timeout,
+            Func<TResult> getResult, SystemCancellationToken cancellationToken)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return FromCanceled<TResult>(cancellationToken);
+            }
+
+            if (timeout == TimeSpan.Zero)
+            {
+                return FromException<TResult>(new TimeoutException());
+            }
+
+            CoyoteRuntime runtime = CoyoteRuntime.Current;
+            runtime.SuppressScheduling();
+            try
+            {
+                // Task.WaitAsync constructs its promise synchronously. Creating the model's delay and
+                // projection operations must likewise be atomic with the call: allowing either creation
+                // point to schedule would let a timeout win before WaitAsync has even returned.
+                return WaitAsyncStateMachine<TResult>.RunAsync(
+                    runtime, task, timeout, getResult, cancellationToken);
+            }
+            finally
+            {
+                runtime.ResumeScheduling();
+            }
+        }
+
+        /// <summary>
+        /// Normalizes a timeout using the same whole-millisecond range and truncation as Task.WaitAsync.
+        /// </summary>
+        internal static TimeSpan NormalizeWaitAsyncTimeout(TimeSpan timeout)
+        {
+            long totalMilliseconds = (long)timeout.TotalMilliseconds;
+            if (totalMilliseconds < SystemTimeout.Infinite || totalMilliseconds > MaxSupportedTimeoutMilliseconds)
+            {
+                throw new ArgumentOutOfRangeException(nameof(timeout));
+            }
+
+            return totalMilliseconds is SystemTimeout.Infinite ? SystemTimeout.InfiniteTimeSpan :
+                TimeSpan.FromTicks(totalMilliseconds * TimeSpan.TicksPerMillisecond);
+        }
+
+        /// <summary>
+        /// Returns the token recorded by a canceled task, or a default token if none was recorded.
+        /// </summary>
+        private static SystemCancellationToken GetCancellationToken(SystemTask task)
+        {
+            try
+            {
+                task.GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException exception)
+            {
+                return exception.CancellationToken;
+            }
+            catch (Exception)
+            {
+            }
+
+            return default;
+        }
+
+        /// <summary>
+        /// A controlled promise that records which side of Task.WaitAsync's source/timeout race won.
+        /// </summary>
+        private sealed class WaitAsyncStateMachine<TResult> : AsyncAwaiterStateMachine<TResult>
+        {
+            private readonly SystemTask SourceTask;
+
+            private readonly SystemTask TimeoutTask;
+
+            private readonly SystemTasks.Task<SystemTask> WinnerTask;
+
+            private readonly SystemCancellationToken CancellationToken;
+
+            private readonly SystemCancellationTokenSource TimeoutCancellationSource;
+
+            private readonly Func<TResult> GetResult;
+
+            private WaitAsyncStateMachine(CoyoteRuntime runtime, SystemTask sourceTask, TimeSpan timeout,
+                Func<TResult> getResult, SystemCancellationToken cancellationToken)
+                : base(runtime, runContinuationAsynchronously: true)
+            {
+                this.SourceTask = sourceTask;
+                this.CancellationToken = cancellationToken;
+                this.GetResult = getResult;
+                this.TimeoutCancellationSource = cancellationToken.CanBeCanceled ?
+                    SystemCancellationTokenSource.CreateLinkedTokenSource(cancellationToken) :
+                    new SystemCancellationTokenSource();
+                this.TimeoutTask = Delay(timeout, this.TimeoutCancellationSource.Token);
+                this.WinnerTask = WhenAny(sourceTask, this.TimeoutTask);
+            }
+
+            internal static SystemTasks.Task<TResult> RunAsync(CoyoteRuntime runtime, SystemTask sourceTask,
+                TimeSpan timeout, Func<TResult> getResult, SystemCancellationToken cancellationToken)
+            {
+                var stateMachine = new WaitAsyncStateMachine<TResult>(
+                    runtime, sourceTask, timeout, getResult, cancellationToken);
+                stateMachine.MoveNext();
+                runtime.RegisterKnownControlledTask(stateMachine.CompletionSource.Task);
+                return stateMachine.CompletionSource.Task;
+            }
+
+            public override void MoveNext()
+            {
+                if (this.CurrentStatus is Status.Completed)
+                {
+                    return;
+                }
+
+                try
+                {
+                    ControlledOperation current = this.Runtime.GetExecutingOperation();
+                    if (this.CurrentStatus is Status.Running && !this.WinnerTask.IsCompleted)
+                    {
+                        this.CurrentStatus = Status.Waiting;
+                        this.Runtime.Schedule(this.MoveNext);
+                        return;
+                    }
+
+                    TaskServices.WaitUntilTaskCompletes(this.Runtime, current, this.WinnerTask);
+                    SystemTask winner = this.WinnerTask.GetAwaiter().GetResult();
+                    this.CurrentStatus = Status.Completed;
+                    if (ReferenceEquals(winner, this.SourceTask))
+                    {
+                        // Retire the losing virtual timer before publishing the result. Otherwise a
+                        // successful wait leaves a timer operation behind to influence liveness and
+                        // virtual-time advancement after the wait itself is over.
+                        this.TimeoutCancellationSource.Cancel();
+                        if (this.SourceTask.IsCanceled)
+                        {
+                            this.CompletionSource.TrySetCanceled(GetCancellationToken(this.SourceTask));
+                        }
+                        else if (this.SourceTask.IsFaulted)
+                        {
+                            this.CompletionSource.SetException(this.SourceTask.Exception.InnerExceptions);
+                        }
+                        else
+                        {
+                            this.CompletionSource.SetResult(this.GetResult());
+                        }
+                    }
+                    else if (this.TimeoutTask.IsCanceled)
+                    {
+                        this.CompletionSource.TrySetCanceled(this.CancellationToken);
+                    }
+                    else if (this.TimeoutTask.IsFaulted)
+                    {
+                        this.CompletionSource.SetException(this.TimeoutTask.Exception.InnerExceptions);
+                    }
+                    else
+                    {
+                        this.CompletionSource.SetException(new TimeoutException());
+                    }
+                }
+                catch (Exception exception)
+                {
+                    this.CurrentStatus = Status.Completed;
+                    this.CompletionSource.TrySetException(exception);
+                }
+                finally
+                {
+                    if (this.CurrentStatus is Status.Completed)
+                    {
+                        if (!this.TimeoutTask.IsCompleted)
+                        {
+                            this.TimeoutCancellationSource.Cancel();
+                        }
+
+                        this.TimeoutCancellationSource.Dispose();
+                    }
+                }
+            }
+        }
+#endif
+
         /// <summary>
         /// Creates a task that has completed successfully with the specified result.
         /// </summary>
@@ -1072,6 +1363,122 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
 #pragma warning restore CA1707 // Remove the underscores from member name
 #pragma warning restore SA1300 // Element should begin with an uppercase letter
 #pragma warning restore IDE1006 // Naming Styles
+
+#if NET6_0_OR_GREATER
+        /// <summary>
+        /// Gets a task that completes when the specified generic task completes or cancellation is requested.
+        /// </summary>
+        public static SystemTasks.Task<TResult> WaitAsync(SystemTasks.Task<TResult> task,
+            SystemCancellationToken cancellationToken)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return task.WaitAsync(cancellationToken);
+            }
+
+            if (task.IsCompleted || !cancellationToken.CanBeCanceled)
+            {
+                return task;
+            }
+
+            return global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.WaitAsyncCore(
+                task, SystemTimeout.InfiniteTimeSpan, () => task.GetAwaiter().GetResult(), cancellationToken);
+        }
+
+        /// <summary>
+        /// Gets a task that completes when the specified generic task completes or the timeout expires.
+        /// </summary>
+        public static SystemTasks.Task<TResult> WaitAsync(SystemTasks.Task<TResult> task, TimeSpan timeout)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return task.WaitAsync(timeout);
+            }
+
+            TimeSpan normalized = global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.NormalizeWaitAsyncTimeout(timeout);
+            if (task.IsCompleted || normalized == SystemTimeout.InfiniteTimeSpan)
+            {
+                return task;
+            }
+
+            return global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.WaitAsyncCore(
+                task, normalized, () => task.GetAwaiter().GetResult(), default);
+        }
+
+        /// <summary>
+        /// Gets a task that completes when the specified generic task completes, the timeout expires or cancellation is requested.
+        /// </summary>
+        public static SystemTasks.Task<TResult> WaitAsync(SystemTasks.Task<TResult> task, TimeSpan timeout,
+            SystemCancellationToken cancellationToken)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return task.WaitAsync(timeout, cancellationToken);
+            }
+
+            TimeSpan normalized = global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.NormalizeWaitAsyncTimeout(timeout);
+            if (task.IsCompleted || (!cancellationToken.CanBeCanceled && normalized == SystemTimeout.InfiniteTimeSpan))
+            {
+                return task;
+            }
+
+            return global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.WaitAsyncCore(
+                task, normalized, () => task.GetAwaiter().GetResult(), cancellationToken);
+        }
+
+#if NET8_0_OR_GREATER
+        /// <summary>
+        /// Gets a task that completes when the specified generic task completes or the timeout expires
+        /// according to the specified time provider.
+        /// </summary>
+        public static SystemTasks.Task<TResult> WaitAsync(SystemTasks.Task<TResult> task, TimeSpan timeout,
+            TimeProvider timeProvider)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return task.WaitAsync(timeout, timeProvider);
+            }
+
+            ArgumentNullException.ThrowIfNull(timeProvider);
+            TimeSpan normalized = global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.NormalizeWaitAsyncTimeout(timeout);
+            if (task.IsCompleted || normalized == SystemTimeout.InfiniteTimeSpan)
+            {
+                return task;
+            }
+
+            return global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.WaitAsyncCore(
+                task, normalized, () => task.GetAwaiter().GetResult(), default);
+        }
+
+        /// <summary>
+        /// Gets a task that completes when the specified generic task completes, the timeout expires
+        /// according to the specified time provider or cancellation is requested.
+        /// </summary>
+        public static SystemTasks.Task<TResult> WaitAsync(SystemTasks.Task<TResult> task, TimeSpan timeout,
+            TimeProvider timeProvider, SystemCancellationToken cancellationToken)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return task.WaitAsync(timeout, timeProvider, cancellationToken);
+            }
+
+            ArgumentNullException.ThrowIfNull(timeProvider);
+            TimeSpan normalized = global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.NormalizeWaitAsyncTimeout(timeout);
+            if (task.IsCompleted || (!cancellationToken.CanBeCanceled && normalized == SystemTimeout.InfiniteTimeSpan))
+            {
+                return task;
+            }
+
+            return global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.WaitAsyncCore(
+                task, normalized, () => task.GetAwaiter().GetResult(), cancellationToken);
+        }
+#endif
+#endif
 
         /// <summary>
         /// Returns a generic task awaiter for the specified generic task.

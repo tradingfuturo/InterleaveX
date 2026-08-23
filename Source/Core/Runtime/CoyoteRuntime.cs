@@ -728,8 +728,12 @@ namespace Microsoft.Coyote.Runtime
                 // can complete this delay, matching the behavior outside systematic execution. The
                 // task itself must still be registered with this runtime: a raw BCL delay is otherwise
                 // classified as uncontrolled when awaited under strict systematic testing.
-                var completion = new TaskCompletionSource<bool>(
-                    TaskCreationOptions.RunContinuationsAsynchronously);
+                // Complete continuations inline under the controlled operation that cancels the token.
+                // RunContinuationsAsynchronously would send Task.WhenAny's internal continuation to an
+                // uncontrolled thread-pool thread, leaving a controlled waiter paused long enough for the
+                // scheduler to report a false deadlock. Rewritten user awaiters still resume through the
+                // controlled synchronization context, so this does not inline user code.
+                var completion = new TaskCompletionSource<bool>();
                 this.RegisterKnownControlledTask(completion.Task);
                 if (cancellationToken.CanBeCanceled)
                 {
