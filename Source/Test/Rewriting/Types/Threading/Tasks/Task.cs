@@ -370,110 +370,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
 
             ArgumentNullException.ThrowIfNull(timeProvider);
             delay = CoyoteRuntime.NormalizeTimeout(delay, nameof(delay), MaxSupportedTimeoutMilliseconds);
-            if (timeProvider != TimeProvider.System)
-            {
-                return ProviderDelayPromise.Create(runtime, delay, timeProvider, cancellationToken);
-            }
-
-            return runtime.ScheduleDelay(delay, cancellationToken);
-        }
-
-        /// <summary>
-        /// Implements a controlled delay whose expiry remains owned by a custom time provider.
-        /// </summary>
-        private sealed class ProviderDelayPromise
-        {
-            private readonly SystemTasks.TaskCompletionSource<bool> CompletionSource;
-
-            private readonly SystemCancellationToken CancellationToken;
-
-            private ProviderTimer Timer;
-
-            private System.Threading.CancellationTokenRegistration CancellationRegistration;
-
-            private int IsTimerPublished;
-
-            private int IsCancellationPublished;
-
-            private ProviderDelayPromise(CoyoteRuntime runtime, TimeSpan delay, TimeProvider timeProvider,
-                SystemCancellationToken cancellationToken)
-            {
-                this.CancellationToken = cancellationToken;
-                this.CompletionSource = new SystemTasks.TaskCompletionSource<bool>();
-                runtime.RegisterKnownControlledTask(this.CompletionSource.Task);
-
-                ProviderTimer timer = ProviderTimer.Create(runtime, timeProvider,
-                    static state => ((ProviderDelayPromise)state).Complete(), this,
-                    delay, SystemTimeout.InfiniteTimeSpan);
-                this.Timer = timer;
-                Volatile.Write(ref this.IsTimerPublished, 1);
-                if (this.CompletionSource.Task.IsCompleted)
-                {
-                    timer.Dispose();
-                }
-
-                if (cancellationToken.CanBeCanceled)
-                {
-                    var registration = cancellationToken.UnsafeRegister(
-                        static (state, _) => ((ProviderDelayPromise)state).Cancel(), this);
-                    this.CancellationRegistration = registration;
-                    Volatile.Write(ref this.IsCancellationPublished, 1);
-                    if (this.CompletionSource.Task.IsCompleted)
-                    {
-                        registration.Unregister();
-                    }
-                }
-            }
-
-            internal static SystemTask Create(CoyoteRuntime runtime, TimeSpan delay, TimeProvider timeProvider,
-                SystemCancellationToken cancellationToken)
-            {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return FromCanceled(cancellationToken);
-                }
-
-                if (delay == TimeSpan.Zero)
-                {
-                    return SystemTask.CompletedTask;
-                }
-
-                if (delay == SystemTimeout.InfiniteTimeSpan)
-                {
-                    return runtime.ScheduleDelay(delay, cancellationToken);
-                }
-
-                return new ProviderDelayPromise(runtime, delay, timeProvider, cancellationToken).CompletionSource.Task;
-            }
-
-            private void Complete()
-            {
-                if (this.CompletionSource.TrySetResult(true))
-                {
-                    this.Cleanup();
-                }
-            }
-
-            private void Cancel()
-            {
-                if (this.CompletionSource.TrySetCanceled(this.CancellationToken))
-                {
-                    this.Cleanup();
-                }
-            }
-
-            private void Cleanup()
-            {
-                if (Volatile.Read(ref this.IsCancellationPublished) != 0)
-                {
-                    this.CancellationRegistration.Unregister();
-                }
-
-                if (Volatile.Read(ref this.IsTimerPublished) != 0)
-                {
-                    this.Timer.Dispose();
-                }
-            }
+            return global::Microsoft.Coyote.Rewriting.Types.Threading.RuntimeTimeProvider.Delay(
+                runtime, delay, timeProvider, cancellationToken);
         }
 #endif
 
@@ -824,6 +722,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                     throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
                 }
 
+                ValidateTaskArray(tasks, requireAtLeastOne: false);
                 cancellationToken.ThrowIfCancellationRequested();
                 bool completed = Array.TrueForAll(tasks, task => task.IsCompleted);
                 if (!completed && millisecondsTimeout > 0)
@@ -898,6 +797,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                     throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
                 }
 
+                ValidateTaskArray(tasks, requireAtLeastOne: true);
                 cancellationToken.ThrowIfCancellationRequested();
                 int index = Array.FindIndex(tasks, task => task.IsCompleted);
                 if (index < 0 && millisecondsTimeout > 0)
@@ -924,6 +824,31 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             }
 
             return SystemTask.WaitAny(tasks, millisecondsTimeout, cancellationToken);
+        }
+
+        /// <summary>
+        /// Performs the eager task-array validation that the finite virtual-time branches otherwise
+        /// bypass when they inspect completion state directly.
+        /// </summary>
+        private static void ValidateTaskArray(SystemTask[] tasks, bool requireAtLeastOne)
+        {
+            if (tasks is null)
+            {
+                throw new ArgumentNullException(nameof(tasks));
+            }
+
+            if (requireAtLeastOne && tasks.Length is 0)
+            {
+                throw new ArgumentException("The tasks array must contain at least one task.", nameof(tasks));
+            }
+
+            for (int idx = 0; idx < tasks.Length; ++idx)
+            {
+                if (tasks[idx] is null)
+                {
+                    throw new ArgumentException("The tasks array contains a null task.", nameof(tasks));
+                }
+            }
         }
 
         /// <summary>
@@ -1226,15 +1151,32 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                 try
                 {
                     ControlledOperation current = this.Runtime.GetExecutingOperation();
-                    if (this.CurrentStatus is Status.Running && !this.WinnerTask.IsCompleted)
+                    if (this.CurrentStatus is Status.Running &&
+                        !this.WinnerTask.IsCompleted && !this.TimeoutTask.IsCompleted)
                     {
                         this.CurrentStatus = Status.Waiting;
                         this.Runtime.Schedule(this.MoveNext);
                         return;
                     }
 
-                    TaskServices.WaitUntilTaskCompletes(this.Runtime, current, this.WinnerTask);
-                    SystemTask winner = this.WinnerTask.GetAwaiter().GetResult();
+                    SystemTask winner;
+                    if (this.Runtime.SchedulingPolicy is SchedulingPolicy.Fuzzing)
+                    {
+                        TaskServices.WaitUntilTaskCompletes(this.Runtime, current, this.WinnerTask);
+                        winner = this.WinnerTask.GetAwaiter().GetResult();
+                    }
+                    else
+                    {
+                        // Task.WhenAny remains the first-winner oracle. The timeout task is observed as a
+                        // narrow fallback because a BCL-owned delay intentionally queues its continuations
+                        // asynchronously when cancellation wins: the delay can be terminal while the
+                        // projection is not, leaving no controlled operation able to make further progress.
+                        TaskServices.WaitUntilAnyTaskCompletes(
+                            this.Runtime, new SystemTask[] { this.WinnerTask, this.TimeoutTask });
+                        winner = this.WinnerTask.IsCompleted ?
+                            this.WinnerTask.GetAwaiter().GetResult() : this.TimeoutTask;
+                    }
+
                     this.CurrentStatus = Status.Completed;
                     if (ReferenceEquals(winner, this.SourceTask))
                     {

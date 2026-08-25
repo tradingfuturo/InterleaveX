@@ -12,7 +12,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
     /// Owns a timer created by a custom <see cref="TimeProvider"/> and routes its callbacks through
     /// the controlled runtime without losing synchronous provider semantics.
     /// </summary>
-    internal sealed class ProviderTimer : IDisposable
+    internal sealed class ProviderTimer : ITimer
     {
         private readonly object SyncObject = new object();
 
@@ -59,7 +59,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             return owner;
         }
 
-        internal bool Change(TimeSpan dueTime, TimeSpan period)
+        public bool Change(TimeSpan dueTime, TimeSpan period)
         {
             ITimer timer;
             lock (this.SyncObject)
@@ -92,17 +92,46 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             timer?.Dispose();
         }
 
+        public System.Threading.Tasks.ValueTask DisposeAsync()
+        {
+            this.Dispose();
+            return default;
+        }
+
         private void OnTimer()
         {
             lock (this.SyncObject)
             {
-                if (this.IsDisposed)
+                if (this.IsDisposed || this.Runtime.HasExecutionEnded)
                 {
                     return;
                 }
             }
 
-            this.Runtime.DispatchProviderTimerCallback(() => this.Callback(this.State));
+            this.Runtime.DispatchProviderTimerCallback(this.InvokeCallback);
+        }
+
+        /// <summary>
+        /// Invokes the provider callback only while its timer and runtime still belong to the active
+        /// iteration. This second check covers a callback that was admitted just before disposal or
+        /// runtime teardown.
+        /// </summary>
+        private void InvokeCallback()
+        {
+            TimerCallback callback;
+            object state;
+            lock (this.SyncObject)
+            {
+                if (this.IsDisposed || this.Runtime.HasExecutionEnded)
+                {
+                    return;
+                }
+
+                callback = this.Callback;
+                state = this.State;
+            }
+
+            callback(state);
         }
     }
 }
