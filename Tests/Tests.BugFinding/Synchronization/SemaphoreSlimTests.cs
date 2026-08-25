@@ -390,7 +390,7 @@ namespace Microsoft.Coyote.BugFinding.Tests
         [Fact(Timeout = 5000)]
         public void TestParallelSemaphoreSlimWithNoInitialAccessAndExpectedOrder()
         {
-            this.TestWithError(() =>
+            this.Test(() =>
             {
                 int value = 0;
                 var semaphore = new SemaphoreSlim(0, 1);
@@ -424,11 +424,10 @@ namespace Microsoft.Coyote.BugFinding.Tests
 
                 int expected = firstHolder is 1 ? 2 : 1;
                 Specification.Assert(value == expected, "Value is {0} instead of {1}.", value, expected);
-                Specification.Assert(order < 4, "Expected assertion failed!");
+                Specification.Assert(order < 4,
+                    "A releasing synchronous waiter barged ahead of the already queued waiter.");
             },
-            configuration: this.GetConfiguration().WithTestingIterations(100),
-            expectedError: "Expected assertion failed!",
-            replay: true);
+            configuration: this.GetConfiguration().WithTestingIterations(100));
         }
 
         [Fact(Timeout = 5000)]
@@ -640,7 +639,7 @@ namespace Microsoft.Coyote.BugFinding.Tests
         [Fact(Timeout = 5000)]
         public void TestMixedSemaphoreSlimWithNoInitialAccessAndExpectedOrder()
         {
-            this.TestWithError(() =>
+            this.Test(() =>
             {
                 int value = 0;
                 var semaphore = new SemaphoreSlim(0, 1);
@@ -674,11 +673,10 @@ namespace Microsoft.Coyote.BugFinding.Tests
 
                 int expected = firstHolder is 1 ? 2 : 1;
                 Specification.Assert(value == expected, "Value is {0} instead of {1}.", value, expected);
-                Specification.Assert(order < 4, "Expected assertion failed!");
+                Specification.Assert(order < 4,
+                    "An asynchronous waiter barged ahead of the already queued synchronous waiter.");
             },
-            configuration: this.GetConfiguration().WithTestingIterations(100),
-            expectedError: "Expected assertion failed!",
-            replay: true);
+            configuration: this.GetConfiguration().WithTestingIterations(100));
         }
 
         [Fact(Timeout = 5000)]

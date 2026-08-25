@@ -276,12 +276,110 @@ namespace Microsoft.Coyote.BugFinding.Tests
             });
         }
 
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestUncontrolledSynchronousWaiterRegistersAndAcquiresAfterRelease()
+        {
+            this.Test(() =>
+            {
+                using var semaphore = new SemaphoreSlim(0, 1);
+                using var queued = new ManualResetEventSlim(false);
+                ControlledSemaphoreSlim.SetWaiterQueuedCallbackForTesting(semaphore, queued.Set);
+                bool acquired = false;
+                bool released = false;
+                var thread = UncontrolledThreadRunner.Start(() =>
+                {
+                    semaphore.Wait();
+                    acquired = true;
+                });
+
+                try
+                {
+                    WaitUntil(() => queued.IsSet || thread.IsCompleted);
+                    Specification.Assert(queued.IsSet,
+                        "An uncontrolled synchronous SemaphoreSlim waiter did not register with the modeled semaphore.");
+
+                    semaphore.Release();
+                    released = true;
+                    thread.Join();
+                }
+                finally
+                {
+                    if (!released)
+                    {
+                        semaphore.Release();
+                    }
+
+                    thread.Join();
+                }
+
+                thread.ThrowIfFailed();
+                Specification.Assert(acquired,
+                    "The externally registered SemaphoreSlim waiter did not acquire the released permit.");
+            }, this.GetConfiguration().WithPartiallyControlledConcurrencyAllowed().WithTestingIterations(1));
+        }
+
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestReleaseGrantsAQueuedSynchronousWaiterBeforeAnAsyncWaiter()
+        {
+            this.Test(async () =>
+            {
+                using var semaphore = new SemaphoreSlim(0, 2);
+                var synchronousQueued = new TaskCompletionSource<bool>();
+                ControlledSemaphoreSlim.SetWaiterQueuedCallbackForTesting(
+                    semaphore, () => synchronousQueued.TrySetResult(true));
+                Task synchronousWaiter = Task.Run(() => semaphore.Wait());
+                await synchronousQueued.Task;
+
+                Task asynchronousWaiter = semaphore.WaitAsync();
+                Assert.NotEqual(0, GetQueueCount(semaphore, "AsyncAwaiters"));
+
+                semaphore.Release();
+                bool asyncWonTheFirstPermit = asynchronousWaiter.IsCompleted;
+                semaphore.Release();
+
+                await Task.WhenAll(synchronousWaiter, asynchronousWaiter);
+                Specification.Assert(!asyncWonTheFirstPermit,
+                    "SemaphoreSlim.Release granted an async waiter before an already-queued synchronous waiter.");
+            }, this.GetConfiguration().WithTestingIterations(100));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestStaleCurrentCountGetterIsDetected()
+        {
+            SharedStaleSemaphore = null;
+            try
+            {
+                this.TestWithError(() =>
+                {
+                    if (SharedStaleSemaphore is null)
+                    {
+                        SharedStaleSemaphore = new SemaphoreSlim(1, 1);
+                        return;
+                    }
+
+                    _ = SharedStaleSemaphore.CurrentCount;
+                }, configuration: this.GetConfiguration().WithTestingIterations(2), errorChecker: error =>
+                {
+                    Assert.Contains("was created in a previous test iteration", error, StringComparison.Ordinal);
+                });
+            }
+            finally
+            {
+                SharedStaleSemaphore = null;
+            }
+        }
+
         private static void WaitUntilQueued(SemaphoreSlim semaphore, string fieldName)
         {
-            while (GetQueueCount(semaphore, fieldName) is 0)
+            for (int step = 0; step < 200 && GetQueueCount(semaphore, fieldName) is 0; step++)
             {
                 SchedulingPoint.Interleave();
             }
+
+            Assert.NotEqual(0, GetQueueCount(semaphore, fieldName));
         }
 
         private static int GetQueueCount(SemaphoreSlim semaphore, string fieldName)
@@ -290,6 +388,21 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(field);
             return ((ICollection)field.GetValue(semaphore)).Count;
+        }
+
+        private static void WaitUntil(Func<bool> condition)
+        {
+            for (int step = 0; step < 200; step++)
+            {
+                if (condition())
+                {
+                    return;
+                }
+
+                SchedulingPoint.Interleave();
+            }
+
+            Assert.True(condition(), "The bounded synchronization observation did not occur.");
         }
     }
 }
