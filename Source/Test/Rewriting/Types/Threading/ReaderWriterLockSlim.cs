@@ -9,9 +9,11 @@ using System.Diagnostics;
 using Microsoft.Coyote.Runtime;
 using SystemLockRecursionException = System.Threading.LockRecursionException;
 using SystemLockRecursionPolicy = System.Threading.LockRecursionPolicy;
+using SystemManualResetEventSlim = System.Threading.ManualResetEventSlim;
 using SystemReaderWriterLockSlim = System.Threading.ReaderWriterLockSlim;
 using SystemSynchronizationLockException = System.Threading.SynchronizationLockException;
 using SystemThread = System.Threading.Thread;
+using SystemThreadPool = System.Threading.ThreadPool;
 using SystemTimeout = System.Threading.Timeout;
 
 namespace Microsoft.Coyote.Rewriting.Types.Threading
@@ -253,6 +255,18 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             instance.Dispose();
         }
 
+        /// <summary>
+        /// Installs an instance-scoped callback that is invoked after a controlled waiter is queued.
+        /// Used only by regression tests to observe admission without timing sleeps.
+        /// </summary>
+        internal static void SetWaiterQueuedCallbackForTesting(SystemReaderWriterLockSlim instance, Action callback)
+        {
+            if (instance is Wrapper wrapper)
+            {
+                wrapper.WaiterQueuedCallback = callback;
+            }
+        }
+
         private static int ToMilliseconds(TimeSpan timeout)
         {
             long totalMilliseconds = (long)timeout.TotalMilliseconds;
@@ -304,6 +318,22 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             private readonly Queue<ControlledOperation> PausedUpgradeableReaders;
 
             /// <summary>
+            /// Controlled writers retain intent after being made runnable so a reader cannot barge
+            /// between a release and the selected writer's next scheduling turn.
+            /// </summary>
+            private readonly HashSet<ControlledOperation> WaitingWriters;
+
+            /// <summary>
+            /// Ownership and raw completion gates for CLR threads that have the runtime execution
+            /// context but no controlled operation on their physical thread.
+            /// </summary>
+            private readonly Dictionary<int, ExternalOwner> ExternalOwners;
+            private readonly Queue<ExternalWaiter> ExternalWaiters;
+
+            private ExternalOwner ExternalWriterOwner;
+            private ExternalOwner ExternalUpgradeableOwner;
+
+            /// <summary>
             /// The operation currently holding the lock in write mode, if any.
             /// </summary>
             private ControlledOperation Writer;
@@ -314,6 +344,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             private ControlledOperation UpgradeableReader;
 
             private bool IsDisposed;
+
+            /// <summary>
+            /// Optional instance-scoped regression-test callback invoked after a waiter is queued.
+            /// </summary>
+            internal Action WaiterQueuedCallback;
 
             internal Wrapper(CoyoteRuntime runtime, SystemLockRecursionPolicy recursionPolicy)
                 : base(recursionPolicy)
@@ -329,6 +364,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 this.PausedReaders = new Queue<ControlledOperation>();
                 this.PausedWriters = new Queue<ControlledOperation>();
                 this.PausedUpgradeableReaders = new Queue<ControlledOperation>();
+                this.WaitingWriters = new HashSet<ControlledOperation>();
+                this.ExternalOwners = new Dictionary<int, ExternalOwner>();
+                this.ExternalWaiters = new Queue<ExternalWaiter>();
                 this.Writer = null;
                 this.UpgradeableReader = null;
             }
@@ -340,14 +378,14 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             {
                 ValidateMillisecondsTimeout(millisecondsTimeout);
                 CoyoteRuntime runtime = this.GetRuntime();
+                if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
+                {
+                    return this.EnterExternally(runtime, ExternalLockMode.Read, millisecondsTimeout);
+                }
+
                 using (runtime.EnterSynchronizedSection())
                 {
                     this.ThrowIfDisposed();
-                    if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
-                    {
-                        runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.EnterReadLock");
-                        return true;
-                    }
 
                     if (this.ReadRecursionCounts.TryGetValue(current, out int readRecursionCount))
                     {
@@ -378,7 +416,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
                     long deadline = millisecondsTimeout is SystemTimeout.Infinite ? 0 :
                         runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout));
-                    while (this.Writer != null || this.PausedWriters.Count > 0)
+                    while (this.Writer != null || this.HasExternalWriter() || this.HasWriterIntent())
                     {
                         if (millisecondsTimeout is 0)
                         {
@@ -398,6 +436,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         }
 
                         this.PausedReaders.Enqueue(current);
+                        this.WaiterQueuedCallback?.Invoke();
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
                         if (current.WakeReason is OperationWakeReason.Deadline)
                         {
@@ -418,31 +457,28 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             internal void ExitRead()
             {
                 CoyoteRuntime runtime = this.GetRuntime();
+                if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
+                {
+                    this.ExitExternally(runtime, ExternalLockMode.Read);
+                    return;
+                }
+
                 using (runtime.EnterSynchronizedSection())
                 {
                     this.ThrowIfDisposed();
-                    if (runtime.TryGetExecutingOperation(out ControlledOperation current))
+                    if (!this.ReadRecursionCounts.TryGetValue(current, out int readRecursionCount))
                     {
-                        if (!this.ReadRecursionCounts.TryGetValue(current, out int readRecursionCount))
-                        {
-                            throw new SystemSynchronizationLockException();
-                        }
-
-                        if (readRecursionCount > 1)
-                        {
-                            this.ReadRecursionCounts[current] = readRecursionCount - 1;
-                            return;
-                        }
-
-                        this.ReadRecursionCounts.Remove(current);
-                        this.Readers.Remove(current);
+                        throw new SystemSynchronizationLockException();
                     }
-                    else
+
+                    if (readRecursionCount > 1)
                     {
-                        runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.ExitReadLock");
+                        this.ReadRecursionCounts[current] = readRecursionCount - 1;
                         return;
                     }
 
+                    this.ReadRecursionCounts.Remove(current);
+                    this.Readers.Remove(current);
                     // A writer can only proceed once every reader has released.
                     if (this.Readers.Count is 0)
                     {
@@ -458,14 +494,14 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             {
                 ValidateMillisecondsTimeout(millisecondsTimeout);
                 CoyoteRuntime runtime = this.GetRuntime();
+                if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
+                {
+                    return this.EnterExternally(runtime, ExternalLockMode.Write, millisecondsTimeout);
+                }
+
                 using (runtime.EnterSynchronizedSection())
                 {
                     this.ThrowIfDisposed();
-                    if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
-                    {
-                        runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.EnterWriteLock");
-                        return true;
-                    }
 
                     if (this.Writer == current)
                     {
@@ -492,8 +528,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     long deadline = millisecondsTimeout is SystemTimeout.Infinite ? 0 :
                         runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout));
                     int otherReaderCount = this.Readers.Count - (this.Readers.Contains(current) ? 1 : 0);
-                    while (this.Writer != null || otherReaderCount > 0 ||
-                        (this.UpgradeableReader != null && this.UpgradeableReader != current))
+                    while (this.Writer != null || this.HasExternalWriter() || otherReaderCount > 0 ||
+                        this.HasExternalReaders() ||
+                        (this.UpgradeableReader != null && this.UpgradeableReader != current) || this.HasExternalUpgradeableReader())
                     {
                         if (millisecondsTimeout is 0)
                         {
@@ -513,16 +550,21 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         }
 
                         this.PausedWriters.Enqueue(current);
+                        this.WaitingWriters.Add(current);
+                        this.WaiterQueuedCallback?.Invoke();
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
                         if (current.WakeReason is OperationWakeReason.Deadline)
                         {
                             Remove(this.PausedWriters, current);
+                            this.WaitingWriters.Remove(current);
+                            this.ReleaseWaiters();
                             return false;
                         }
 
                         otherReaderCount = this.Readers.Count - (this.Readers.Contains(current) ? 1 : 0);
                     }
 
+                    this.WaitingWriters.Remove(current);
                     this.Writer = current;
                     this.WriteRecursionCounts[current] = 1;
                     return true;
@@ -535,14 +577,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             internal void ExitWrite()
             {
                 CoyoteRuntime runtime = this.GetRuntime();
+                if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
+                {
+                    this.ExitExternally(runtime, ExternalLockMode.Write);
+                    return;
+                }
+
                 using (runtime.EnterSynchronizedSection())
                 {
                     this.ThrowIfDisposed();
-                    if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
-                    {
-                        runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.ExitWriteLock");
-                        return;
-                    }
 
                     if (this.Writer != current)
                     {
@@ -569,14 +612,14 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             {
                 ValidateMillisecondsTimeout(millisecondsTimeout);
                 CoyoteRuntime runtime = this.GetRuntime();
+                if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
+                {
+                    return this.EnterExternally(runtime, ExternalLockMode.UpgradeableRead, millisecondsTimeout);
+                }
+
                 using (runtime.EnterSynchronizedSection())
                 {
                     this.ThrowIfDisposed();
-                    if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
-                    {
-                        runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.EnterUpgradeableReadLock");
-                        return true;
-                    }
 
                     if (this.UpgradeableReader == current)
                     {
@@ -614,7 +657,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
                     long deadline = millisecondsTimeout is SystemTimeout.Infinite ? 0 :
                         runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout));
-                    while (this.Writer != null || this.UpgradeableReader != null || this.PausedWriters.Count > 0)
+                    while (this.Writer != null || this.HasExternalWriter() || this.UpgradeableReader != null ||
+                        this.HasExternalUpgradeableReader() || this.HasWriterIntent())
                     {
                         if (millisecondsTimeout is 0)
                         {
@@ -634,6 +678,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         }
 
                         this.PausedUpgradeableReaders.Enqueue(current);
+                        this.WaiterQueuedCallback?.Invoke();
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
                         if (current.WakeReason is OperationWakeReason.Deadline)
                         {
@@ -654,14 +699,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             internal void ExitUpgradeableRead()
             {
                 CoyoteRuntime runtime = this.GetRuntime();
+                if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
+                {
+                    this.ExitExternally(runtime, ExternalLockMode.UpgradeableRead);
+                    return;
+                }
+
                 using (runtime.EnterSynchronizedSection())
                 {
                     this.ThrowIfDisposed();
-                    if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
-                    {
-                        runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.ExitUpgradeableReadLock");
-                        return;
-                    }
 
                     if (this.UpgradeableReader != current)
                     {
@@ -681,33 +727,51 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 }
             }
 
-            internal SystemLockRecursionPolicy ModeledRecursionPolicy => this.LockRecursionPolicy;
+            internal SystemLockRecursionPolicy ModeledRecursionPolicy
+            {
+                get
+                {
+                    _ = this.GetRuntime();
+                    return this.LockRecursionPolicy;
+                }
+            }
 
-            internal bool IsCurrentReader() =>
-                this.GetRuntime().TryGetExecutingOperation(out ControlledOperation current) &&
-                this.ReadRecursionCounts.ContainsKey(current);
+            internal bool IsCurrentReader() => this.GetCurrentOwner().ReadCount > 0;
 
-            internal bool IsCurrentWriter() =>
-                this.GetRuntime().TryGetExecutingOperation(out ControlledOperation current) &&
-                this.WriteRecursionCounts.ContainsKey(current);
+            internal bool IsCurrentWriter() => this.GetCurrentOwner().WriteCount > 0;
 
-            internal bool IsCurrentUpgradeableReader() =>
-                this.GetRuntime().TryGetExecutingOperation(out ControlledOperation current) &&
-                this.UpgradeableRecursionCounts.ContainsKey(current);
+            internal bool IsCurrentUpgradeableReader() => this.GetCurrentOwner().UpgradeableCount > 0;
 
-            internal int ReaderCount() => this.Readers.Count;
+            internal int ReaderCount()
+            {
+                CoyoteRuntime runtime = this.GetRuntime();
+                using (runtime.EnterSynchronizedSection())
+                {
+                    int count = this.Readers.Count;
+                    foreach (ExternalOwner owner in this.ExternalOwners.Values)
+                    {
+                        if (owner.ReadCount > 0)
+                        {
+                            count++;
+                        }
+                    }
 
-            internal int ReadRecursionCount() => this.GetRecursionCount(this.ReadRecursionCounts);
+                    return count;
+                }
+            }
 
-            internal int WriteRecursionCount() => this.GetRecursionCount(this.WriteRecursionCounts);
+            internal int ReadRecursionCount() => this.GetCurrentOwner().ReadCount;
 
-            internal int UpgradeableRecursionCount() => this.GetRecursionCount(this.UpgradeableRecursionCounts);
+            internal int WriteRecursionCount() => this.GetCurrentOwner().WriteCount;
 
-            internal int WaitingReaderCount() => this.PausedReaders.Count;
+            internal int UpgradeableRecursionCount() => this.GetCurrentOwner().UpgradeableCount;
 
-            internal int WaitingWriterCount() => this.PausedWriters.Count;
+            internal int WaitingReaderCount() => this.GetWaitingCount(ExternalLockMode.Read, this.PausedReaders.Count);
 
-            internal int WaitingUpgradeableReaderCount() => this.PausedUpgradeableReaders.Count;
+            internal int WaitingWriterCount() => this.GetWaitingCount(ExternalLockMode.Write, this.PausedWriters.Count);
+
+            internal int WaitingUpgradeableReaderCount() =>
+                this.GetWaitingCount(ExternalLockMode.UpgradeableRead, this.PausedUpgradeableReaders.Count);
 
             /// <summary>
             /// Disposes the model only when no operation owns a modeled lock mode. The BCL does
@@ -724,7 +788,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         return;
                     }
 
-                    if (this.Readers.Count > 0 || this.Writer != null || this.UpgradeableReader != null)
+                    if (this.Readers.Count > 0 || this.Writer != null || this.UpgradeableReader != null ||
+                        this.ExternalOwners.Count > 0)
                     {
                         throw new SystemSynchronizationLockException();
                     }
@@ -740,6 +805,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// </summary>
             private void ReleaseWaiters()
             {
+                this.GrantExternalWaiters();
                 while (this.PausedWriters.Count > 0)
                 {
                     this.PausedWriters.Dequeue().TryEnable(this.ResourceId);
@@ -754,6 +820,439 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 {
                     this.PausedReaders.Dequeue().TryEnable(this.ResourceId);
                 }
+            }
+
+            /// <summary>
+            /// Acquires a mode for a raw CLR thread. State changes are serialized by the runtime,
+            /// while the thread itself waits on an unrewritten completion gate outside that lock.
+            /// </summary>
+            private bool EnterExternally(CoyoteRuntime runtime, ExternalLockMode mode, int millisecondsTimeout)
+            {
+                int threadId = SystemThread.CurrentThread.ManagedThreadId;
+                var stopwatch = millisecondsTimeout is SystemTimeout.Infinite ? null : Stopwatch.StartNew();
+                ExternalWaiter waiter = null;
+                try
+                {
+                    while (true)
+                    {
+                        bool queued = false;
+                        int remainingMilliseconds = GetRemainingMilliseconds(millisecondsTimeout, stopwatch);
+                        using (runtime.EnterSynchronizedSection())
+                        {
+                            this.ThrowIfDisposed();
+                            runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.Enter" + mode + "Lock");
+                            if (waiter is null)
+                            {
+                                if (this.TryAcquireExternal(threadId, mode))
+                                {
+                                    return true;
+                                }
+
+                                if (millisecondsTimeout is 0)
+                                {
+                                    return false;
+                                }
+
+                                waiter = new ExternalWaiter(threadId, mode);
+                                this.ExternalWaiters.Enqueue(waiter);
+                                queued = true;
+                            }
+                            else if (waiter.IsGranted)
+                            {
+                                return true;
+                            }
+                            else if (remainingMilliseconds is 0)
+                            {
+                                this.RemoveExternalWaiter(waiter);
+                                this.ReleaseWaiters();
+                                return false;
+                            }
+                        }
+
+                        if (queued)
+                        {
+                            this.WaiterQueuedCallback?.Invoke();
+                        }
+
+                        if (!waiter.Wait(remainingMilliseconds))
+                        {
+                            using (runtime.EnterSynchronizedSection())
+                            {
+                                if (waiter.IsGranted)
+                                {
+                                    return true;
+                                }
+
+                                this.RemoveExternalWaiter(waiter);
+                                this.ReleaseWaiters();
+                                return false;
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    if (waiter != null && !waiter.IsGranted)
+                    {
+                        using (runtime.EnterSynchronizedSection())
+                        {
+                            this.RemoveExternalWaiter(waiter);
+                        }
+                    }
+
+                    waiter?.Dispose();
+                }
+            }
+
+            private void ExitExternally(CoyoteRuntime runtime, ExternalLockMode mode)
+            {
+                using (runtime.EnterSynchronizedSection())
+                {
+                    this.ThrowIfDisposed();
+                    runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.Exit" + mode + "Lock");
+                    int threadId = SystemThread.CurrentThread.ManagedThreadId;
+                    if (!this.ExternalOwners.TryGetValue(threadId, out ExternalOwner owner))
+                    {
+                        throw new SystemSynchronizationLockException();
+                    }
+
+                    switch (mode)
+                    {
+                        case ExternalLockMode.Read:
+                            if (owner.ReadCount is 0)
+                            {
+                                throw new SystemSynchronizationLockException();
+                            }
+
+                            owner.ReadCount--;
+                            break;
+                        case ExternalLockMode.Write:
+                            if (owner.WriteCount is 0)
+                            {
+                                throw new SystemSynchronizationLockException();
+                            }
+
+                            owner.WriteCount--;
+                            break;
+                        default:
+                            if (owner.UpgradeableCount is 0)
+                            {
+                                throw new SystemSynchronizationLockException();
+                            }
+
+                            owner.UpgradeableCount--;
+                            break;
+                    }
+
+                    if (owner.WriteCount is 0 && this.HasExternalWriter(owner))
+                    {
+                        this.ExternalWriterOwner = null;
+                    }
+
+                    if (owner.UpgradeableCount is 0 && this.HasExternalUpgradeableReader(owner))
+                    {
+                        this.ExternalUpgradeableOwner = null;
+                    }
+
+                    if (owner.ReadCount is 0 && owner.WriteCount is 0 && owner.UpgradeableCount is 0)
+                    {
+                        this.ExternalOwners.Remove(threadId);
+                    }
+
+                    this.ReleaseWaiters();
+                }
+            }
+
+            private bool TryAcquireExternal(int threadId, ExternalLockMode mode)
+            {
+                this.ExternalOwners.TryGetValue(threadId, out ExternalOwner owner);
+                switch (mode)
+                {
+                    case ExternalLockMode.Read:
+                        if (owner?.ReadCount > 0)
+                        {
+                            this.IncrementExternalRecursion(owner, mode);
+                            return true;
+                        }
+
+                        if (owner?.WriteCount > 0 && this.LockRecursionPolicy is SystemLockRecursionPolicy.NoRecursion)
+                        {
+                            throw new SystemLockRecursionException(
+                                "A read lock may not be acquired with the write lock held in this mode.");
+                        }
+
+                        if (owner?.WriteCount > 0 || owner?.UpgradeableCount > 0 ||
+                            (!this.HasExternalWriter() && this.Writer is null && !this.HasWriterIntent()))
+                        {
+                            owner = this.GetOrCreateExternalOwner(threadId, owner);
+                            owner.ReadCount++;
+                            return true;
+                        }
+
+                        return false;
+
+                    case ExternalLockMode.Write:
+                        if (owner?.WriteCount > 0)
+                        {
+                            this.IncrementExternalRecursion(owner, mode);
+                            return true;
+                        }
+
+                        if (owner?.ReadCount > 0 && owner.UpgradeableCount is 0)
+                        {
+                            throw new SystemLockRecursionException("Write lock may not be acquired with read lock held.");
+                        }
+
+                        if (this.Writer is null && !this.HasExternalWriter() && this.Readers.Count is 0 &&
+                            !this.HasExternalReadersOtherThan(owner) &&
+                            (this.UpgradeableReader is null || owner?.UpgradeableCount > 0) &&
+                            (!this.HasExternalUpgradeableReader() || owner?.UpgradeableCount > 0))
+                        {
+                            owner = this.GetOrCreateExternalOwner(threadId, owner);
+                            owner.WriteCount++;
+                            this.ExternalWriterOwner = owner;
+                            return true;
+                        }
+
+                        return false;
+
+                    default:
+                        if (owner?.UpgradeableCount > 0)
+                        {
+                            this.IncrementExternalRecursion(owner, mode);
+                            return true;
+                        }
+
+                        if (owner?.ReadCount > 0 && owner.WriteCount is 0)
+                        {
+                            throw new SystemLockRecursionException("Upgradeable lock may not be acquired with read lock held.");
+                        }
+
+                        if (owner?.WriteCount > 0 && this.LockRecursionPolicy is SystemLockRecursionPolicy.NoRecursion)
+                        {
+                            throw new SystemLockRecursionException(
+                                "Upgradeable lock may not be acquired with the write lock held in this mode.");
+                        }
+
+                        if (owner?.WriteCount > 0 || (this.Writer is null && !this.HasExternalWriter() &&
+                            this.UpgradeableReader is null && !this.HasExternalUpgradeableReader() && !this.HasWriterIntent()))
+                        {
+                            owner = this.GetOrCreateExternalOwner(threadId, owner);
+                            owner.UpgradeableCount++;
+                            this.ExternalUpgradeableOwner = owner;
+                            return true;
+                        }
+
+                        return false;
+                }
+            }
+
+            private ExternalOwner GetOrCreateExternalOwner(int threadId, ExternalOwner owner)
+            {
+                if (owner is null)
+                {
+                    owner = new ExternalOwner();
+                    this.ExternalOwners.Add(threadId, owner);
+                }
+
+                return owner;
+            }
+
+            private void IncrementExternalRecursion(ExternalOwner owner, ExternalLockMode mode)
+            {
+                if (this.LockRecursionPolicy is SystemLockRecursionPolicy.NoRecursion)
+                {
+                    throw new SystemLockRecursionException("Recursive lock acquisitions are not allowed in this mode.");
+                }
+
+                switch (mode)
+                {
+                    case ExternalLockMode.Read:
+                        owner.ReadCount++;
+                        break;
+                    case ExternalLockMode.Write:
+                        owner.WriteCount++;
+                        break;
+                    default:
+                        owner.UpgradeableCount++;
+                        break;
+                }
+            }
+
+            private void GrantExternalWaiters()
+            {
+                int count = this.ExternalWaiters.Count;
+                for (int idx = 0; idx < count; idx++)
+                {
+                    ExternalWaiter waiter = this.ExternalWaiters.Dequeue();
+                    if (this.TryAcquireExternal(waiter.ThreadId, waiter.Mode))
+                    {
+                        waiter.Grant();
+                    }
+                    else
+                    {
+                        this.ExternalWaiters.Enqueue(waiter);
+                    }
+                }
+            }
+
+            private void RemoveExternalWaiter(ExternalWaiter waiter)
+            {
+                int count = this.ExternalWaiters.Count;
+                for (int idx = 0; idx < count; idx++)
+                {
+                    ExternalWaiter candidate = this.ExternalWaiters.Dequeue();
+                    if (candidate != waiter)
+                    {
+                        this.ExternalWaiters.Enqueue(candidate);
+                    }
+                }
+            }
+
+            private bool HasWriterIntent()
+            {
+                if (this.WaitingWriters.Count > 0)
+                {
+                    return true;
+                }
+
+                foreach (ExternalWaiter waiter in this.ExternalWaiters)
+                {
+                    if (waiter.Mode is ExternalLockMode.Write)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            private bool HasExternalWriter() => this.ExternalWriterOwner != null;
+
+            private bool HasExternalWriter(ExternalOwner owner) => this.ExternalWriterOwner == owner;
+
+            private bool HasExternalUpgradeableReader() => this.ExternalUpgradeableOwner != null;
+
+            private bool HasExternalUpgradeableReader(ExternalOwner owner) => this.ExternalUpgradeableOwner == owner;
+
+            private bool HasExternalReaders() => this.HasExternalReadersOtherThan(null);
+
+            private bool HasExternalReadersOtherThan(ExternalOwner expectedOwner)
+            {
+                foreach (ExternalOwner owner in this.ExternalOwners.Values)
+                {
+                    if (owner != expectedOwner && owner.ReadCount > 0)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            private ExternalOwner GetCurrentOwner()
+            {
+                CoyoteRuntime runtime = this.GetRuntime();
+                using (runtime.EnterSynchronizedSection())
+                {
+                    if (runtime.TryGetExecutingOperation(out ControlledOperation current))
+                    {
+                        return new ExternalOwner
+                        {
+                            ReadCount = this.ReadRecursionCounts.TryGetValue(current, out int readCount) ? readCount : 0,
+                            WriteCount = this.WriteRecursionCounts.TryGetValue(current, out int writeCount) ? writeCount : 0,
+                            UpgradeableCount = this.UpgradeableRecursionCounts.TryGetValue(current, out int upgradeCount) ?
+                                upgradeCount : 0
+                        };
+                    }
+
+                    return this.ExternalOwners.TryGetValue(SystemThread.CurrentThread.ManagedThreadId, out ExternalOwner owner) ?
+                        owner : ExternalOwner.None;
+                }
+            }
+
+            private int GetWaitingCount(ExternalLockMode mode, int controlledCount)
+            {
+                CoyoteRuntime runtime = this.GetRuntime();
+                using (runtime.EnterSynchronizedSection())
+                {
+                    int count = controlledCount;
+                    foreach (ExternalWaiter waiter in this.ExternalWaiters)
+                    {
+                        if (waiter.Mode == mode)
+                        {
+                            count++;
+                        }
+                    }
+
+                    return count;
+                }
+            }
+
+            private static int GetRemainingMilliseconds(int millisecondsTimeout, Stopwatch stopwatch)
+            {
+                if (millisecondsTimeout is SystemTimeout.Infinite)
+                {
+                    return SystemTimeout.Infinite;
+                }
+
+                long remaining = millisecondsTimeout - stopwatch.ElapsedMilliseconds;
+                return remaining <= 0 ? 0 : (int)remaining;
+            }
+
+            private enum ExternalLockMode
+            {
+                Read,
+                Write,
+                UpgradeableRead
+            }
+
+            private sealed class ExternalOwner
+            {
+                internal static readonly ExternalOwner None = new ExternalOwner();
+
+                internal int ReadCount;
+                internal int WriteCount;
+                internal int UpgradeableCount;
+            }
+
+            private sealed class ExternalWaiter : IDisposable
+            {
+                private readonly SystemManualResetEventSlim Gate = new SystemManualResetEventSlim(false);
+
+                internal int ThreadId { get; }
+                internal ExternalLockMode Mode { get; }
+                internal bool IsGranted { get; private set; }
+
+                internal ExternalWaiter(int threadId, ExternalLockMode mode)
+                {
+                    this.ThreadId = threadId;
+                    this.Mode = mode;
+                }
+
+                internal bool Wait(int millisecondsTimeout) => this.Gate.Wait(millisecondsTimeout);
+
+                internal void Grant()
+                {
+                    this.IsGranted = true;
+                    _ = SystemThreadPool.UnsafeQueueUserWorkItem(
+                        _ => this.Signal(), null);
+                }
+
+                private void Signal()
+                {
+                    try
+                    {
+                        this.Gate.Set();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // A finite waiter can finish its wall-clock timeout before the queued
+                        // physical signal runs. The grant itself remains atomic under the runtime lock.
+                    }
+                }
+
+                public void Dispose() => this.Gate.Dispose();
             }
 
             private static void ValidateMillisecondsTimeout(int millisecondsTimeout)
@@ -786,12 +1285,6 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 }
 
                 counts[current] = count + 1;
-            }
-
-            private int GetRecursionCount(Dictionary<ControlledOperation, int> counts)
-            {
-                return this.GetRuntime().TryGetExecutingOperation(out ControlledOperation current) &&
-                    counts.TryGetValue(current, out int count) ? count : 0;
             }
 
             private void ThrowIfDisposed()
