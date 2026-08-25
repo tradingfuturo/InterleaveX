@@ -370,7 +370,110 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
 
             ArgumentNullException.ThrowIfNull(timeProvider);
             delay = CoyoteRuntime.NormalizeTimeout(delay, nameof(delay), MaxSupportedTimeoutMilliseconds);
+            if (timeProvider != TimeProvider.System)
+            {
+                return ProviderDelayPromise.Create(runtime, delay, timeProvider, cancellationToken);
+            }
+
             return runtime.ScheduleDelay(delay, cancellationToken);
+        }
+
+        /// <summary>
+        /// Implements a controlled delay whose expiry remains owned by a custom time provider.
+        /// </summary>
+        private sealed class ProviderDelayPromise
+        {
+            private readonly SystemTasks.TaskCompletionSource<bool> CompletionSource;
+
+            private readonly SystemCancellationToken CancellationToken;
+
+            private ProviderTimer Timer;
+
+            private System.Threading.CancellationTokenRegistration CancellationRegistration;
+
+            private int IsTimerPublished;
+
+            private int IsCancellationPublished;
+
+            private ProviderDelayPromise(CoyoteRuntime runtime, TimeSpan delay, TimeProvider timeProvider,
+                SystemCancellationToken cancellationToken)
+            {
+                this.CancellationToken = cancellationToken;
+                this.CompletionSource = new SystemTasks.TaskCompletionSource<bool>();
+                runtime.RegisterKnownControlledTask(this.CompletionSource.Task);
+
+                ProviderTimer timer = ProviderTimer.Create(runtime, timeProvider,
+                    static state => ((ProviderDelayPromise)state).Complete(), this,
+                    delay, SystemTimeout.InfiniteTimeSpan);
+                this.Timer = timer;
+                Volatile.Write(ref this.IsTimerPublished, 1);
+                if (this.CompletionSource.Task.IsCompleted)
+                {
+                    timer.Dispose();
+                }
+
+                if (cancellationToken.CanBeCanceled)
+                {
+                    var registration = cancellationToken.UnsafeRegister(
+                        static (state, _) => ((ProviderDelayPromise)state).Cancel(), this);
+                    this.CancellationRegistration = registration;
+                    Volatile.Write(ref this.IsCancellationPublished, 1);
+                    if (this.CompletionSource.Task.IsCompleted)
+                    {
+                        registration.Unregister();
+                    }
+                }
+            }
+
+            internal static SystemTask Create(CoyoteRuntime runtime, TimeSpan delay, TimeProvider timeProvider,
+                SystemCancellationToken cancellationToken)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return FromCanceled(cancellationToken);
+                }
+
+                if (delay == TimeSpan.Zero)
+                {
+                    return SystemTask.CompletedTask;
+                }
+
+                if (delay == SystemTimeout.InfiniteTimeSpan)
+                {
+                    return runtime.ScheduleDelay(delay, cancellationToken);
+                }
+
+                return new ProviderDelayPromise(runtime, delay, timeProvider, cancellationToken).CompletionSource.Task;
+            }
+
+            private void Complete()
+            {
+                if (this.CompletionSource.TrySetResult(true))
+                {
+                    this.Cleanup();
+                }
+            }
+
+            private void Cancel()
+            {
+                if (this.CompletionSource.TrySetCanceled(this.CancellationToken))
+                {
+                    this.Cleanup();
+                }
+            }
+
+            private void Cleanup()
+            {
+                if (Volatile.Read(ref this.IsCancellationPublished) != 0)
+                {
+                    this.CancellationRegistration.Unregister();
+                }
+
+                if (Volatile.Read(ref this.IsTimerPublished) != 0)
+                {
+                    this.Timer.Dispose();
+                }
+            }
         }
 #endif
 
@@ -977,7 +1080,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                 return task;
             }
 
-            return WaitAsyncCore(task, normalized, static () => true, default);
+            return WaitAsyncCore(task, normalized, static () => true, default, timeProvider);
         }
 
         /// <summary>
@@ -1000,16 +1103,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                 return task;
             }
 
-            return WaitAsyncCore(task, normalized, static () => true, cancellationToken);
+            return WaitAsyncCore(task, normalized, static () => true, cancellationToken, timeProvider);
         }
 #endif
 
         /// <summary>
-        /// Implements the scheduler-owned task, timeout and cancellation race shared by generic and
-        /// non-generic task waits.
+        /// Implements the controlled task, timeout and cancellation race shared by generic and
+        /// non-generic task waits. Timeout ownership is selected by the overload that reached this core.
         /// </summary>
         internal static SystemTasks.Task<TResult> WaitAsyncCore<TResult>(SystemTask task, TimeSpan timeout,
-            Func<TResult> getResult, SystemCancellationToken cancellationToken)
+            Func<TResult> getResult, SystemCancellationToken cancellationToken, object timeProvider = null)
         {
             if (cancellationToken.IsCancellationRequested)
             {
@@ -1029,7 +1132,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                 // projection operations must likewise be atomic with the call: allowing either creation
                 // point to schedule would let a timeout win before WaitAsync has even returned.
                 return WaitAsyncStateMachine<TResult>.RunAsync(
-                    runtime, task, timeout, getResult, cancellationToken);
+                    runtime, task, timeout, getResult, timeProvider, cancellationToken);
             }
             finally
             {
@@ -1083,7 +1186,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             private readonly Func<TResult> GetResult;
 
             private WaitAsyncStateMachine(CoyoteRuntime runtime, SystemTask sourceTask, TimeSpan timeout,
-                Func<TResult> getResult, SystemCancellationToken cancellationToken)
+                Func<TResult> getResult, object timeProvider, SystemCancellationToken cancellationToken)
                 : base(runtime, runContinuationAsynchronously: true)
             {
                 this.SourceTask = sourceTask;
@@ -1092,15 +1195,22 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                 this.TimeoutCancellationSource = cancellationToken.CanBeCanceled ?
                     SystemCancellationTokenSource.CreateLinkedTokenSource(cancellationToken) :
                     new SystemCancellationTokenSource();
+#if NET8_0_OR_GREATER
+                this.TimeoutTask = timeProvider is TimeProvider provider ?
+                    Delay(timeout, provider, this.TimeoutCancellationSource.Token) :
+                    Delay(timeout, this.TimeoutCancellationSource.Token);
+#else
                 this.TimeoutTask = Delay(timeout, this.TimeoutCancellationSource.Token);
+#endif
                 this.WinnerTask = WhenAny(sourceTask, this.TimeoutTask);
             }
 
             internal static SystemTasks.Task<TResult> RunAsync(CoyoteRuntime runtime, SystemTask sourceTask,
-                TimeSpan timeout, Func<TResult> getResult, SystemCancellationToken cancellationToken)
+                TimeSpan timeout, Func<TResult> getResult, object timeProvider,
+                SystemCancellationToken cancellationToken)
             {
                 var stateMachine = new WaitAsyncStateMachine<TResult>(
-                    runtime, sourceTask, timeout, getResult, cancellationToken);
+                    runtime, sourceTask, timeout, getResult, timeProvider, cancellationToken);
                 stateMachine.MoveNext();
                 runtime.RegisterKnownControlledTask(stateMachine.CompletionSource.Task);
                 return stateMachine.CompletionSource.Task;
@@ -1457,7 +1567,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             }
 
             return global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.WaitAsyncCore(
-                task, normalized, () => task.GetAwaiter().GetResult(), default);
+                task, normalized, () => task.GetAwaiter().GetResult(), default, timeProvider);
         }
 
         /// <summary>
@@ -1481,7 +1591,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             }
 
             return global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.WaitAsyncCore(
-                task, normalized, () => task.GetAwaiter().GetResult(), cancellationToken);
+                task, normalized, () => task.GetAwaiter().GetResult(), cancellationToken, timeProvider);
         }
 #endif
 #endif

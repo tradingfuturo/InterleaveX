@@ -4,10 +4,14 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Coyote.Rewriting;
 using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Specifications;
+using Microsoft.Coyote.SystematicTesting;
+using Microsoft.Coyote.Tests.Common;
 using Xunit;
 using Xunit.Abstractions;
+using SystemThread = System.Threading.Thread;
 
 namespace Microsoft.Coyote.BugFinding.Tests
 {
@@ -58,12 +62,162 @@ namespace Microsoft.Coyote.BugFinding.Tests
 
 #if NET8_0_OR_GREATER
         [Fact(Timeout = 5000)]
+        [Trait("Category", "TimeProviderFidelity")]
+        public void TestCustomTimeProviderOwnsDelayExpiry()
+        {
+            this.Test(async () =>
+            {
+                var provider = new RecordingTimeProvider();
+                long clock = CoyoteRuntime.Current.GetVirtualTimeTicksForTesting();
+                Task delay = Task.Delay(TimeSpan.FromMilliseconds(5), provider);
+
+                Specification.Assert(provider.CreateCount is 1,
+                    "The custom TimeProvider was not asked to create the delay timer.");
+                Specification.Assert(!delay.IsCompleted,
+                    "The custom-provider delay completed before its provider fired.");
+                Specification.Assert(provider.LastTimer.DueTime == TimeSpan.FromMilliseconds(5) &&
+                    provider.LastTimer.Period == Timeout.InfiniteTimeSpan,
+                    "The custom provider received the wrong one-shot timer arguments.");
+                Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() == clock,
+                    "Creating a custom-provider delay advanced scheduler-owned virtual time.");
+
+                provider.LastTimer.Fire();
+                await delay;
+                Specification.Assert(provider.LastTimer.DisposeCount is 1,
+                    "A fired one-shot provider timer was not disposed exactly once.");
+                Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() == clock,
+                    "A custom-provider callback advanced scheduler-owned virtual time.");
+            }, this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "TimeProviderFidelity")]
+        public void TestCustomTimeProviderDelayHandlesSynchronousPublicationAndFailures()
+        {
+            this.Test(() =>
+            {
+                var synchronousProvider = new RecordingTimeProvider { FireOnCreate = true };
+                Task synchronousDelay = Task.Delay(TimeSpan.FromMilliseconds(5), synchronousProvider);
+                Specification.Assert(synchronousDelay.IsCompletedSuccessfully,
+                    "A timer fired synchronously during CreateTimer did not complete its delay inline.");
+                Specification.Assert(synchronousProvider.WasExecutionContextFlowSuppressed,
+                    "ExecutionContext flow was not suppressed around TimeProvider.CreateTimer.");
+                Specification.Assert(synchronousProvider.LastTimer.DisposeCount is 1,
+                    "A synchronously fired provider timer was not disposed exactly once after publication.");
+
+                var throwingProvider = new RecordingTimeProvider { ThrowOnCreate = true };
+                Exception failure = null;
+                try
+                {
+                    _ = Task.Delay(TimeSpan.FromMilliseconds(5), throwingProvider);
+                }
+                catch (Exception ex)
+                {
+                    failure = ex;
+                }
+
+                Specification.Assert(failure is InvalidOperationException,
+                    "Task.Delay did not propagate a custom provider's CreateTimer exception.");
+            });
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "TimeProviderFidelity")]
+        public void TestCustomTimeProviderDelayPreservesFastPaths()
+        {
+            this.Test(async () =>
+            {
+                var provider = new RecordingTimeProvider();
+                using var preCanceled = new CancellationTokenSource();
+                preCanceled.Cancel();
+
+                Task zero = Task.Delay(TimeSpan.Zero, provider);
+                Task canceled = Task.Delay(TimeSpan.FromSeconds(1), provider, preCanceled.Token);
+                using var infiniteCancellation = new CancellationTokenSource();
+                Task infinite = Task.Delay(Timeout.InfiniteTimeSpan, provider, infiniteCancellation.Token);
+
+                Specification.Assert(zero.IsCompletedSuccessfully,
+                    "A zero custom-provider delay did not complete synchronously.");
+                Specification.Assert(provider.CreateCount is 0,
+                    "A custom provider was consulted for a zero, infinite or pre-canceled delay.");
+                await AssertCanceledWithTokenAsync(canceled, preCanceled.Token);
+
+                infiniteCancellation.Cancel();
+                await AssertCanceledWithTokenAsync(infinite, infiniteCancellation.Token);
+            });
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "TimeProviderFidelity")]
+        public void TestSystemTimeProviderDelayRemainsVirtual()
+        {
+            if (this.SchedulingPolicy is not SchedulingPolicy.Interleaving)
+            {
+                return;
+            }
+
+            this.Test(async () =>
+            {
+                long clock = CoyoteRuntime.Current.GetVirtualTimeTicksForTesting();
+                await Task.Delay(TimeSpan.FromMilliseconds(5), TimeProvider.System);
+                Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() - clock ==
+                    TimeSpan.FromMilliseconds(5).Ticks,
+                    "TimeProvider.System no longer uses scheduler-owned virtual time.");
+            }, this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "TimeProviderFidelity")]
+        public void TestExternalTimeProviderCallbackIsRejectedWithoutPartialControl()
+        {
+            if (this.SchedulingPolicy is not SchedulingPolicy.Interleaving)
+            {
+                return;
+            }
+
+            this.TestWithError(async () =>
+            {
+                var provider = new RecordingTimeProvider();
+                Task delay = Task.Delay(TimeSpan.FromSeconds(1), provider);
+                UncontrolledThreadRunner.RunAndWait(provider.LastTimer.Fire);
+                await delay;
+            }, errorChecker: error => Assert.Contains(
+                "A custom TimeProvider fired a timer callback from uncontrolled thread", error),
+            configuration: this.GetConfiguration()
+                .WithTestingIterations(1)
+                .WithPartiallyControlledConcurrencyAllowed(false));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "TimeProviderFidelity")]
+        public void TestExternalTimeProviderCallbackIsImportedWithPartialControl()
+        {
+            if (this.SchedulingPolicy is not SchedulingPolicy.Interleaving)
+            {
+                return;
+            }
+
+            TestReport report = this.RunSystematicTest(async () =>
+            {
+                var provider = new RecordingTimeProvider();
+                Task delay = Task.Delay(TimeSpan.FromSeconds(1), provider);
+                UncontrolledThreadRunner.RunAndWait(provider.LastTimer.Fire);
+                await delay;
+                Specification.Assert(delay.IsCompletedSuccessfully,
+                    "An externally fired provider callback was not imported as controlled work.");
+            }, configuration: this.GetConfiguration()
+                .WithTestingIterations(10)
+                .WithPartiallyControlledConcurrencyAllowed());
+            Assert.Contains("System.TimeProvider.CreateTimer", report.UncontrolledInvocations);
+        }
+
+        [Fact(Timeout = 5000)]
         [Trait("Category", "RewritingRemediation")]
         public void TestTimeProviderDelayIsControlled()
         {
             this.Test(async () =>
             {
-                var provider = new ThrowingTimeProvider();
+                var provider = new RecordingTimeProvider();
                 Task delay = Task.Delay(TimeSpan.FromMilliseconds(1), provider);
                 if (this.SchedulingPolicy is SchedulingPolicy.Interleaving)
                 {
@@ -71,6 +225,7 @@ namespace Microsoft.Coyote.BugFinding.Tests
                         "Task.Delay(TimeSpan, TimeProvider) returned an uncontrolled task.");
                 }
 
+                provider.LastTimer.Fire();
                 await delay;
             }, configuration: this.GetConfiguration()
                 .WithTestingIterations(10)
@@ -83,7 +238,7 @@ namespace Microsoft.Coyote.BugFinding.Tests
         {
             this.Test(async () =>
             {
-                var provider = new ThrowingTimeProvider();
+                var provider = new RecordingTimeProvider();
                 using var source = new CancellationTokenSource();
                 Task delay = Task.Delay(TimeSpan.FromMinutes(1), provider, source.Token);
                 if (this.SchedulingPolicy is SchedulingPolicy.Interleaving)
@@ -110,6 +265,9 @@ namespace Microsoft.Coyote.BugFinding.Tests
                     Specification.Assert(failure != null && failure.CancellationToken == source.Token,
                         "The controlled TimeProvider delay did not preserve its cancellation token.");
                 }
+
+                Specification.Assert(provider.LastTimer.DisposeCount is 1,
+                    "Cancellation did not dispose the losing provider timer exactly once.");
             }, configuration: this.GetConfiguration()
                 .WithTestingIterations(10)
                 .WithPartiallyControlledConcurrencyAllowed(false));
@@ -262,7 +420,7 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 TimeSpan oneAndHalfMilliseconds = TimeSpan.FromTicks(TimeSpan.TicksPerMillisecond +
                     (TimeSpan.TicksPerMillisecond / 2));
 #if NET8_0_OR_GREATER
-                var provider = new ThrowingTimeProvider();
+                var provider = new RecordingTimeProvider();
 #endif
 
                 Task[] immediate =
@@ -282,6 +440,10 @@ namespace Microsoft.Coyote.BugFinding.Tests
 
                 Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() is 0,
                     "A 0.5ms Task.Delay advanced virtual time instead of completing synchronously.");
+#if NET8_0_OR_GREATER
+                Specification.Assert(provider.CreateCount is 0,
+                    "A custom provider was consulted for a delay normalized to zero.");
+#endif
 
                 Task[] fractional =
                 {
@@ -292,6 +454,16 @@ namespace Microsoft.Coyote.BugFinding.Tests
                     Task.Delay(oneAndHalfMilliseconds, provider, CancellationToken.None)
 #endif
                 };
+#if NET8_0_OR_GREATER
+                Specification.Assert(provider.CreateCount is 2,
+                    "The custom provider did not receive both finite fractional delays.");
+                foreach (RecordingTimeProvider.RecordingTimer timer in provider.Timers)
+                {
+                    Specification.Assert(timer.DueTime == TimeSpan.FromMilliseconds(1),
+                        "A custom-provider 1.5ms delay was not truncated to 1ms.");
+                    timer.Fire();
+                }
+#endif
                 await Task.WhenAll(fractional);
                 Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() ==
                     TimeSpan.TicksPerMillisecond,
@@ -748,6 +920,23 @@ namespace Microsoft.Coyote.BugFinding.Tests
         }
 
 #if NET8_0_OR_GREATER
+        [SkipRewriting("Starts the one thread in these tests that must remain outside runtime control.")]
+        private static class UncontrolledThreadRunner
+        {
+            internal static void RunAndWait(Action action)
+            {
+                using (ExecutionContext.SuppressFlow())
+                {
+                    var thread = new SystemThread(() => action())
+                    {
+                        IsBackground = true
+                    };
+                    thread.Start();
+                    thread.Join();
+                }
+            }
+        }
+
         private sealed class ThrowingTimeProvider : TimeProvider
         {
             public override ITimer CreateTimer(TimerCallback callback, object state, TimeSpan dueTime, TimeSpan period) =>

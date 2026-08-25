@@ -619,6 +619,36 @@ namespace Microsoft.Coyote.Runtime
         }
 
         /// <summary>
+        /// Dispatches a callback fired by a custom time provider. A provider advanced by controlled code
+        /// preserves its synchronous completion semantics. A callback arriving from an external thread is
+        /// admitted only through the existing partial-control policy and then executes as a controlled operation.
+        /// </summary>
+        internal void DispatchProviderTimerCallback(Action callback)
+        {
+            if (this.SchedulingPolicy is not SchedulingPolicy.Interleaving ||
+                this.IsThreadControlled(Thread.CurrentThread))
+            {
+                callback();
+                return;
+            }
+
+            string message = $"A custom TimeProvider fired a timer callback from uncontrolled thread " +
+                $"'{Thread.CurrentThread.ManagedThreadId}', so its arrival cannot be exhaustively reproduced.";
+            const string methodName = "System.TimeProvider.CreateTimer";
+            bool shouldSchedule;
+            using (SynchronizedSection.Enter(this.RuntimeLock))
+            {
+                this.UncontrolledInvocations.Add(methodName);
+                shouldSchedule = this.TryHandleUncontrolledConcurrency(message, methodName);
+            }
+
+            if (shouldSchedule)
+            {
+                this.Schedule(callback);
+            }
+        }
+
+        /// <summary>
         /// Registers a mapping from the specified continuation action to its awaiting operation's group.
         /// When the continuation is later posted through <see cref="ControlledSynchronizationContext.Post"/>,
         /// the group is looked up via <see cref="TryGetContinuationGroup"/> and passed to

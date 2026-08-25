@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Specifications;
+using Microsoft.Coyote.Tests.Common;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -41,7 +42,7 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 };
 
 #if NET8_0_OR_GREATER
-                var provider = new ThrowingTimeProvider();
+                var provider = new RecordingTimeProvider();
                 waits = new[]
                 {
                     waits[0],
@@ -78,6 +79,16 @@ namespace Microsoft.Coyote.BugFinding.Tests
                         // completion because construction of the wait is atomic.
                     }
                 }
+
+#if NET8_0_OR_GREATER
+                Specification.Assert(provider.CreateCount is 4,
+                    "The custom provider did not receive every generic and non-generic timeout.");
+                foreach (RecordingTimeProvider.RecordingTimer timer in provider.Timers)
+                {
+                    Specification.Assert(timer.DisposeCount is 1,
+                        "A source winner did not dispose its losing provider timeout exactly once.");
+                }
+#endif
             }, configuration: this.GetConfiguration()
                 .WithTestingIterations(10)
                 .WithPartiallyControlledConcurrencyAllowed(false));
@@ -118,6 +129,20 @@ namespace Microsoft.Coyote.BugFinding.Tests
 
                 Specification.Assert(failure is ArgumentNullException argument && argument.ParamName == "timeProvider",
                     "The TimeProvider overload did not validate a null provider before the timeout.");
+
+                var provider = new RecordingTimeProvider();
+                Specification.Assert(ReferenceEquals(completed,
+                    completed.WaitAsync(TimeSpan.FromSeconds(1), provider)),
+                    "A completed custom-provider wait did not return its source task.");
+                Specification.Assert(ReferenceEquals(pending.Task,
+                    pending.Task.WaitAsync(Timeout.InfiniteTimeSpan, provider)),
+                    "An infinite custom-provider wait did not return its source task.");
+                Task preCanceled = pending.Task.WaitAsync(
+                    TimeSpan.FromSeconds(1), provider, cancellation.Token);
+                Specification.Assert(preCanceled.IsCanceled,
+                    "A pre-canceled custom-provider wait did not use its synchronous fast path.");
+                Specification.Assert(provider.CreateCount is 0,
+                    "WaitAsync consulted a custom provider on a completed, infinite or pre-canceled fast path.");
 #endif
             });
         }
@@ -304,10 +329,177 @@ namespace Microsoft.Coyote.BugFinding.Tests
         }
 
 #if NET8_0_OR_GREATER
-        private sealed class ThrowingTimeProvider : TimeProvider
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "TimeProviderFidelity")]
+        public void TestCustomTimeProviderOwnsWaitAsyncTimeout()
         {
-            public override ITimer CreateTimer(TimerCallback callback, object state, TimeSpan dueTime, TimeSpan period) =>
-                throw new InvalidOperationException("The controlled WaitAsync model invoked TimeProvider.CreateTimer.");
+            this.Test(async () =>
+            {
+                var provider = new RecordingTimeProvider();
+                var source = new TaskCompletionSource<bool>();
+                Task wait = source.Task.WaitAsync(TimeSpan.FromMilliseconds(5), provider);
+
+                Specification.Assert(provider.CreateCount is 1,
+                    "The custom TimeProvider was not asked to create the WaitAsync timer.");
+                Specification.Assert(!wait.IsCompleted,
+                    "WaitAsync timed out before the custom provider fired.");
+
+                provider.LastTimer.Fire();
+                Exception failure = null;
+                try
+                {
+                    await wait;
+                }
+                catch (Exception ex)
+                {
+                    failure = ex;
+                }
+
+                Specification.Assert(failure is TimeoutException,
+                    "The custom-provider timeout did not produce TimeoutException.");
+            }, this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "TimeProviderFidelity")]
+        public void TestSystemTimeProviderWaitAsyncRemainsVirtual()
+        {
+            if (this.SchedulingPolicy is not SchedulingPolicy.Interleaving)
+            {
+                return;
+            }
+
+            this.Test(async () =>
+            {
+                var source = new TaskCompletionSource<bool>();
+                long clock = CoyoteRuntime.Current.GetVirtualTimeTicksForTesting();
+                Exception failure = null;
+                try
+                {
+                    await source.Task.WaitAsync(TimeSpan.FromMilliseconds(5), TimeProvider.System);
+                }
+                catch (Exception ex)
+                {
+                    failure = ex;
+                }
+
+                Specification.Assert(failure is TimeoutException,
+                    "TimeProvider.System did not produce a controlled WaitAsync timeout.");
+                Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() - clock ==
+                    TimeSpan.FromMilliseconds(5).Ticks,
+                    "TimeProvider.System WaitAsync no longer uses scheduler-owned virtual time.");
+            }, this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "TimeProviderFidelity")]
+        public void TestWhenAllWaitAsyncDoesNotUseVirtualTimeForCustomProvider()
+        {
+            this.Test(async () =>
+            {
+                var first = new TaskCompletionSource<bool>();
+                var second = new TaskCompletionSource<bool>();
+                var provider = new RecordingTimeProvider();
+                long clock = CoyoteRuntime.Current.GetVirtualTimeTicksForTesting();
+                Task wait = Task.WhenAll(first.Task, second.Task).WaitAsync(
+                    TimeSpan.FromMilliseconds(5), provider);
+
+                await Task.Delay(TimeSpan.FromMilliseconds(1));
+                Specification.Assert(!wait.IsCompleted,
+                    "Task.WhenAll(...).WaitAsync timed out from scheduler-owned virtual time.");
+                if (this.SchedulingPolicy is SchedulingPolicy.Interleaving)
+                {
+                    Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() > clock,
+                        "The test did not advance scheduler-owned virtual time.");
+                }
+
+                provider.LastTimer.Fire();
+                Exception failure = null;
+                try
+                {
+                    await wait;
+                }
+                catch (Exception ex)
+                {
+                    failure = ex;
+                }
+
+                Specification.Assert(failure is TimeoutException,
+                    "The provider-fired Task.WhenAll timeout did not produce TimeoutException.");
+                Specification.Assert(provider.LastTimer.DisposeCount is 1,
+                    "The winning provider timeout was not cleaned up exactly once.");
+            }, this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "TimeProviderFidelity")]
+        public void TestCustomTimeProviderWaitAsyncCancellationWinner()
+        {
+            this.Test(async () =>
+            {
+                var source = new TaskCompletionSource<bool>();
+                var provider = new RecordingTimeProvider();
+                using var cancellation = new CancellationTokenSource();
+                Task wait = ((Task)source.Task).WaitAsync(
+                    TimeSpan.FromSeconds(1), provider, cancellation.Token);
+
+                cancellation.Cancel();
+                OperationCanceledException failure = null;
+                try
+                {
+                    await wait;
+                }
+                catch (OperationCanceledException ex)
+                {
+                    failure = ex;
+                }
+
+                Specification.Assert(failure != null && failure.CancellationToken == cancellation.Token,
+                    "WaitAsync did not preserve the caller's cancellation token.");
+                Specification.Assert(provider.LastTimer.DisposeCount is 1,
+                    "Cancellation did not dispose the losing provider timeout exactly once.");
+            }, this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "TimeProviderFidelity")]
+        public void TestCustomTimeProviderWaitAsyncHandlesSynchronousPublicationAndFailures()
+        {
+            this.Test(async () =>
+            {
+                var pending = new TaskCompletionSource<bool>();
+                var synchronousProvider = new RecordingTimeProvider { FireOnCreate = true };
+                Task synchronousWait = pending.Task.WaitAsync(
+                    TimeSpan.FromMilliseconds(5), synchronousProvider);
+                Exception timeout = null;
+                try
+                {
+                    await synchronousWait;
+                }
+                catch (Exception ex)
+                {
+                    timeout = ex;
+                }
+
+                Specification.Assert(timeout is TimeoutException,
+                    "A provider timeout fired synchronously during CreateTimer was lost.");
+                Specification.Assert(synchronousProvider.LastTimer.DisposeCount is 1,
+                    "The synchronously fired WaitAsync timer was not disposed exactly once.");
+
+                var throwingProvider = new RecordingTimeProvider { ThrowOnCreate = true };
+                Exception creation = null;
+                try
+                {
+                    _ = pending.Task.WaitAsync(TimeSpan.FromMilliseconds(5), throwingProvider);
+                }
+                catch (Exception ex)
+                {
+                    creation = ex;
+                }
+
+                Specification.Assert(creation is InvalidOperationException,
+                    "WaitAsync did not propagate a custom provider's CreateTimer exception.");
+            });
         }
 #endif
     }

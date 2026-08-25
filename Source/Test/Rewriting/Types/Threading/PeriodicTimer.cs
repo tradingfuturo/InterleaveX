@@ -66,21 +66,29 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
 #if NET8_0_OR_GREATER
         /// <summary>
-        /// Initializes a timer using the specified provider while keeping cadence scheduler-owned
-        /// during systematic interleaving.
+        /// Initializes a timer using the specified provider. System time remains scheduler-owned,
+        /// while a custom provider owns cadence and dispatches its ticks into the controlled runtime.
         /// </summary>
         public static SystemPeriodicTimer Create(TimeSpan period, TimeProvider timeProvider)
         {
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
             {
-                // Match the framework's validation order without consulting the provider. The real
-                // timer only exists as an identity key and is prevented from producing native ticks.
                 ValidatePeriod(period);
                 ArgumentNullException.ThrowIfNull(timeProvider);
                 var timer = new SystemPeriodicTimer(SystemTimeout.InfiniteTimeSpan);
-                Timers.Add(timer, new State(period));
-                return timer;
+                try
+                {
+                    State state = timeProvider == TimeProvider.System ?
+                        new State(period) : State.CreateProviderOwned(period, timeProvider);
+                    Timers.Add(timer, state);
+                    return timer;
+                }
+                catch
+                {
+                    timer.Dispose();
+                    throw;
+                }
             }
 
             return new SystemPeriodicTimer(period, timeProvider);
@@ -166,15 +174,41 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             private System.Threading.Tasks.TaskCompletionSource<bool> Completion;
             private System.Threading.CancellationTokenSource CadenceCancellation;
             private System.Threading.Tasks.TaskCompletionSource<bool> CadenceSignal;
+            private ProviderTimer ProviderTimer;
             private bool IsActive;
             private bool IsCadenceStarted;
             private bool IsCompleted;
+            private bool IsProviderOwned;
+            private bool IsSignaled;
             private long PeriodRevision;
 
             internal State(TimeSpan period)
             {
                 this.Period = period;
                 this.Source.RunContinuationsAsynchronously = true;
+            }
+
+            ~State()
+            {
+                this.ProviderTimer?.Dispose();
+            }
+
+            internal static State CreateProviderOwned(TimeSpan period, TimeProvider timeProvider)
+            {
+                var state = new State(period)
+                {
+                    IsProviderOwned = true
+                };
+                var weakState = new WeakReference<State>(state);
+                state.ProviderTimer = ProviderTimer.Create(CoyoteRuntime.Current, timeProvider,
+                    static value =>
+                    {
+                        if (((WeakReference<State>)value).TryGetTarget(out State target))
+                        {
+                            target.SignalProviderTick();
+                        }
+                    }, weakState, period, period);
+                return state;
             }
 
             private TimeSpan Period { get; set; }
@@ -191,18 +225,35 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
             internal void SetPeriod(TimeSpan value)
             {
-                System.Threading.CancellationTokenSource cadenceCancellation;
-                System.Threading.Tasks.TaskCompletionSource<bool> cadenceSignal;
-                bool isDisposed;
+                ProviderTimer providerTimer;
+                System.Threading.CancellationTokenSource cadenceCancellation = null;
+                System.Threading.Tasks.TaskCompletionSource<bool> cadenceSignal = null;
+                bool isProviderOwned;
+                bool isDisposed = false;
                 lock (this.SyncObject)
                 {
                     this.Period = value;
-                    this.PeriodRevision++;
-                    isDisposed = this.IsDisposed;
-                    cadenceCancellation = this.CadenceCancellation;
-                    cadenceSignal = this.CadenceSignal;
-                    this.CadenceCancellation = null;
-                    this.CadenceSignal = null;
+                    providerTimer = this.ProviderTimer;
+                    isProviderOwned = this.IsProviderOwned;
+                    if (!isProviderOwned)
+                    {
+                        this.PeriodRevision++;
+                        isDisposed = this.IsDisposed;
+                        cadenceCancellation = this.CadenceCancellation;
+                        cadenceSignal = this.CadenceSignal;
+                        this.CadenceCancellation = null;
+                        this.CadenceSignal = null;
+                    }
+                }
+
+                if (isProviderOwned)
+                {
+                    if (providerTimer is null || !providerTimer.Change(value, value))
+                    {
+                        throw new ObjectDisposedException(nameof(SystemPeriodicTimer));
+                    }
+
+                    return;
                 }
 
                 WakeCadence(cadenceCancellation, cadenceSignal);
@@ -215,6 +266,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             internal SystemTasks.ValueTask<bool> BeginWait(
                 SystemCancellationToken cancellationToken, out short version)
             {
+                bool completeFromQueuedSignal;
                 lock (this.SyncObject)
                 {
                     if (this.IsActive)
@@ -241,8 +293,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     CoyoteRuntime.Current.RegisterKnownControlledTask(this.Completion.Task);
                     this.IsActive = true;
                     this.IsCadenceStarted = false;
-                    this.IsCompleted = false;
+                    completeFromQueuedSignal = this.IsProviderOwned && this.IsSignaled;
+                    this.IsCompleted = completeFromQueuedSignal;
                     version = this.Source.Version;
+                }
+
+                if (completeFromQueuedSignal)
+                {
+                    this.Completion.TrySetResult(true);
+                    this.Source.SetResult(true);
+                    return new SystemTasks.ValueTask<bool>(this, version);
                 }
 
                 System.Threading.CancellationTokenRegistration registration = cancellationToken.Register(
@@ -293,11 +353,14 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             internal void Dispose()
             {
                 System.Threading.Tasks.TaskCompletionSource<bool> completion = null;
+                ProviderTimer providerTimer;
                 System.Threading.CancellationTokenSource cadenceCancellation;
                 System.Threading.Tasks.TaskCompletionSource<bool> cadenceSignal;
                 lock (this.SyncObject)
                 {
                     this.IsDisposed = true;
+                    this.IsSignaled = true;
+                    providerTimer = this.ProviderTimer;
                     cadenceCancellation = this.CadenceCancellation;
                     cadenceSignal = this.CadenceSignal;
                     this.CadenceCancellation = null;
@@ -309,6 +372,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     }
                 }
 
+                providerTimer?.Dispose();
                 if (completion != null)
                 {
                     completion.TrySetResult(false);
@@ -329,6 +393,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         !this.IsCompleted)
                     {
                         this.IsCompleted = true;
+                        this.IsSignaled = true;
                         completion = this.Completion;
                         cadenceCancellation = this.CadenceCancellation;
                         cadenceSignal = this.CadenceSignal;
@@ -364,6 +429,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         if (this.IsActive && token == this.Source.Version)
                         {
                             this.IsActive = false;
+                            if (!this.IsDisposed)
+                            {
+                                this.IsSignaled = false;
+                            }
+
                             registration = this.CancellationRegistration;
                             this.CancellationRegistration = default;
                         }
@@ -398,13 +468,38 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 {
                     this.Source.OnCompleted(continuation, state, token, flags);
                     startCadence = this.IsActive && token == this.Source.Version &&
-                        !this.IsCompleted && !this.IsCadenceStarted;
+                        !this.IsCompleted && !this.IsCadenceStarted && !this.IsProviderOwned;
                     this.IsCadenceStarted |= startCadence;
                 }
 
                 if (startCadence)
                 {
                     _ = ControlledTask.Run(() => this.RunCadence(token));
+                }
+            }
+
+            private void SignalProviderTick()
+            {
+                System.Threading.Tasks.TaskCompletionSource<bool> completion = null;
+                lock (this.SyncObject)
+                {
+                    if (this.IsDisposed || this.IsSignaled)
+                    {
+                        return;
+                    }
+
+                    this.IsSignaled = true;
+                    if (this.IsActive && !this.IsCompleted)
+                    {
+                        this.IsCompleted = true;
+                        completion = this.Completion;
+                    }
+                }
+
+                if (completion != null)
+                {
+                    completion.TrySetResult(true);
+                    this.Source.SetResult(true);
                 }
             }
 
