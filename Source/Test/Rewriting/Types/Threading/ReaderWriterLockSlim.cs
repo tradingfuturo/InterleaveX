@@ -20,10 +20,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
     /// Provides methods for creating reader/writer locks that can be controlled during testing.
     /// </summary>
     /// <remarks>
-    /// This type is intended for compiler use rather than use directly in code. The model allows
-    /// concurrent readers and an exclusive writer, scheduled by the Coyote runtime. It does not
-    /// model lock recursion faithfully: recursive acquisition is treated as a fresh acquisition
-    /// unless explicitly rejected to avoid impossible upgrade deadlocks.
+    /// This type is intended for compiler use rather than use directly in code.
     /// </remarks>
     [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public static class ReaderWriterLockSlim
@@ -196,6 +193,48 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static int get_CurrentReadCount(SystemReaderWriterLockSlim instance) =>
             instance is Wrapper wrapper ? wrapper.ReaderCount() : instance.CurrentReadCount;
+
+        /// <summary>
+        /// Gets the recursion policy of the lock.
+        /// </summary>
+        public static SystemLockRecursionPolicy get_RecursionPolicy(SystemReaderWriterLockSlim instance) =>
+            instance is Wrapper wrapper ? wrapper.ModeledRecursionPolicy : instance.RecursionPolicy;
+
+        /// <summary>
+        /// Gets the current operation's read-lock recursion count.
+        /// </summary>
+        public static int get_RecursiveReadCount(SystemReaderWriterLockSlim instance) =>
+            instance is Wrapper wrapper ? wrapper.ReadRecursionCount() : instance.RecursiveReadCount;
+
+        /// <summary>
+        /// Gets the current operation's upgradeable-read recursion count.
+        /// </summary>
+        public static int get_RecursiveUpgradeCount(SystemReaderWriterLockSlim instance) =>
+            instance is Wrapper wrapper ? wrapper.UpgradeableRecursionCount() : instance.RecursiveUpgradeCount;
+
+        /// <summary>
+        /// Gets the current operation's write-lock recursion count.
+        /// </summary>
+        public static int get_RecursiveWriteCount(SystemReaderWriterLockSlim instance) =>
+            instance is Wrapper wrapper ? wrapper.WriteRecursionCount() : instance.RecursiveWriteCount;
+
+        /// <summary>
+        /// Gets the number of operations waiting for a read lock.
+        /// </summary>
+        public static int get_WaitingReadCount(SystemReaderWriterLockSlim instance) =>
+            instance is Wrapper wrapper ? wrapper.WaitingReaderCount() : instance.WaitingReadCount;
+
+        /// <summary>
+        /// Gets the number of operations waiting for an upgradeable-read lock.
+        /// </summary>
+        public static int get_WaitingUpgradeCount(SystemReaderWriterLockSlim instance) =>
+            instance is Wrapper wrapper ? wrapper.WaitingUpgradeableReaderCount() : instance.WaitingUpgradeCount;
+
+        /// <summary>
+        /// Gets the number of operations waiting for a write lock.
+        /// </summary>
+        public static int get_WaitingWriteCount(SystemReaderWriterLockSlim instance) =>
+            instance is Wrapper wrapper ? wrapper.WaitingWriterCount() : instance.WaitingWriteCount;
 #pragma warning restore IDE1006 // Naming Styles
 #pragma warning restore SA1300 // Element should begin with upper-case letter
 #pragma warning restore CA1707 // Identifiers should not contain underscores
@@ -203,7 +242,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// <summary>
         /// Releases all resources used by the current instance.
         /// </summary>
-        public static void Dispose(SystemReaderWriterLockSlim instance) => instance.Dispose();
+        public static void Dispose(SystemReaderWriterLockSlim instance)
+        {
+            if (instance is Wrapper wrapper)
+            {
+                wrapper.DisposeControlled();
+                return;
+            }
+
+            instance.Dispose();
+        }
 
         private static int ToMilliseconds(TimeSpan timeout)
         {
@@ -231,6 +279,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             private readonly HashSet<ControlledOperation> Readers;
 
             /// <summary>
+            /// Recursion counts are per controlled operation because systematic scheduling can
+            /// move multiple logical operations across the same physical thread.
+            /// </summary>
+            private readonly Dictionary<ControlledOperation, int> ReadRecursionCounts;
+            private readonly Dictionary<ControlledOperation, int> WriteRecursionCounts;
+            private readonly Dictionary<ControlledOperation, int> UpgradeableRecursionCounts;
+
+            private readonly SystemLockRecursionPolicy LockRecursionPolicy;
+
+            /// <summary>
             /// Operations paused waiting to acquire the read lock.
             /// </summary>
             private readonly Queue<ControlledOperation> PausedReaders;
@@ -255,6 +313,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// </summary>
             private ControlledOperation UpgradeableReader;
 
+            private bool IsDisposed;
+
             internal Wrapper(CoyoteRuntime runtime, SystemLockRecursionPolicy recursionPolicy)
                 : base(recursionPolicy)
             {
@@ -262,6 +322,10 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 this.ResourceId = Guid.NewGuid();
                 this.DebugName = $"ReaderWriterLockSlim({this.ResourceId})";
                 this.Readers = new HashSet<ControlledOperation>();
+                this.ReadRecursionCounts = new Dictionary<ControlledOperation, int>();
+                this.WriteRecursionCounts = new Dictionary<ControlledOperation, int>();
+                this.UpgradeableRecursionCounts = new Dictionary<ControlledOperation, int>();
+                this.LockRecursionPolicy = recursionPolicy;
                 this.PausedReaders = new Queue<ControlledOperation>();
                 this.PausedWriters = new Queue<ControlledOperation>();
                 this.PausedUpgradeableReaders = new Queue<ControlledOperation>();
@@ -278,16 +342,33 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 CoyoteRuntime runtime = this.GetRuntime();
                 using (runtime.EnterSynchronizedSection())
                 {
+                    this.ThrowIfDisposed();
                     if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
                     {
                         runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.EnterReadLock");
                         return true;
                     }
 
-                    if (this.Writer == current)
+                    if (this.ReadRecursionCounts.TryGetValue(current, out int readRecursionCount))
+                    {
+                        this.IncrementRecursion(this.ReadRecursionCounts, current, readRecursionCount,
+                            "Recursive read lock acquisitions are not allowed in this mode.");
+                        return true;
+                    }
+
+                    if (this.Writer == current && this.LockRecursionPolicy is SystemLockRecursionPolicy.NoRecursion)
                     {
                         throw new SystemLockRecursionException(
                             "A read lock may not be acquired with the write lock held in this mode.");
+                    }
+
+                    // An upgradeable owner may downgrade by taking a read lock even with
+                    // NoRecursion. A recursive writer may also enter read mode.
+                    if (this.Writer == current || this.UpgradeableReader == current)
+                    {
+                        this.Readers.Add(current);
+                        this.ReadRecursionCounts[current] = 1;
+                        return true;
                     }
 
                     if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
@@ -297,7 +378,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
                     long deadline = millisecondsTimeout is SystemTimeout.Infinite ? 0 :
                         runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout));
-                    while (this.Writer != null)
+                    while (this.Writer != null || this.PausedWriters.Count > 0)
                     {
                         if (millisecondsTimeout is 0)
                         {
@@ -326,6 +407,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     }
 
                     this.Readers.Add(current);
+                    this.ReadRecursionCounts[current] = 1;
                     return true;
                 }
             }
@@ -338,12 +420,22 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 CoyoteRuntime runtime = this.GetRuntime();
                 using (runtime.EnterSynchronizedSection())
                 {
+                    this.ThrowIfDisposed();
                     if (runtime.TryGetExecutingOperation(out ControlledOperation current))
                     {
-                        if (!this.Readers.Remove(current))
+                        if (!this.ReadRecursionCounts.TryGetValue(current, out int readRecursionCount))
                         {
                             throw new SystemSynchronizationLockException();
                         }
+
+                        if (readRecursionCount > 1)
+                        {
+                            this.ReadRecursionCounts[current] = readRecursionCount - 1;
+                            return;
+                        }
+
+                        this.ReadRecursionCounts.Remove(current);
+                        this.Readers.Remove(current);
                     }
                     else
                     {
@@ -368,13 +460,25 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 CoyoteRuntime runtime = this.GetRuntime();
                 using (runtime.EnterSynchronizedSection())
                 {
+                    this.ThrowIfDisposed();
                     if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
                     {
                         runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.EnterWriteLock");
                         return true;
                     }
 
-                    if (this.Readers.Contains(current))
+                    if (this.Writer == current)
+                    {
+                        this.IncrementRecursion(this.WriteRecursionCounts, current,
+                            this.WriteRecursionCounts[current],
+                            "Recursive write lock acquisitions are not allowed in this mode.");
+                        return true;
+                    }
+
+                    // A reader that entered read mode first cannot upgrade, regardless of the
+                    // recursion policy. An upgradeable owner, however, can upgrade even after
+                    // taking an additional read lock to perform a downgrade.
+                    if (this.Readers.Contains(current) && this.UpgradeableReader != current)
                     {
                         throw new SystemLockRecursionException(
                             "Write lock may not be acquired with read lock held.");
@@ -387,7 +491,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
                     long deadline = millisecondsTimeout is SystemTimeout.Infinite ? 0 :
                         runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout));
-                    while (this.Writer != null || this.Readers.Count > 0 ||
+                    int otherReaderCount = this.Readers.Count - (this.Readers.Contains(current) ? 1 : 0);
+                    while (this.Writer != null || otherReaderCount > 0 ||
                         (this.UpgradeableReader != null && this.UpgradeableReader != current))
                     {
                         if (millisecondsTimeout is 0)
@@ -414,9 +519,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                             Remove(this.PausedWriters, current);
                             return false;
                         }
+
+                        otherReaderCount = this.Readers.Count - (this.Readers.Contains(current) ? 1 : 0);
                     }
 
                     this.Writer = current;
+                    this.WriteRecursionCounts[current] = 1;
                     return true;
                 }
             }
@@ -429,6 +537,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 CoyoteRuntime runtime = this.GetRuntime();
                 using (runtime.EnterSynchronizedSection())
                 {
+                    this.ThrowIfDisposed();
                     if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
                     {
                         runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.ExitWriteLock");
@@ -440,6 +549,14 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         throw new SystemSynchronizationLockException();
                     }
 
+                    int writeRecursionCount = this.WriteRecursionCounts[current];
+                    if (writeRecursionCount > 1)
+                    {
+                        this.WriteRecursionCounts[current] = writeRecursionCount - 1;
+                        return;
+                    }
+
+                    this.WriteRecursionCounts.Remove(current);
                     this.Writer = null;
                     this.ReleaseWaiters();
                 }
@@ -454,28 +571,40 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 CoyoteRuntime runtime = this.GetRuntime();
                 using (runtime.EnterSynchronizedSection())
                 {
+                    this.ThrowIfDisposed();
                     if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
                     {
                         runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.EnterUpgradeableReadLock");
                         return true;
                     }
 
-                    if (this.Readers.Contains(current))
+                    if (this.UpgradeableReader == current)
+                    {
+                        this.IncrementRecursion(this.UpgradeableRecursionCounts, current,
+                            this.UpgradeableRecursionCounts[current],
+                            "Recursive upgradeable lock acquisitions are not allowed in this mode.");
+                        return true;
+                    }
+
+                    // A writer that recursively acquires upgradeable mode is permitted with
+                    // SupportsRecursion. A read-first owner is never allowed to upgrade.
+                    if (this.Readers.Contains(current) && this.Writer != current)
                     {
                         throw new SystemLockRecursionException(
                             "Upgradeable lock may not be acquired with read lock held.");
                     }
 
-                    if (this.Writer == current)
+                    if (this.Writer == current && this.LockRecursionPolicy is SystemLockRecursionPolicy.NoRecursion)
                     {
                         throw new SystemLockRecursionException(
                             "Upgradeable lock may not be acquired with write lock held in this mode.");
                     }
 
-                    if (this.UpgradeableReader == current)
+                    if (this.Writer == current)
                     {
-                        throw new SystemLockRecursionException(
-                            "Recursive upgradeable lock acquisitions not allowed in this mode.");
+                        this.UpgradeableReader = current;
+                        this.UpgradeableRecursionCounts[current] = 1;
+                        return true;
                     }
 
                     if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
@@ -485,7 +614,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
                     long deadline = millisecondsTimeout is SystemTimeout.Infinite ? 0 :
                         runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout));
-                    while (this.Writer != null || this.UpgradeableReader != null)
+                    while (this.Writer != null || this.UpgradeableReader != null || this.PausedWriters.Count > 0)
                     {
                         if (millisecondsTimeout is 0)
                         {
@@ -514,6 +643,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     }
 
                     this.UpgradeableReader = current;
+                    this.UpgradeableRecursionCounts[current] = 1;
                     return true;
                 }
             }
@@ -526,6 +656,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 CoyoteRuntime runtime = this.GetRuntime();
                 using (runtime.EnterSynchronizedSection())
                 {
+                    this.ThrowIfDisposed();
                     if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
                     {
                         runtime.NotifyUncontrolledSynchronizationInvocation("ReaderWriterLockSlim.ExitUpgradeableReadLock");
@@ -537,21 +668,71 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         throw new SystemSynchronizationLockException();
                     }
 
+                    int upgradeableRecursionCount = this.UpgradeableRecursionCounts[current];
+                    if (upgradeableRecursionCount > 1)
+                    {
+                        this.UpgradeableRecursionCounts[current] = upgradeableRecursionCount - 1;
+                        return;
+                    }
+
+                    this.UpgradeableRecursionCounts.Remove(current);
                     this.UpgradeableReader = null;
                     this.ReleaseWaiters();
                 }
             }
 
+            internal SystemLockRecursionPolicy ModeledRecursionPolicy => this.LockRecursionPolicy;
+
             internal bool IsCurrentReader() =>
-                this.GetRuntime().TryGetExecutingOperation(out ControlledOperation current) && this.Readers.Contains(current);
+                this.GetRuntime().TryGetExecutingOperation(out ControlledOperation current) &&
+                this.ReadRecursionCounts.ContainsKey(current);
 
             internal bool IsCurrentWriter() =>
-                this.GetRuntime().TryGetExecutingOperation(out ControlledOperation current) && this.Writer == current;
+                this.GetRuntime().TryGetExecutingOperation(out ControlledOperation current) &&
+                this.WriteRecursionCounts.ContainsKey(current);
 
             internal bool IsCurrentUpgradeableReader() =>
-                this.GetRuntime().TryGetExecutingOperation(out ControlledOperation current) && this.UpgradeableReader == current;
+                this.GetRuntime().TryGetExecutingOperation(out ControlledOperation current) &&
+                this.UpgradeableRecursionCounts.ContainsKey(current);
 
             internal int ReaderCount() => this.Readers.Count;
+
+            internal int ReadRecursionCount() => this.GetRecursionCount(this.ReadRecursionCounts);
+
+            internal int WriteRecursionCount() => this.GetRecursionCount(this.WriteRecursionCounts);
+
+            internal int UpgradeableRecursionCount() => this.GetRecursionCount(this.UpgradeableRecursionCounts);
+
+            internal int WaitingReaderCount() => this.PausedReaders.Count;
+
+            internal int WaitingWriterCount() => this.PausedWriters.Count;
+
+            internal int WaitingUpgradeableReaderCount() => this.PausedUpgradeableReaders.Count;
+
+            /// <summary>
+            /// Disposes the model only when no operation owns a modeled lock mode. The BCL does
+            /// not define concurrent use and disposal, so queued waiters are intentionally not
+            /// used to strengthen that contract.
+            /// </summary>
+            internal void DisposeControlled()
+            {
+                CoyoteRuntime runtime = this.GetRuntime();
+                using (runtime.EnterSynchronizedSection())
+                {
+                    if (this.IsDisposed)
+                    {
+                        return;
+                    }
+
+                    if (this.Readers.Count > 0 || this.Writer != null || this.UpgradeableReader != null)
+                    {
+                        throw new SystemSynchronizationLockException();
+                    }
+
+                    this.IsDisposed = true;
+                    this.Dispose();
+                }
+            }
 
             /// <summary>
             /// Re-enables every paused waiter so the scheduler can pick the next holder; each
@@ -593,6 +774,31 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     {
                         queue.Enqueue(candidate);
                     }
+                }
+            }
+
+            private void IncrementRecursion(Dictionary<ControlledOperation, int> counts, ControlledOperation current,
+                int count, string message)
+            {
+                if (this.LockRecursionPolicy is SystemLockRecursionPolicy.NoRecursion)
+                {
+                    throw new SystemLockRecursionException(message);
+                }
+
+                counts[current] = count + 1;
+            }
+
+            private int GetRecursionCount(Dictionary<ControlledOperation, int> counts)
+            {
+                return this.GetRuntime().TryGetExecutingOperation(out ControlledOperation current) &&
+                    counts.TryGetValue(current, out int count) ? count : 0;
+            }
+
+            private void ThrowIfDisposed()
+            {
+                if (this.IsDisposed)
+                {
+                    throw new ObjectDisposedException(nameof(SystemReaderWriterLockSlim));
                 }
             }
 

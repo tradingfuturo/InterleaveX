@@ -278,18 +278,13 @@ namespace Microsoft.Coyote.BugFinding.Tests
         }
 
         [Fact(Timeout = 5000)]
-        public void TestReaderWriterLockSlimWithRecursiveWriteDeadlock()
+        public void TestReaderWriterLockSlimRejectsRecursiveWriteWhenRecursionIsDisabled()
         {
-            this.TestWithError(() =>
+            this.TestWithException<LockRecursionException>(() =>
             {
-                using var rwlock = new ReaderWriterLockSlim();
+                using var rwlock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
                 rwlock.EnterWriteLock();
                 rwlock.EnterWriteLock();
-            },
-            configuration: this.GetConfiguration().WithDeadlockTimeout(10),
-            errorChecker: (e) =>
-            {
-                Assert.StartsWith("Deadlock detected.", e);
             },
             replay: true);
         }
