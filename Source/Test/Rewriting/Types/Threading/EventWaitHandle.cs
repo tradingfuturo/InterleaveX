@@ -151,6 +151,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     }
 
                     this.IsSignaled = false;
+                    // Re-evaluate complete wait predicates after every state transition. A reset cannot grant a
+                    // registration, but it ensures no stale observation can survive until a later signal.
+                    this.NotifyStateChanged();
                     return true;
                 }
             }

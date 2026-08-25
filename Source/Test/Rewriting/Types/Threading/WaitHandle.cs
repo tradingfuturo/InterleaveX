@@ -218,14 +218,14 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 new ConcurrentDictionary<SystemWaitHandle, Resource>();
 
             /// <summary>
-            /// Cache from controlled operation ids to resource ids.
-            /// </summary>
-            private static readonly ConcurrentDictionary<ulong, Guid> SignalCache = new ConcurrentDictionary<ulong, Guid>();
-
-            /// <summary>
             /// The id of the <see cref="CoyoteRuntime"/> that created this handle.
             /// </summary>
             protected readonly Guid RuntimeId;
+
+            /// <summary>
+            /// The runtime that owns this resource.
+            /// </summary>
+            private readonly CoyoteRuntime Runtime;
 
             /// <summary>
             /// The resource id of this handle.
@@ -248,9 +248,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             protected bool IsSignaled;
 
             /// <summary>
-            /// Set of operations waiting to be signaled.
+            /// Set of waits that observe this resource.
             /// </summary>
-            protected readonly HashSet<ControlledOperation> PausedOperations;
+            private readonly HashSet<WaitRegistration> WaitRegistrations;
 
             /// <summary>
             /// The debug name of this handle.
@@ -263,11 +263,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             internal Resource(CoyoteRuntime runtime, SystemWaitHandle handle, SignalMode mode, bool isSignaled)
             {
                 this.RuntimeId = runtime.Id;
+                this.Runtime = runtime;
                 this.ResourceId = Guid.NewGuid();
                 this.Handle = handle;
                 this.Mode = mode;
                 this.IsSignaled = isSignaled;
-                this.PausedOperations = new HashSet<ControlledOperation>();
+                this.WaitRegistrations = new HashSet<WaitRegistration>();
                 this.DebugName = $"{handle.GetType().Name}({this.ResourceId})";
             }
 
@@ -279,7 +280,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// <summary>
             /// Removes the resource associated with the specified wait handle. from the cache.
             /// </summary>
-            internal static void Remove(SystemWaitHandle handle) => Cache.TryRemove(handle, out _);
+            internal static void Remove(SystemWaitHandle handle)
+            {
+                if (Cache.TryRemove(handle, out Resource resource))
+                {
+                    resource.TearDown();
+                }
+            }
 
             /// <summary>
             /// Finds the resource associated with the specified wait handle.
@@ -304,46 +311,41 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Acquire);
                     }
 
-                    if (!this.IsSignaled)
+                    var registration = new WaitRegistration(current, new[] { this }, WaitRegistrationKind.One);
+                    if (registration.TryComplete())
                     {
-                        if (millisecondsTimeout is 0)
-                        {
-                            return false;
-                        }
+                        return true;
+                    }
 
-                        runtime.LogWriter.LogDebug(
-                            "[coyote::debug] Operation {0} is waiting for '{1}' to get signaled on thread '{2}'.",
-                            current.DebugInfo, this.DebugName, SystemThread.CurrentThread.ManagedThreadId);
-                        long deadline = millisecondsTimeout is SystemTimeout.Infinite ? 0 :
-                            runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout));
+                    if (millisecondsTimeout is 0)
+                    {
+                        return false;
+                    }
+
+                    runtime.LogWriter.LogDebug(
+                        "[coyote::debug] Operation {0} is waiting for '{1}' to get signaled on thread '{2}'.",
+                        current.DebugInfo, this.DebugName, SystemThread.CurrentThread.ManagedThreadId);
+                    registration.Register();
+                    try
+                    {
                         if (millisecondsTimeout is SystemTimeout.Infinite)
                         {
-                            current.PauseWithResource(this.ResourceId);
+                            current.PauseWithResource(registration.ResourceId);
                         }
                         else
                         {
-                            current.PauseWithResourcesOrDelay(new[] { this.ResourceId }, deadline);
+                            current.PauseWithResourcesOrDelay(new[] { registration.ResourceId },
+                                runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout)));
                         }
 
-                        this.PausedOperations.Add(current);
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
-                        this.PausedOperations.Remove(current);
-                        if (current.WakeReason is OperationWakeReason.Deadline)
-                        {
-                            return false;
-                        }
-
-                        if (this.Mode is SignalMode.AutoResetSignal)
-                        {
-                            this.IsSignaled = false;
-                        }
+                        registration.ThrowIfDisposed();
+                        return current.WakeReason is not OperationWakeReason.Deadline && registration.IsCompleted;
                     }
-                    else if (this.Mode is SignalMode.AutoResetSignal)
+                    finally
                     {
-                        this.IsSignaled = false;
+                        registration.Unregister();
                     }
-
-                    return true;
                 }
             }
 
@@ -364,57 +366,41 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     }
 
                     Resource[] resources = GetResources(runtime, waitHandles);
-                    if (resources.Any(r => !r.IsSignaled))
+                    var registration = new WaitRegistration(current, resources, WaitRegistrationKind.All);
+                    if (registration.TryComplete())
                     {
-                        // At least one of the handles is not signaled.
-                        if (millisecondsTimeout is 0)
-                        {
-                            return false;
-                        }
+                        return true;
+                    }
 
-                        runtime.LogWriter.LogDebug(
-                            "[coyote::debug] Operation {0} is waiting for all 'WaitHandles' to get signaled on thread '{1}'.",
-                            current.DebugInfo, SystemThread.CurrentThread.ManagedThreadId);
+                    if (millisecondsTimeout is 0)
+                    {
+                        return false;
+                    }
 
-                        var nonSignaled = resources.Where(r => !r.IsSignaled);
+                    runtime.LogWriter.LogDebug(
+                        "[coyote::debug] Operation {0} is waiting for all 'WaitHandles' to get signaled on thread '{1}'.",
+                        current.DebugInfo, SystemThread.CurrentThread.ManagedThreadId);
+                    registration.Register();
+                    try
+                    {
                         if (millisecondsTimeout is SystemTimeout.Infinite)
                         {
-                            current.PauseWithResources(nonSignaled.Select(r => r.ResourceId), true);
+                            current.PauseWithResource(registration.ResourceId);
                         }
                         else
                         {
-                            current.PauseWithResourcesOrDelay(
-                                nonSignaled.Select(r => r.ResourceId),
-                                runtime.CreateVirtualDeadline(
-                                    TimeSpan.FromMilliseconds(millisecondsTimeout)),
-                                waitForAll: true);
-                        }
-
-                        foreach (Resource resource in nonSignaled)
-                        {
-                            resource.PausedOperations.Add(current);
+                            current.PauseWithResourcesOrDelay(new[] { registration.ResourceId },
+                                runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout)));
                         }
 
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
-                        foreach (Resource resource in resources)
-                        {
-                            resource.PausedOperations.Remove(current);
-                        }
-
-                        if (current.WakeReason is OperationWakeReason.Deadline)
-                        {
-                            return false;
-                        }
-
-                        TryResetSignal(resources, true);
+                        registration.ThrowIfDisposed();
+                        return current.WakeReason is not OperationWakeReason.Deadline && registration.IsCompleted;
                     }
-                    else
+                    finally
                     {
-                        // All handles are signaled.
-                        TryResetSignal(resources, true);
+                        registration.Unregister();
                     }
-
-                    return true;
                 }
             }
 
@@ -436,66 +422,42 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
                     int result = SystemWaitHandle.WaitTimeout;
                     Resource[] resources = GetResources(runtime, waitHandles);
-                    if (resources.All(r => !r.IsSignaled))
+                    var registration = new WaitRegistration(current, resources, WaitRegistrationKind.Any);
+                    if (registration.TryComplete())
                     {
-                        // All handles are non-signaled.
-                        if (millisecondsTimeout is 0)
-                        {
-                            return result;
-                        }
-
-                        runtime.LogWriter.LogDebug(
-                            "[coyote::debug] Operation {0} is waiting for any 'WaitHandle' to get signaled on thread '{1}'.",
-                            current.DebugInfo, SystemThread.CurrentThread.ManagedThreadId);
-
-                        try
-                        {
-                            if (millisecondsTimeout is SystemTimeout.Infinite)
-                            {
-                                current.PauseWithResources(resources.Select(r => r.ResourceId), false);
-                            }
-                            else
-                            {
-                                current.PauseWithResourcesOrDelay(
-                                    resources.Select(r => r.ResourceId),
-                                    runtime.CreateVirtualDeadline(
-                                        TimeSpan.FromMilliseconds(millisecondsTimeout)));
-                            }
-
-                            foreach (Resource resource in resources)
-                            {
-                                resource.PausedOperations.Add(current);
-                            }
-
-                            runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
-                        }
-                        finally
-                        {
-                            foreach (Resource resource in resources)
-                            {
-                                resource.PausedOperations.Remove(current);
-                            }
-
-                            // Find the index of the signaling resource and clean up the cache.
-                            SignalCache.TryGetValue(current.Id, out Guid signalingResource);
-                            if (current.WakeReason is not OperationWakeReason.Deadline)
-                            {
-                                result = signalingResource == Guid.Empty ?
-                                    Array.FindIndex(resources, r => r.IsSignaled) :
-                                    Array.FindIndex(resources, r => r.ResourceId == signalingResource);
-                            }
-
-                            SignalCache.TryRemove(current.Id, out _);
-                        }
-                    }
-                    else
-                    {
-                        // At least one of the handles is signaled.
-                        result = Array.FindIndex(resources, r => r.IsSignaled);
-                        TryResetSignal(resources, false);
+                        return registration.ResultIndex;
                     }
 
-                    return result;
+                    if (millisecondsTimeout is 0)
+                    {
+                        return result;
+                    }
+
+                    runtime.LogWriter.LogDebug(
+                        "[coyote::debug] Operation {0} is waiting for any 'WaitHandle' to get signaled on thread '{1}'.",
+                        current.DebugInfo, SystemThread.CurrentThread.ManagedThreadId);
+                    registration.Register();
+                    try
+                    {
+                        if (millisecondsTimeout is SystemTimeout.Infinite)
+                        {
+                            current.PauseWithResource(registration.ResourceId);
+                        }
+                        else
+                        {
+                            current.PauseWithResourcesOrDelay(new[] { registration.ResourceId },
+                                runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout)));
+                        }
+
+                        runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
+                        registration.ThrowIfDisposed();
+                        return current.WakeReason is OperationWakeReason.Deadline || !registration.IsCompleted ?
+                            result : registration.ResultIndex;
+                    }
+                    finally
+                    {
+                        registration.Unregister();
+                    }
                 }
             }
 
@@ -507,20 +469,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// </remarks>
             protected void SignalNext()
             {
-                // TODO: figure out if threads are released in FIFO or random order.
-                ControlledOperation operation = this.PausedOperations.FirstOrDefault();
-                if (operation != null)
-                {
-                    OperationStatus status = operation.Status;
-                    if (operation.TryEnable(this.ResourceId) &&
-                        status is OperationStatus.PausedOnAnyResource or OperationStatus.PausedOnResourceOrDelay)
-                    {
-                        // This signal successfully enabled the operation.
-                        SignalCache.TryAdd(operation.Id, this.ResourceId);
-                    }
-
-                    this.PausedOperations.Remove(operation);
-                }
+                this.NotifyStateChanged();
             }
 
             /// <summary>
@@ -531,36 +480,237 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// </remarks>
             protected void SignalAll()
             {
-                foreach (ControlledOperation operation in this.PausedOperations)
-                {
-                    OperationStatus status = operation.Status;
-                    if (operation.TryEnable(this.ResourceId) &&
-                        status is OperationStatus.PausedOnAnyResource or OperationStatus.PausedOnResourceOrDelay)
-                    {
-                        // This signal successfully enabled the operation.
-                        SignalCache.TryAdd(operation.Id, this.ResourceId);
-                    }
-                }
-
-                this.PausedOperations.Clear();
+                this.NotifyStateChanged();
             }
 
             /// <summary>
-            /// Tries to reset the signal of all or any of the specified resources, as appropriate based on their mode.
+            /// Re-evaluates all waits that observe this resource. A successful auto-reset grant consumes its
+            /// signal while the runtime lock is held, before the selected operation can run.
             /// </summary>
-            private static void TryResetSignal(IEnumerable<Resource> resources, bool resetAll)
+            protected void NotifyStateChanged()
             {
-                foreach (Resource resource in resources)
+                foreach (WaitRegistration registration in this.WaitRegistrations.ToArray())
                 {
-                    if (resource.IsSignaled && resource.Mode is SignalMode.AutoResetSignal)
+                    if (registration.TryComplete() && this.Mode is SignalMode.AutoResetSignal && !this.IsSignaled)
                     {
-                        resource.IsSignaled = false;
-                        if (!resetAll)
-                        {
-                            break;
-                        }
+                        // An auto-reset event stores at most one signal, so one completion has consumed it.
+                        break;
                     }
                 }
+            }
+
+            /// <summary>
+            /// Releases pending wait registrations when the underlying handle is closed or disposed.
+            /// </summary>
+            private void TearDown()
+            {
+                using (this.Runtime.EnterSynchronizedSection())
+                {
+                    foreach (WaitRegistration registration in this.WaitRegistrations.ToArray())
+                    {
+                        registration.Dispose();
+                    }
+                }
+            }
+
+            /// <summary>
+            /// Represents one pending wait and atomically reserves the signals that satisfy it.
+            /// </summary>
+            private sealed class WaitRegistration
+            {
+                /// <summary>
+                /// The synthetic resource used to wake the registered operation after its wait has been granted.
+                /// </summary>
+                internal Guid ResourceId { get; } = Guid.NewGuid();
+
+                /// <summary>
+                /// True if this wait has acquired all of the signals it needs.
+                /// </summary>
+                internal bool IsCompleted { get; private set; }
+
+                /// <summary>
+                /// The selected resource index for a wait-any registration.
+                /// </summary>
+                internal int ResultIndex { get; private set; } = SystemWaitHandle.WaitTimeout;
+
+                /// <summary>
+                /// The operation blocked by this registration.
+                /// </summary>
+                private readonly ControlledOperation Operation;
+
+                /// <summary>
+                /// The complete ordered set of resources participating in this wait.
+                /// </summary>
+                private readonly Resource[] Resources;
+
+                /// <summary>
+                /// The kind of wait being modeled.
+                /// </summary>
+                private readonly WaitRegistrationKind Kind;
+
+                /// <summary>
+                /// True after the registration has been attached to each observed resource.
+                /// </summary>
+                private bool IsRegistered;
+
+                /// <summary>
+                /// True if a participating handle was disposed before this wait acquired its signals.
+                /// </summary>
+                private bool IsDisposed;
+
+                internal WaitRegistration(ControlledOperation operation, Resource[] resources, WaitRegistrationKind kind)
+                {
+                    this.Operation = operation;
+                    this.Resources = resources;
+                    this.Kind = kind;
+                }
+
+                /// <summary>
+                /// Attaches this registration to every observed resource before the operation can be scheduled away.
+                /// </summary>
+                internal void Register()
+                {
+                    if (this.IsRegistered)
+                    {
+                        return;
+                    }
+
+                    foreach (Resource resource in this.Resources)
+                    {
+                        resource.WaitRegistrations.Add(this);
+                    }
+
+                    this.IsRegistered = true;
+                }
+
+                /// <summary>
+                /// Removes this registration from every observed resource.
+                /// </summary>
+                internal void Unregister()
+                {
+                    if (!this.IsRegistered)
+                    {
+                        return;
+                    }
+
+                    foreach (Resource resource in this.Resources)
+                    {
+                        resource.WaitRegistrations.Remove(this);
+                    }
+
+                    this.IsRegistered = false;
+                }
+
+                /// <summary>
+                /// Atomically grants this wait if the complete predicate is currently satisfied.
+                /// </summary>
+                internal bool TryComplete()
+                {
+                    if (this.IsCompleted || this.IsDisposed)
+                    {
+                        return false;
+                    }
+
+                    int selectedIndex;
+                    if (this.Kind is WaitRegistrationKind.One)
+                    {
+                        selectedIndex = this.Resources[0].IsSignaled ? 0 : SystemWaitHandle.WaitTimeout;
+                    }
+                    else if (this.Kind is WaitRegistrationKind.Any)
+                    {
+                        selectedIndex = Array.FindIndex(this.Resources, resource => resource.IsSignaled);
+                        if (selectedIndex < 0)
+                        {
+                            selectedIndex = SystemWaitHandle.WaitTimeout;
+                        }
+                    }
+                    else
+                    {
+                        selectedIndex = this.Resources.All(resource => resource.IsSignaled) ? 0 :
+                            SystemWaitHandle.WaitTimeout;
+                    }
+
+                    if (selectedIndex is SystemWaitHandle.WaitTimeout)
+                    {
+                        return false;
+                    }
+
+                    // Before registration, the current operation is still enabled and no wake-up is necessary.
+                    // Once registered, enabling it and consuming auto-reset signals happen under the same runtime lock.
+                    if (this.IsRegistered && !this.Operation.TryEnable(this.ResourceId))
+                    {
+                        return false;
+                    }
+
+                    if (this.Kind is WaitRegistrationKind.Any)
+                    {
+                        this.ResultIndex = selectedIndex;
+                        ResetAutoSignal(this.Resources[selectedIndex]);
+                    }
+                    else if (this.Kind is WaitRegistrationKind.One)
+                    {
+                        ResetAutoSignal(this.Resources[0]);
+                    }
+                    else
+                    {
+                        foreach (Resource resource in this.Resources)
+                        {
+                            ResetAutoSignal(resource);
+                        }
+                    }
+
+                    this.IsCompleted = true;
+                    return true;
+                }
+
+                /// <summary>
+                /// Wakes a pending wait during teardown so it can observe the disposed-handle transition.
+                /// </summary>
+                internal void Dispose()
+                {
+                    if (!this.IsCompleted)
+                    {
+                        this.IsDisposed = true;
+                        if (this.IsRegistered)
+                        {
+                            _ = this.Operation.TryEnable(this.ResourceId);
+                        }
+                    }
+
+                    this.Unregister();
+                }
+
+                /// <summary>
+                /// Throws the same observable exception as an ordinary wait on a disposed handle.
+                /// </summary>
+                internal void ThrowIfDisposed()
+                {
+                    if (this.IsDisposed)
+                    {
+                        throw new ObjectDisposedException(this.Resources[0].Handle.GetType().Name);
+                    }
+                }
+
+                /// <summary>
+                /// Consumes a single stored auto-reset signal.
+                /// </summary>
+                private static void ResetAutoSignal(Resource resource)
+                {
+                    if (resource.Mode is SignalMode.AutoResetSignal)
+                    {
+                        resource.IsSignaled = false;
+                    }
+                }
+            }
+
+            /// <summary>
+            /// The supported wait predicates.
+            /// </summary>
+            private enum WaitRegistrationKind
+            {
+                One,
+                Any,
+                All
             }
 
             /// <summary>
