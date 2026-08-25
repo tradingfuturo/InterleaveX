@@ -179,5 +179,80 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 Assert.Equal("condition", exception.ParamName);
             });
         }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestWaitAllRejectsNullAndEmptyHandleArrays()
+        {
+            this.Test(() =>
+            {
+                WaitHandle[] nullHandles = null;
+                Assert.Throws<ArgumentNullException>(() => WaitHandle.WaitAll(nullHandles, 0));
+                Assert.Throws<ArgumentException>(() => WaitHandle.WaitAll(Array.Empty<WaitHandle>(), 0));
+            });
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestWaitAnyRejectsNullAndEmptyHandleArrays()
+        {
+            this.Test(() =>
+            {
+                WaitHandle[] nullHandles = null;
+                Assert.Throws<ArgumentNullException>(() => WaitHandle.WaitAny(nullHandles, 0));
+                Assert.Throws<ArgumentException>(() => WaitHandle.WaitAny(Array.Empty<WaitHandle>(), 0));
+            });
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestWaitAllAndWaitAnyRejectNullElements()
+        {
+            this.Test(() =>
+            {
+                WaitHandle[] handles = { null };
+                Assert.Throws<ArgumentNullException>(() => WaitHandle.WaitAll(handles, 0));
+                Assert.Throws<ArgumentNullException>(() => WaitHandle.WaitAny(handles, 0));
+            });
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestWaitAllAndWaitAnyRejectMoreThanSixtyFourHandles()
+        {
+            this.Test(() =>
+            {
+                var handles = new EventWaitHandle[65];
+                try
+                {
+                    for (int idx = 0; idx < handles.Length; idx++)
+                    {
+                        handles[idx] = new AutoResetEvent(false);
+                    }
+
+                    Assert.Throws<NotSupportedException>(() => WaitHandle.WaitAll(handles, 0));
+                    Assert.Throws<NotSupportedException>(() => WaitHandle.WaitAny(handles, 0));
+                }
+                finally
+                {
+                    foreach (EventWaitHandle handle in handles)
+                    {
+                        handle?.Dispose();
+                    }
+                }
+            });
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestWaitAllRejectsDuplicateHandles()
+        {
+            this.Test(() =>
+            {
+                using var signal = new AutoResetEvent(false);
+                Assert.Throws<DuplicateWaitObjectException>(() =>
+                    WaitHandle.WaitAll(new WaitHandle[] { signal, signal }, 0));
+            });
+        }
     }
 }
