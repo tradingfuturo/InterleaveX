@@ -393,13 +393,25 @@ namespace Microsoft.Coyote.Rewriting
                             !string.IsNullOrEmpty(outputDirectory) &&
                             this.FileSystem.DirectoryExists(outputDirectory))
                         {
+                            // Reconcile publication ownership while the staged source identities still
+                            // exist. An ambiguous no-replace move must retain the journal rather than
+                            // infer ownership from a byte-identical destination.
+                            this.OutputJournal.Restore(removeCreatedDirectories: false);
+
                             // Staging is not published output and can contain files that were copied
-                            // without journal entries. Remove it before the journal removes its captured
-                            // directory skeleton.
+                            // without journal entries. It is removed only after the journal has
+                            // reconciled every publication that could have consumed one of its files.
                             this.FileSystem.DeleteDirectory(outputDirectory, true);
+
+                            // The first restore deliberately retained the staging directory record.
+                            // Finish the idempotent rollback now that it is empty.
+                            this.OutputJournal.Restore();
+                        }
+                        else
+                        {
+                            this.OutputJournal.Restore();
                         }
 
-                        this.OutputJournal.Restore();
                         this.OutputJournal.Complete();
                     }
                     catch (Exception restoreError)

@@ -334,6 +334,22 @@ namespace Microsoft.Coyote.Tests.Common.IO
         }
 
         /// <inheritdoc/>
+        public MoveFileNoReplaceResult MoveFileNoReplace(string sourcePath, string targetPath)
+        {
+            try
+            {
+                this.MoveFile(sourcePath, targetPath);
+                return new MoveFileNoReplaceResult(MoveFileNoReplaceState.Transferred);
+            }
+            catch (Exception ex)
+            {
+                // The in-memory operation is atomic and entirely synchronous, so its exception
+                // proves that it left the source and destination transfer untouched.
+                return new MoveFileNoReplaceResult(MoveFileNoReplaceState.NotTransferred, ex);
+            }
+        }
+
+        /// <inheritdoc/>
         public void ReplaceFile(string sourcePath, string targetPath, string backupPath)
         {
             string source = Normalize(sourcePath);

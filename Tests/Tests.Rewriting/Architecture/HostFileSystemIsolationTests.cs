@@ -367,6 +367,7 @@ namespace Microsoft.Coyote.Rewriting.Tests
             "Microsoft.Coyote.IO.HostFileSystem::GetFiles",
             "Microsoft.Coyote.IO.HostFileSystem::IsCaseInsensitive",
             "Microsoft.Coyote.IO.HostFileSystem::MoveFile",
+            "Microsoft.Coyote.IO.HostFileSystem::MoveFileNoReplace",
             "Microsoft.Coyote.IO.HostFileSystem::OpenRead",
             "Microsoft.Coyote.IO.HostFileSystem::OpenWriteExclusive",
             "Microsoft.Coyote.IO.HostFileSystem::OpenWriteNewExclusive",

@@ -90,6 +90,23 @@ namespace Microsoft.Coyote.IO
         public void MoveFile(string sourcePath, string targetPath) => File.Move(sourcePath, targetPath);
 
         /// <inheritdoc/>
+        public MoveFileNoReplaceResult MoveFileNoReplace(string sourcePath, string targetPath)
+        {
+            try
+            {
+                File.Move(sourcePath, targetPath);
+                return new MoveFileNoReplaceResult(MoveFileNoReplaceState.Transferred);
+            }
+            catch (Exception ex)
+            {
+                // File.Move exposes only the error, not a durable indication of which rename phase
+                // completed. Treat every reported failure as ambiguous: a target that happens to
+                // contain the staged bytes is not evidence that this process owns it.
+                return new MoveFileNoReplaceResult(MoveFileNoReplaceState.Unknown, ex);
+            }
+        }
+
+        /// <inheritdoc/>
         public void ReplaceFile(string sourcePath, string targetPath, string backupPath)
         {
             // Windows can briefly refuse to remove the destination while an antivirus/indexer or

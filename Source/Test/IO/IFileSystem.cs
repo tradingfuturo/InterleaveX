@@ -46,6 +46,64 @@ namespace Microsoft.Coyote.IO
     }
 
     /// <summary>
+    /// The outcome of moving a file to a path that was required not to exist.
+    /// </summary>
+    internal enum MoveFileNoReplaceState
+    {
+        /// <summary>
+        /// The file system reported a failure without proving whether the transfer took effect.
+        /// </summary>
+        Unknown,
+
+        /// <summary>
+        /// The source was transferred to the destination.
+        /// </summary>
+        Transferred,
+
+        /// <summary>
+        /// The transfer did not take effect.
+        /// </summary>
+        NotTransferred
+    }
+
+    /// <summary>
+    /// A no-replace move outcome, including the original error when the move did not report success.
+    /// </summary>
+    internal sealed class MoveFileNoReplaceResult
+    {
+        /// <summary>
+        /// Initializes a new instance of the <see cref="MoveFileNoReplaceResult"/> class.
+        /// </summary>
+        internal MoveFileNoReplaceResult(MoveFileNoReplaceState state, Exception exception = null)
+        {
+            if (state is MoveFileNoReplaceState.Transferred && exception != null)
+            {
+                throw new ArgumentException(
+                    "A successful no-replace move cannot retain a failure.", nameof(exception));
+            }
+
+            if (state is not MoveFileNoReplaceState.Transferred && exception is null)
+            {
+                throw new ArgumentNullException(nameof(exception),
+                    "A failed or unknown no-replace move must retain the original failure.");
+            }
+
+            this.State = state;
+            this.Exception = exception;
+        }
+
+        /// <summary>
+        /// Gets whether the source transfer took effect.
+        /// </summary>
+        internal MoveFileNoReplaceState State { get; }
+
+        /// <summary>
+        /// Gets the error the file system originally reported, if any.
+        /// </summary>
+        internal Exception Exception { get; }
+    }
+
+    /// <summary>
     /// The file system operations the rewriting engine and its cache perform.
     /// </summary>
     /// <remarks>
@@ -135,6 +193,16 @@ namespace Microsoft.Coyote.IO
         /// this assembly targets, so the callers already have to choose between the two.
         /// </remarks>
         void MoveFile(string sourcePath, string targetPath);
+
+        /// <summary>
+        /// Moves a file to a target that does not exist, reporting whether a reported failure can be
+        /// proved not to have transferred the source.
+        /// </summary>
+        /// <remarks>
+        /// A caller that rolls back output must not infer ownership from destination bytes after an
+        /// ambiguous failure: an external writer can create byte-identical content in that interval.
+        /// </remarks>
+        MoveFileNoReplaceResult MoveFileNoReplace(string sourcePath, string targetPath);
 
         /// <summary>
         /// Moves the specified file over one that already exists.
