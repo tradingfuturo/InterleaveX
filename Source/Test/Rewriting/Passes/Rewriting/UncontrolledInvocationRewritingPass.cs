@@ -150,12 +150,6 @@ namespace Microsoft.Coyote.Rewriting
                 {
                     return true;
                 }
-                else if (type.Name is nameof(System.Threading.EventWaitHandle) && member != null &&
-                    (member.Name is nameof(System.Threading.EventWaitHandle.OpenExisting) ||
-                    member.Name is nameof(System.Threading.EventWaitHandle.TryOpenExisting)))
-                {
-                    return true;
-                }
                 else if (type.Name is nameof(System.Threading.WaitHandle) && member != null &&
                     (member.Name is nameof(System.Threading.WaitHandle.SignalAndWait)))
                 {
