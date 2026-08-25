@@ -216,6 +216,16 @@ namespace Microsoft.Coyote.Runtime
         private long VirtualTimeTicks;
 
         /// <summary>
+        /// Test-only callback invoked after a virtual timer operation is registered, but before its
+        /// task is admitted to the controlled scheduler.
+        /// </summary>
+        /// <remarks>
+        /// This is null during normal execution. It is instance-scoped so a test cannot affect a
+        /// different runtime.
+        /// </remarks>
+        internal Action<ControlledOperation> VirtualTimerAdmissionCallback;
+
+        /// <summary>
         /// Orders operations by <see cref="ControlledOperation.RegistrationIndex"/>, which is the
         /// order that <see cref="SchedulableOperations"/> is kept sorted by.
         /// </summary>
@@ -711,6 +721,7 @@ namespace Microsoft.Coyote.Runtime
         /// </summary>
         internal Task ScheduleDelay(TimeSpan delay, CancellationToken cancellationToken)
         {
+            delay = NormalizeTimeout(delay, nameof(delay), uint.MaxValue - 1);
             if (cancellationToken.IsCancellationRequested)
             {
                 return Task.FromCanceled(cancellationToken);
@@ -749,23 +760,44 @@ namespace Microsoft.Coyote.Runtime
                 long deadline = this.CreateVirtualDeadline(delay);
                 ControlledOperation op = this.CreateControlledOperation(group: ExecutingOperation?.Group);
                 op.IsVirtualTimerOperation = true;
-                op.VirtualDeadlineTicks = deadline;
-                op.HasVirtualDeadline = true;
+                this.VirtualTimerAdmissionCallback?.Invoke(op);
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    // Publish the creation-time deadline before admission so a later-created shorter timer
+                    // cannot be hidden behind a worker that happens to start first. A token canceled by the
+                    // admission seam publishes no deadline and therefore cannot move the virtual clock.
+                    op.VirtualDeadlineTicks = deadline;
+                    op.HasVirtualDeadline = true;
+                }
+
+                var completion = new TaskCompletionSource<bool>();
+                this.RegisterKnownControlledTask(completion.Task);
                 this.SuppressScheduling();
                 try
                 {
                     // Registering a delay is synchronous in the BCL. Suppress the TaskFactory's
                     // creation point so sequential Delay calls observe the same virtual instant;
                     // the timer operation itself remains schedulable afterwards.
-                    return this.TaskFactory.StartNew(state =>
+                    _ = this.TaskFactory.StartNew(state =>
                     {
                         var delayedOp = state as ControlledOperation;
-                        delayedOp.PauseWithDelay(deadline, cancellationToken);
-                        this.ScheduleNextOperation(delayedOp, SchedulingPointType.Yield);
-                        cancellationToken.ThrowIfCancellationRequested();
+                        if (!cancellationToken.IsCancellationRequested)
+                        {
+                            delayedOp.PauseWithDelay(deadline, cancellationToken);
+                            this.ScheduleNextOperation(delayedOp, SchedulingPointType.Yield);
+                        }
+
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            completion.TrySetCanceled(cancellationToken);
+                        }
+                        else
+                        {
+                            completion.TrySetResult(true);
+                        }
                     },
                     op,
-                    cancellationToken,
+                    CancellationToken.None,
                     this.TaskFactory.CreationOptions | TaskCreationOptions.DenyChildAttach,
                     this.TaskFactory.Scheduler);
                 }
@@ -773,6 +805,8 @@ namespace Microsoft.Coyote.Runtime
                 {
                     this.ResumeScheduling();
                 }
+
+                return completion.Task;
             }
 
             if (!this.TryGetExecutingOperation(out ControlledOperation current))
@@ -2203,6 +2237,37 @@ namespace Microsoft.Coyote.Runtime
                 long remaining = long.MaxValue - this.VirtualTimeTicks;
                 return timeout.Ticks >= remaining ? long.MaxValue :
                     this.VirtualTimeTicks + timeout.Ticks;
+            }
+        }
+
+        /// <summary>
+        /// Validates a timeout and canonicalizes it to the whole-millisecond value used by the BCL.
+        /// </summary>
+        internal static TimeSpan NormalizeTimeout(TimeSpan timeout, string parameterName,
+            long maximumMilliseconds = int.MaxValue)
+        {
+            long milliseconds = (long)timeout.TotalMilliseconds;
+            if (milliseconds < Timeout.Infinite || milliseconds > maximumMilliseconds)
+            {
+                throw new ArgumentOutOfRangeException(parameterName);
+            }
+
+            return milliseconds switch
+            {
+                0 => TimeSpan.Zero,
+                Timeout.Infinite => Timeout.InfiniteTimeSpan,
+                _ => TimeSpan.FromMilliseconds(milliseconds)
+            };
+        }
+
+        /// <summary>
+        /// Returns the current virtual clock for regression tests.
+        /// </summary>
+        internal long GetVirtualTimeTicksForTesting()
+        {
+            using (SynchronizedSection.Enter(this.RuntimeLock))
+            {
+                return this.VirtualTimeTicks;
             }
         }
 

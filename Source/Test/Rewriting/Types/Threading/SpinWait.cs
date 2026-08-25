@@ -88,6 +88,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static void SpinUntil(Func<bool> condition)
         {
+            if (condition is null)
+            {
+                throw new ArgumentNullException(nameof(condition));
+            }
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
@@ -145,23 +150,19 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 throw new ArgumentNullException(nameof(condition));
             }
 
-            long totalMilliseconds = (long)timeout.TotalMilliseconds;
-            if (totalMilliseconds < -1 || totalMilliseconds > int.MaxValue)
-            {
-                throw new ArgumentOutOfRangeException(nameof(timeout));
-            }
+            timeout = CoyoteRuntime.NormalizeTimeout(timeout, nameof(timeout));
 
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out ControlledOperation current))
             {
-                if (totalMilliseconds is -1)
+                if (timeout == System.Threading.Timeout.InfiniteTimeSpan)
                 {
                     runtime.PauseOperationUntil(current, condition);
                     return true;
                 }
 
-                return condition() || (totalMilliseconds > 0 &&
+                return condition() || (timeout > TimeSpan.Zero &&
                     runtime.PauseOperationUntilDeadline(current, condition,
                         runtime.CreateVirtualDeadline(timeout)));
             }

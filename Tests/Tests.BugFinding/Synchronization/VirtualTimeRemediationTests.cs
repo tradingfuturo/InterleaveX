@@ -7,6 +7,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Specifications;
 using Xunit;
 using Xunit.Abstractions;
@@ -69,6 +70,205 @@ namespace Microsoft.Coyote.BugFinding.Tests
 
             Assert.True(observedAcquisition,
                 "No explored schedule allowed a positive-timeout TryEnter to acquire after release.");
+        }
+
+        [Fact(Timeout = 15000)]
+        [Trait("Category", "VirtualTimeRemediation")]
+        public void TestFractionalMonitorTryEnterUsesBclMillisecondTruncation()
+        {
+            this.Test(async () =>
+            {
+                object sync = new object();
+                var ownerEntered = new TaskCompletionSource<bool>();
+                using var releaseOwner = new ManualResetEvent(false);
+                Task owner = Task.Run(() =>
+                {
+                    Monitor.Enter(sync);
+                    ownerEntered.SetResult(true);
+                    releaseOwner.WaitOne();
+                    Monitor.Exit(sync);
+                });
+
+                await ownerEntered.Task;
+                bool halfMillisecondAcquired = false;
+                Monitor.TryEnter(sync, TimeSpan.FromTicks(TimeSpan.TicksPerMillisecond / 2),
+                    ref halfMillisecondAcquired);
+                Specification.Assert(!halfMillisecondAcquired,
+                    "A held Monitor was acquired by a 0.5ms TryEnter.");
+                Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() is 0,
+                    "A 0.5ms Monitor.TryEnter advanced virtual time instead of using a 0ms timeout.");
+
+                bool oneAndHalfMillisecondsAcquired = Monitor.TryEnter(sync,
+                    TimeSpan.FromTicks(TimeSpan.TicksPerMillisecond + (TimeSpan.TicksPerMillisecond / 2)));
+                Specification.Assert(!oneAndHalfMillisecondsAcquired,
+                    "A held Monitor was acquired by a 1.5ms TryEnter.");
+                Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() ==
+                    TimeSpan.TicksPerMillisecond,
+                    "A 1.5ms Monitor.TryEnter did not use the BCL 1ms timeout.");
+
+                releaseOwner.Set();
+                await owner;
+            }, this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 15000)]
+        [Trait("Category", "VirtualTimeRemediation")]
+        public void TestNegativeFractionalMonitorTryEnterIsInfinite()
+        {
+            this.Test(async () =>
+            {
+                object sync = new object();
+                var ownerEntered = new TaskCompletionSource<bool>();
+                Task owner = Task.Run(() =>
+                {
+                    Monitor.Enter(sync);
+                    ownerEntered.SetResult(true);
+                    Thread.Sleep(1);
+                    Monitor.Exit(sync);
+                });
+
+                await ownerEntered.Task;
+                bool acquired = Monitor.TryEnter(sync,
+                    TimeSpan.FromTicks(-TimeSpan.TicksPerMillisecond - (TimeSpan.TicksPerMillisecond / 2)));
+                Specification.Assert(acquired,
+                    "A -1.5ms Monitor.TryEnter did not wait as the BCL infinite timeout.");
+                if (acquired)
+                {
+                    Monitor.Exit(sync);
+                }
+
+                await owner;
+            }, this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 15000)]
+        [Trait("Category", "VirtualTimeRemediation")]
+        public void TestFractionalMonitorWaitUsesBclMillisecondTruncation()
+        {
+            this.Test(() =>
+            {
+                object sync = new object();
+                Monitor.Enter(sync);
+                try
+                {
+                    bool halfMillisecondPulsed = Monitor.Wait(sync,
+                        TimeSpan.FromTicks(TimeSpan.TicksPerMillisecond / 2), exitContext: false);
+                    Specification.Assert(!halfMillisecondPulsed,
+                        "A 0.5ms Monitor.Wait reported a pulse without a pulser.");
+                    Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() is 0,
+                        "A 0.5ms Monitor.Wait advanced virtual time instead of using a 0ms timeout.");
+
+                    bool oneAndHalfMillisecondsPulsed = Monitor.Wait(sync,
+                        TimeSpan.FromTicks(TimeSpan.TicksPerMillisecond + (TimeSpan.TicksPerMillisecond / 2)));
+                    Specification.Assert(!oneAndHalfMillisecondsPulsed,
+                        "A 1.5ms Monitor.Wait reported a pulse without a pulser.");
+                    Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() ==
+                        TimeSpan.TicksPerMillisecond,
+                        "A 1.5ms Monitor.Wait did not use the BCL 1ms timeout.");
+                }
+                finally
+                {
+                    Monitor.Exit(sync);
+                }
+            }, this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 15000)]
+        [Trait("Category", "VirtualTimeRemediation")]
+        public void TestNegativeFractionalMonitorWaitIsInfinite()
+        {
+            this.Test(async () =>
+            {
+                object sync = new object();
+                Monitor.Enter(sync);
+                Task pulser = Task.Run(() =>
+                {
+                    Thread.Sleep(1);
+                    Monitor.Enter(sync);
+                    Monitor.Pulse(sync);
+                    Monitor.Exit(sync);
+                });
+
+                bool pulsed;
+                try
+                {
+                    pulsed = Monitor.Wait(sync,
+                        TimeSpan.FromTicks(-TimeSpan.TicksPerMillisecond - (TimeSpan.TicksPerMillisecond / 2)));
+                }
+                finally
+                {
+                    Monitor.Exit(sync);
+                }
+
+                Specification.Assert(pulsed,
+                    "A -1.5ms Monitor.Wait did not wait as the BCL infinite timeout.");
+                await pulser;
+            }, this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "VirtualTimeRemediation")]
+        public void TestFractionalThreadSleepUsesBclMillisecondTruncation()
+        {
+            this.Test(() =>
+            {
+                Thread.Sleep(TimeSpan.FromTicks(TimeSpan.TicksPerMillisecond / 2));
+                Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() is 0,
+                    "A 0.5ms Thread.Sleep advanced virtual time instead of sleeping for 0ms.");
+
+                Thread.Sleep(TimeSpan.FromTicks(TimeSpan.TicksPerMillisecond + (TimeSpan.TicksPerMillisecond / 2)));
+                Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() ==
+                    TimeSpan.TicksPerMillisecond,
+                    "A 1.5ms Thread.Sleep did not use the BCL 1ms timeout.");
+            }, this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "VirtualTimeRemediation")]
+        public void TestNegativeFractionalThreadSleepIsInfinite()
+        {
+            this.TestWithError(() =>
+            {
+                Thread.Sleep(TimeSpan.FromTicks(-TimeSpan.TicksPerMillisecond - (TimeSpan.TicksPerMillisecond / 2)));
+            }, errorChecker: error =>
+            {
+                Assert.StartsWith("Deadlock detected.", error);
+            }, configuration: this.GetConfiguration().WithTestingIterations(1), replay: true);
+        }
+
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "VirtualTimeRemediation")]
+        public void TestFractionalSpinUntilUsesBclMillisecondTruncation()
+        {
+            this.Test(() =>
+            {
+                Specification.Assert(!SpinWait.SpinUntil(() => false,
+                    TimeSpan.FromTicks(TimeSpan.TicksPerMillisecond / 2)),
+                    "A 0.5ms SpinUntil did not report its BCL 0ms timeout.");
+                Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() is 0,
+                    "A 0.5ms SpinUntil advanced virtual time instead of using a 0ms timeout.");
+
+                Specification.Assert(!SpinWait.SpinUntil(() => false,
+                    TimeSpan.FromTicks(TimeSpan.TicksPerMillisecond + (TimeSpan.TicksPerMillisecond / 2))),
+                    "A 1.5ms SpinUntil did not report its timeout.");
+                Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() ==
+                    TimeSpan.TicksPerMillisecond,
+                    "A 1.5ms SpinUntil did not use the BCL 1ms timeout.");
+            }, this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "VirtualTimeRemediation")]
+        public void TestNegativeFractionalSpinUntilIsInfinite()
+        {
+            this.TestWithError(() =>
+            {
+                _ = SpinWait.SpinUntil(() => false,
+                    TimeSpan.FromTicks(-TimeSpan.TicksPerMillisecond - (TimeSpan.TicksPerMillisecond / 2)));
+            }, errorChecker: error =>
+            {
+                Assert.StartsWith("Deadlock detected.", error);
+            }, configuration: this.GetConfiguration().WithTestingIterations(1), replay: true);
         }
 
         [Fact(Timeout = 10000)]

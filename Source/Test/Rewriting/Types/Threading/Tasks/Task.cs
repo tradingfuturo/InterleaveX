@@ -329,7 +329,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                 return SystemTask.Delay(delay);
             }
 
-            ValidateDelay(delay);
+            delay = CoyoteRuntime.NormalizeTimeout(delay, nameof(delay), MaxSupportedTimeoutMilliseconds);
             return runtime.ScheduleDelay(delay, default);
         }
 
@@ -344,7 +344,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                 return SystemTask.Delay(delay, cancellationToken);
             }
 
-            ValidateDelay(delay);
+            delay = CoyoteRuntime.NormalizeTimeout(delay, nameof(delay), MaxSupportedTimeoutMilliseconds);
             return runtime.ScheduleDelay(delay, cancellationToken);
         }
 
@@ -369,7 +369,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             }
 
             ArgumentNullException.ThrowIfNull(timeProvider);
-            ValidateDelay(delay);
+            delay = CoyoteRuntime.NormalizeTimeout(delay, nameof(delay), MaxSupportedTimeoutMilliseconds);
             return runtime.ScheduleDelay(delay, cancellationToken);
         }
 #endif
@@ -382,19 +382,6 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             if (millisecondsDelay < SystemTimeout.Infinite)
             {
                 throw new ArgumentOutOfRangeException(nameof(millisecondsDelay));
-            }
-        }
-
-        /// <summary>
-        /// Validates the specified time delay.
-        /// </summary>
-        private static void ValidateDelay(TimeSpan delay)
-        {
-            long totalMilliseconds = (long)delay.TotalMilliseconds;
-            if (totalMilliseconds < SystemTimeout.Infinite ||
-                totalMilliseconds > MaxSupportedTimeoutMilliseconds)
-            {
-                throw new ArgumentOutOfRangeException(nameof(delay));
             }
         }
 
@@ -1055,14 +1042,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
         /// </summary>
         internal static TimeSpan NormalizeWaitAsyncTimeout(TimeSpan timeout)
         {
-            long totalMilliseconds = (long)timeout.TotalMilliseconds;
-            if (totalMilliseconds < SystemTimeout.Infinite || totalMilliseconds > MaxSupportedTimeoutMilliseconds)
-            {
-                throw new ArgumentOutOfRangeException(nameof(timeout));
-            }
-
-            return totalMilliseconds is SystemTimeout.Infinite ? SystemTimeout.InfiniteTimeSpan :
-                TimeSpan.FromTicks(totalMilliseconds * TimeSpan.TicksPerMillisecond);
+            return CoyoteRuntime.NormalizeTimeout(timeout, nameof(timeout), MaxSupportedTimeoutMilliseconds);
         }
 
         /// <summary>

@@ -348,7 +348,7 @@ namespace Microsoft.Coyote.Runtime
         /// </summary>
         internal void EnableAfterDelay(bool isCancellation = false)
         {
-            if (!this.IsVirtualTimerOperation)
+            if (!this.IsVirtualTimerOperation || isCancellation)
             {
                 this.HasVirtualDeadline = false;
             }

@@ -165,7 +165,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         {
             ValidateLockTaken(lockTaken);
             ValidateObject(obj, parameterName: null);
-            ValidateTimeout(timeout);
+            timeout = CoyoteRuntime.NormalizeTimeout(timeout, nameof(timeout));
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -191,7 +191,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         public static bool TryEnter(object obj, TimeSpan timeout)
         {
             ValidateObject(obj, parameterName: null);
-            ValidateTimeout(timeout);
+            timeout = CoyoteRuntime.NormalizeTimeout(timeout, nameof(timeout));
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -369,7 +369,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         public static bool Wait(object obj, TimeSpan timeout)
         {
             ValidateObject(obj, nameof(obj));
-            ValidateTimeout(timeout);
+            timeout = CoyoteRuntime.NormalizeTimeout(timeout, nameof(timeout));
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -389,7 +389,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         public static bool Wait(object obj, TimeSpan timeout, bool exitContext)
         {
             ValidateObject(obj, nameof(obj));
-            ValidateTimeout(timeout);
+            timeout = CoyoteRuntime.NormalizeTimeout(timeout, nameof(timeout));
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 runtime.TryGetExecutingOperation(out _))
@@ -422,15 +422,6 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             if (millisecondsTimeout < SystemThreading.Timeout.Infinite)
             {
                 throw new ArgumentOutOfRangeException(parameterName);
-            }
-        }
-
-        private static void ValidateTimeout(TimeSpan timeout)
-        {
-            long milliseconds = (long)timeout.TotalMilliseconds;
-            if (milliseconds < SystemThreading.Timeout.Infinite || milliseconds > int.MaxValue)
-            {
-                throw new ArgumentOutOfRangeException(nameof(timeout));
             }
         }
 
@@ -1079,6 +1070,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// </summary>
             internal bool Wait(TimeSpan timeout)
             {
+                if (timeout == SystemThreading.Timeout.InfiniteTimeSpan)
+                {
+                    return this.Wait();
+                }
+
                 CoyoteRuntime runtime = this.GetRuntime();
                 ControlledOperation op = runtime.GetExecutingOperation();
                 if (this.Owner != op)

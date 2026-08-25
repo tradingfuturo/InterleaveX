@@ -131,11 +131,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static void Sleep(TimeSpan timeout)
         {
-            long totalMilliseconds = (long)timeout.TotalMilliseconds;
-            if (totalMilliseconds < SystemTimeout.Infinite || totalMilliseconds > int.MaxValue)
-            {
-                throw new ArgumentOutOfRangeException(nameof(timeout));
-            }
+            timeout = CoyoteRuntime.NormalizeTimeout(timeout, nameof(timeout));
 
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&

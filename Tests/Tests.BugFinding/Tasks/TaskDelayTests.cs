@@ -194,6 +194,174 @@ namespace Microsoft.Coyote.BugFinding.Tests
         }
 
         [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestCancellationDuringVirtualTimerAdmissionDoesNotLeaveAnOrphan()
+        {
+            if (this.SchedulingPolicy is not SchedulingPolicy.Interleaving)
+            {
+                return;
+            }
+
+            this.TestWithError(async () =>
+            {
+                using var source = new CancellationTokenSource();
+                CoyoteRuntime runtime = CoyoteRuntime.Current;
+                runtime.VirtualTimerAdmissionCallback = _ => source.Cancel();
+                Task delay;
+                try
+                {
+                    delay = Task.Delay(TimeSpan.FromMilliseconds(1), source.Token);
+                }
+                finally
+                {
+                    runtime.VirtualTimerAdmissionCallback = null;
+                }
+
+                OperationCanceledException failure = null;
+                try
+                {
+                    await delay;
+                }
+                catch (OperationCanceledException ex)
+                {
+                    failure = ex;
+                }
+
+                Specification.Assert(failure != null && failure.CancellationToken == source.Token,
+                    "Cancellation during virtual timer admission did not preserve its token.");
+
+                await Task.Delay(TimeSpan.FromMilliseconds(10));
+                Specification.Assert(runtime.GetVirtualTimeTicksForTesting() ==
+                    TimeSpan.FromMilliseconds(10).Ticks,
+                    "A canceled timer polluted the virtual clock after its task had completed.");
+
+                // Make the successful path observable to TestWithError and replay it. Before the
+                // remediation, the orphaned operation prevents this point from being reached.
+                Specification.Assert(false, "Admission-cancellation scenario completed without an orphaned timer.");
+            }, errorChecker: error =>
+            {
+                Assert.Contains("Admission-cancellation scenario completed without an orphaned timer.", error);
+                Assert.DoesNotContain("Deadlock detected", error, StringComparison.Ordinal);
+            }, configuration: this.GetConfiguration()
+                .WithTestingIterations(1)
+                .WithPartiallyControlledConcurrencyAllowed(false), replay: true);
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "VirtualTimeRemediation")]
+        public void TestFractionalTaskDelaysUseBclMillisecondTruncation()
+        {
+            if (this.SchedulingPolicy is not SchedulingPolicy.Interleaving)
+            {
+                return;
+            }
+
+            this.Test(async () =>
+            {
+                TimeSpan halfMillisecond = TimeSpan.FromTicks(TimeSpan.TicksPerMillisecond / 2);
+                TimeSpan oneAndHalfMilliseconds = TimeSpan.FromTicks(TimeSpan.TicksPerMillisecond +
+                    (TimeSpan.TicksPerMillisecond / 2));
+#if NET8_0_OR_GREATER
+                var provider = new ThrowingTimeProvider();
+#endif
+
+                Task[] immediate =
+                {
+                    Task.Delay(halfMillisecond),
+                    Task.Delay(halfMillisecond, CancellationToken.None),
+#if NET8_0_OR_GREATER
+                    Task.Delay(halfMillisecond, provider),
+                    Task.Delay(halfMillisecond, provider, CancellationToken.None)
+#endif
+                };
+                foreach (Task delay in immediate)
+                {
+                    Specification.Assert(delay.IsCompleted,
+                        "A 0.5ms Task.Delay did not complete as the BCL 0ms timeout.");
+                }
+
+                Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() is 0,
+                    "A 0.5ms Task.Delay advanced virtual time instead of completing synchronously.");
+
+                Task[] fractional =
+                {
+                    Task.Delay(oneAndHalfMilliseconds),
+                    Task.Delay(oneAndHalfMilliseconds, CancellationToken.None),
+#if NET8_0_OR_GREATER
+                    Task.Delay(oneAndHalfMilliseconds, provider),
+                    Task.Delay(oneAndHalfMilliseconds, provider, CancellationToken.None)
+#endif
+                };
+                await Task.WhenAll(fractional);
+                Specification.Assert(CoyoteRuntime.Current.GetVirtualTimeTicksForTesting() ==
+                    TimeSpan.TicksPerMillisecond,
+                    "A 1.5ms Task.Delay did not use the BCL 1ms timeout.");
+            }, configuration: this.GetConfiguration().WithTestingIterations(10));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "VirtualTimeRemediation")]
+        public void TestNegativeFractionalTaskDelaysAreInfinite()
+        {
+            if (this.SchedulingPolicy is not SchedulingPolicy.Interleaving)
+            {
+                return;
+            }
+
+            this.Test(async () =>
+            {
+                TimeSpan negativeOneAndHalfMilliseconds = TimeSpan.FromTicks(-TimeSpan.TicksPerMillisecond -
+                    (TimeSpan.TicksPerMillisecond / 2));
+#if NET8_0_OR_GREATER
+                var provider = new ThrowingTimeProvider();
+#endif
+                using var source = new CancellationTokenSource();
+                Task cancellable = Task.Delay(negativeOneAndHalfMilliseconds, source.Token);
+#if NET8_0_OR_GREATER
+                Task cancellableWithProvider = Task.Delay(negativeOneAndHalfMilliseconds, provider, source.Token);
+#endif
+                Task[] infinite =
+                {
+                    Task.Delay(negativeOneAndHalfMilliseconds),
+                    cancellable,
+#if NET8_0_OR_GREATER
+                    Task.Delay(negativeOneAndHalfMilliseconds, provider),
+                    cancellableWithProvider
+#endif
+                };
+
+                await Task.Delay(TimeSpan.FromMilliseconds(1));
+                foreach (Task delay in infinite)
+                {
+                    Specification.Assert(!delay.IsCompleted,
+                        "A -1.5ms Task.Delay did not use the BCL infinite timeout.");
+                }
+
+                source.Cancel();
+                await AssertCanceledWithTokenAsync(cancellable, source.Token);
+#if NET8_0_OR_GREATER
+                await AssertCanceledWithTokenAsync(cancellableWithProvider, source.Token);
+#endif
+            }, configuration: this.GetConfiguration().WithTestingIterations(100));
+        }
+
+        private static async Task AssertCanceledWithTokenAsync(Task task, CancellationToken expectedToken)
+        {
+            OperationCanceledException failure = null;
+            try
+            {
+                await task;
+            }
+            catch (OperationCanceledException ex)
+            {
+                failure = ex;
+            }
+
+            Specification.Assert(failure != null && failure.CancellationToken == expectedToken,
+                "A canceled delay did not preserve its cancellation token.");
+        }
+
+        [Fact(Timeout = 5000)]
         public void TestPositiveDelayObservesPreCanceledToken()
         {
             this.Test(async () =>
