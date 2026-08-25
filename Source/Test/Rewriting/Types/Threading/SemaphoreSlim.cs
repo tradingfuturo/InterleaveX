@@ -7,6 +7,7 @@ using System.Diagnostics;
 using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Runtime.CompilerServices;
 using SystemCancellationToken = System.Threading.CancellationToken;
+using SystemCancellationTokenRegistration = System.Threading.CancellationTokenRegistration;
 using SystemSemaphoreSlim = System.Threading.SemaphoreSlim;
 using SystemTask = System.Threading.Tasks.Task;
 using SystemTaskCreationOptions = System.Threading.Tasks.TaskCreationOptions;
@@ -241,6 +242,32 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             instance is Wrapper wrapper ? wrapper.Exit(releaseCount) : instance.Release(releaseCount);
 
         /// <summary>
+        /// Disposes the <see cref="SemaphoreSlim"/> object.
+        /// </summary>
+        public static void Dispose(SystemSemaphoreSlim instance)
+        {
+            if (instance is Wrapper wrapper)
+            {
+                wrapper.DisposeControlled();
+                return;
+            }
+
+            instance.Dispose();
+        }
+
+        /// <summary>
+        /// Installs an instance-scoped callback that is invoked after a controlled waiter is queued.
+        /// Used by regression tests to deterministically exercise cancellation after parking.
+        /// </summary>
+        internal static void SetWaiterQueuedCallbackForTesting(SystemSemaphoreSlim instance, Action callback)
+        {
+            if (instance is Wrapper wrapper)
+            {
+                wrapper.WaiterQueuedCallback = callback;
+            }
+        }
+
+        /// <summary>
         /// Wraps a <see cref="SystemSemaphoreSlim"/> so that it can be controlled during testing.
         /// </summary>
         private class Wrapper : SystemSemaphoreSlim
@@ -261,9 +288,24 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             private readonly Queue<ControlledOperation> PausedOperations;
 
             /// <summary>
+            /// Synchronous waiters that have won a release race and already own a reserved token.
+            /// </summary>
+            private readonly HashSet<ControlledOperation> GrantedOperations;
+
+            /// <summary>
             /// Queue of completion sources that operations are asynchronously awaiting to get released.
             /// </summary>
             private readonly Queue<SystemTasks.TaskCompletionSource<bool>> AsyncAwaiters;
+
+            private readonly Dictionary<SystemTasks.TaskCompletionSource<bool>, SystemCancellationTokenRegistration>
+                AsyncCancellationRegistrations;
+
+            private bool IsDisposed;
+
+            /// <summary>
+            /// Optional instance-scoped regression-test callback invoked after a waiter is queued.
+            /// </summary>
+            internal Action WaiterQueuedCallback;
 
             /// <summary>
             /// The maximum semaphore value.
@@ -289,7 +331,10 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 this.RuntimeId = runtime.Id;
                 this.ResourceId = Guid.NewGuid();
                 this.PausedOperations = new Queue<ControlledOperation>();
+                this.GrantedOperations = new HashSet<ControlledOperation>();
                 this.AsyncAwaiters = new Queue<SystemTasks.TaskCompletionSource<bool>>();
+                this.AsyncCancellationRegistrations =
+                    new Dictionary<SystemTasks.TaskCompletionSource<bool>, SystemCancellationTokenRegistration>();
                 this.LockCount = initialCount;
                 this.MaxCount = maxCount;
                 this.DebugName = $"SemaphoreSlim({this.ResourceId})";
@@ -301,50 +346,89 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             internal bool Enter(int millisecondsTimeout, SystemCancellationToken cancellationToken)
             {
                 CoyoteRuntime runtime = this.GetRuntime();
-                using (runtime.EnterSynchronizedSection())
+                ControlledOperation current = null;
+                SystemCancellationTokenRegistration registration = default;
+                bool hasRegistration = false;
+                try
                 {
-                    if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
+                    using (runtime.EnterSynchronizedSection())
                     {
-                        runtime.NotifyUncontrolledSynchronizationInvocation("SemaphoreSlim.Wait");
+                        this.ThrowIfDisposed();
+                        if (!runtime.TryGetExecutingOperation(out current))
+                        {
+                            runtime.NotifyUncontrolledSynchronizationInvocation("SemaphoreSlim.Wait");
+                        }
+                        else if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
+                        {
+                            runtime.ScheduleNextOperation(current, SchedulingPointType.Acquire);
+                        }
+
+                        long deadline = millisecondsTimeout is SystemTimeout.Infinite ? 0 :
+                            runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout));
+                        while (true)
+                        {
+                            if (this.GrantedOperations.Remove(current))
+                            {
+                                return true;
+                            }
+
+                            if (this.LockCount > 0)
+                            {
+                                this.LockCount--;
+                                return true;
+                            }
+
+                            cancellationToken.ThrowIfCancellationRequested();
+                            if (millisecondsTimeout is 0)
+                            {
+                                return false;
+                            }
+
+                            if (cancellationToken.CanBeCanceled && !hasRegistration)
+                            {
+                                hasRegistration = true;
+                                registration = cancellationToken.Register(() => this.EnableCancelledWaiter(runtime, current));
+                                cancellationToken.ThrowIfCancellationRequested();
+                            }
+
+                            runtime.LogWriter.LogDebug(
+                                "[coyote::debug] Operation {0} is waiting for '{1}' to get released on thread '{2}'.",
+                                current.DebugInfo, this.DebugName, SystemThread.CurrentThread.ManagedThreadId);
+                            if (millisecondsTimeout is SystemTimeout.Infinite)
+                            {
+                                current.PauseWithResource(this.ResourceId);
+                            }
+                            else
+                            {
+                                current.PauseWithResourcesOrDelay(new[] { this.ResourceId }, deadline);
+                            }
+
+                            this.PausedOperations.Enqueue(current);
+                            this.WaiterQueuedCallback?.Invoke();
+                            runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
+                            if (this.GrantedOperations.Remove(current))
+                            {
+                                return true;
+                            }
+
+                            if (current.WakeReason is OperationWakeReason.Deadline)
+                            {
+                                return false;
+                            }
+                        }
                     }
-                    else if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
+                }
+                finally
+                {
+                    using (runtime.EnterSynchronizedSection())
                     {
-                        runtime.ScheduleNextOperation(current, SchedulingPointType.Acquire);
-                    }
-
-                    long deadline = millisecondsTimeout is SystemTimeout.Infinite ? 0 :
-                        runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout));
-                    while (this.LockCount is 0)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        if (millisecondsTimeout is 0)
-                        {
-                            return false;
-                        }
-
-                        runtime.LogWriter.LogDebug(
-                            "[coyote::debug] Operation {0} is waiting for '{1}' to get released on thread '{2}'.",
-                            current.DebugInfo, this.DebugName, SystemThread.CurrentThread.ManagedThreadId);
-                        if (millisecondsTimeout is SystemTimeout.Infinite)
-                        {
-                            current.PauseWithResource(this.ResourceId);
-                        }
-                        else
-                        {
-                            current.PauseWithResourcesOrDelay(new[] { this.ResourceId }, deadline);
-                        }
-
-                        this.PausedOperations.Enqueue(current);
-                        runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
-                        if (current.WakeReason is OperationWakeReason.Deadline)
+                        if (current != null)
                         {
                             this.RemovePausedOperation(current);
-                            return false;
                         }
                     }
 
-                    this.LockCount--;
-                    return true;
+                    registration.Dispose();
                 }
             }
 
@@ -357,6 +441,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 CoyoteRuntime runtime = this.GetRuntime();
                 using (runtime.EnterSynchronizedSection())
                 {
+                    this.ThrowIfDisposed();
                     if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
                     {
                         runtime.NotifyUncontrolledSynchronizationInvocation("SemaphoreSlim.WaitAsync");
@@ -378,10 +463,24 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                             var tcs = new SystemTasks.TaskCompletionSource<bool>(
                                 SystemTaskCreationOptions.RunContinuationsAsynchronously);
                             this.AsyncAwaiters.Enqueue(tcs);
+                            this.AsyncCancellationRegistrations.Add(tcs, default);
+                            if (cancellationToken.CanBeCanceled)
+                            {
+                                SystemCancellationTokenRegistration registration = cancellationToken.Register(
+                                    () => this.CancelAsyncWaiter(runtime, tcs, cancellationToken));
+                                if (this.AsyncCancellationRegistrations.ContainsKey(tcs))
+                                {
+                                    this.AsyncCancellationRegistrations[tcs] = registration;
+                                }
+                                else
+                                {
+                                    registration.Dispose();
+                                }
+                            }
+
+                            this.WaiterQueuedCallback?.Invoke();
                             runtime.RegisterKnownControlledTask(tcs.Task);
-                            return AsyncConditionAwaiterStateMachine.RunAsync(runtime,
-                                () => tcs.Task.IsCompleted,
-                                debugMsg: $"'{this.DebugName}' to get released");
+                            return AsyncTaskAwaiterStateMachine<bool>.RunAsync(runtime, tcs.Task, true);
                         }
 
                         SystemTasks.Task<bool> task = runtime.TaskFactory.StartNew(
@@ -411,17 +510,39 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 }
             }
 
+            private static void Remove(Queue<SystemTasks.TaskCompletionSource<bool>> queue,
+                SystemTasks.TaskCompletionSource<bool> waiter)
+            {
+                int count = queue.Count;
+                for (int idx = 0; idx < count; ++idx)
+                {
+                    SystemTasks.TaskCompletionSource<bool> candidate = queue.Dequeue();
+                    if (candidate != waiter)
+                    {
+                        queue.Enqueue(candidate);
+                    }
+                }
+            }
+
             /// <summary>
             /// Exits the semaphore a specified number of times.
             /// </summary>
             internal int Exit(int releaseCount)
             {
                 CoyoteRuntime runtime = this.GetRuntime();
+                var registrationsToDispose = new List<SystemCancellationTokenRegistration>();
+                int previousCount;
                 using (runtime.EnterSynchronizedSection())
                 {
+                    this.ThrowIfDisposed();
                     if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
                     {
                         runtime.NotifyUncontrolledSynchronizationInvocation("SemaphoreSlim.Release");
+                    }
+
+                    if (releaseCount < 1)
+                    {
+                        throw new ArgumentOutOfRangeException(nameof(releaseCount));
                     }
 
                     // If the release count would result exceeding the maximum count, throw an exception.
@@ -430,32 +551,112 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         throw new SystemThreading.SemaphoreFullException();
                     }
 
-                    int previousCount = this.LockCount;
+                    previousCount = this.LockCount;
                     int lockCount = previousCount + releaseCount;
+                    int remainingReleaseCount = releaseCount;
 
-                    // Release the next synchronous awaiters, if there are any.
-                    while (releaseCount > 0 && this.PausedOperations.Count > 0)
+                    // Release asynchronous awaiters first. Completion reserves exactly one token;
+                    // cancellation and release race under the same runtime synchronization lock.
+                    while (remainingReleaseCount > 0 && this.AsyncAwaiters.Count > 0)
                     {
-                        // Release the next operation awaiting synchronously, but do not decrement any counts,
-                        // as it is not guaranteed that it will be able to acquire the semaphore immediately.
+                        var tcs = this.AsyncAwaiters.Dequeue();
+                        if (this.AsyncCancellationRegistrations.TryGetValue(tcs, out SystemCancellationTokenRegistration registration))
+                        {
+                            this.AsyncCancellationRegistrations.Remove(tcs);
+                            registrationsToDispose.Add(registration);
+                            if (tcs.TrySetResult(true))
+                            {
+                                lockCount--;
+                                remainingReleaseCount--;
+                            }
+                        }
+                    }
+
+                    // Reserve tokens for synchronous waiters before enabling them. This makes a
+                    // release/cancellation/timeout race have one winner rather than letting a
+                    // later cancellation consume an already-granted release.
+                    while (remainingReleaseCount > 0 && this.PausedOperations.Count > 0)
+                    {
                         ControlledOperation operation = this.PausedOperations.Dequeue();
+                        if (operation.Status is not (OperationStatus.PausedOnAllResources or
+                            OperationStatus.PausedOnResourceOrDelay))
+                        {
+                            // Cancellation or the absolute deadline already won and made this
+                            // waiter runnable. Do not let a later release overwrite that outcome.
+                            continue;
+                        }
+
+                        this.GrantedOperations.Add(operation);
+                        lockCount--;
+                        remainingReleaseCount--;
                         operation.TryEnable(this.ResourceId);
                     }
 
-                    // Release the next asynchronous awaiters, if there are any.
-                    while (releaseCount > 0 && this.AsyncAwaiters.Count > 0)
-                    {
-                        // Release the next operation awaiting asynchronously. It is assumed that the operation
-                        // will acquire the semaphore immediately, so we decrement the lock count.
-                        lockCount--;
-                        releaseCount--;
+                    this.LockCount = lockCount;
+                }
 
-                        var tcs = this.AsyncAwaiters.Dequeue();
-                        tcs.SetResult(true);
+                foreach (SystemCancellationTokenRegistration registration in registrationsToDispose)
+                {
+                    registration.Dispose();
+                }
+
+                return previousCount;
+            }
+
+            /// <summary>
+            /// Marks a synchronous waiter runnable when cancellation wins its wait race.
+            /// </summary>
+            private void EnableCancelledWaiter(CoyoteRuntime runtime, ControlledOperation operation)
+            {
+                using (runtime.EnterSynchronizedSection())
+                {
+                    if (this.GrantedOperations.Contains(operation))
+                    {
+                        return;
                     }
 
-                    this.LockCount = lockCount;
-                    return previousCount;
+                    this.RemovePausedOperation(operation);
+                    operation.TryEnable(this.ResourceId);
+                }
+            }
+
+            /// <summary>
+            /// Cancels an asynchronous waiter if it has not already been completed by a release.
+            /// </summary>
+            private void CancelAsyncWaiter(CoyoteRuntime runtime, SystemTasks.TaskCompletionSource<bool> waiter,
+                SystemCancellationToken cancellationToken)
+            {
+                using (runtime.EnterSynchronizedSection())
+                {
+                    if (this.AsyncCancellationRegistrations.Remove(waiter))
+                    {
+                        Remove(this.AsyncAwaiters, waiter);
+                        waiter.TrySetCanceled(cancellationToken);
+                    }
+                }
+            }
+
+            /// <summary>
+            /// Disposes the controlled semaphore and preserves the BCL post-disposal contract.
+            /// </summary>
+            internal void DisposeControlled()
+            {
+                CoyoteRuntime runtime = this.GetRuntime();
+                using (runtime.EnterSynchronizedSection())
+                {
+                    if (!this.IsDisposed)
+                    {
+                        this.IsDisposed = true;
+                        this.Dispose();
+                    }
+                }
+            }
+
+            private void ThrowIfDisposed()
+            {
+                if (this.IsDisposed)
+                {
+                    throw new ObjectDisposedException(nameof(SystemSemaphoreSlim));
                 }
             }
 
