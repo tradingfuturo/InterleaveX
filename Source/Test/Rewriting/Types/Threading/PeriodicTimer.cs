@@ -266,7 +266,6 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             internal SystemTasks.ValueTask<bool> BeginWait(
                 SystemCancellationToken cancellationToken, out short version)
             {
-                bool completeFromQueuedSignal;
                 lock (this.SyncObject)
                 {
                     if (this.IsActive)
@@ -287,22 +286,24 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         return new SystemTasks.ValueTask<bool>(false);
                     }
 
+                    // A custom provider can publish a tick while no consumer is waiting. That tick is
+                    // already available, so it must not reserve the single active-wait slot or require
+                    // ValueTask result consumption before the next wait may begin.
+                    if (this.IsProviderOwned && this.IsSignaled)
+                    {
+                        this.IsSignaled = false;
+                        version = 0;
+                        return new SystemTasks.ValueTask<bool>(true);
+                    }
+
                     this.Source.Reset();
                     this.Completion = new System.Threading.Tasks.TaskCompletionSource<bool>(
                         System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
                     CoyoteRuntime.Current.RegisterKnownControlledTask(this.Completion.Task);
                     this.IsActive = true;
                     this.IsCadenceStarted = false;
-                    completeFromQueuedSignal = this.IsProviderOwned && this.IsSignaled;
-                    this.IsCompleted = completeFromQueuedSignal;
+                    this.IsCompleted = false;
                     version = this.Source.Version;
-                }
-
-                if (completeFromQueuedSignal)
-                {
-                    this.Completion.TrySetResult(true);
-                    this.Source.SetResult(true);
-                    return new SystemTasks.ValueTask<bool>(this, version);
                 }
 
                 System.Threading.CancellationTokenRegistration registration = cancellationToken.Register(

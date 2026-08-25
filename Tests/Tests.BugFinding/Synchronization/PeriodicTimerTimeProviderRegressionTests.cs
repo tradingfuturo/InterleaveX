@@ -70,24 +70,12 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 ValueTask<bool> queued = timer.WaitForNextTickAsync();
                 Specification.Assert(queued.IsCompletedSuccessfully,
                     "A tick fired before a wait was not available synchronously.");
-                Exception queuedOverlap = null;
-                try
-                {
-                    _ = timer.WaitForNextTickAsync();
-                }
-                catch (Exception ex)
-                {
-                    queuedOverlap = ex;
-                }
-
-                Specification.Assert(queuedOverlap is InvalidOperationException,
-                    "A queued tick released single-consumer ownership before result consumption.");
+                ValueTask<bool> active = timer.WaitForNextTickAsync();
+                Specification.Assert(!active.IsCompleted,
+                    "A queued tick incorrectly kept another wait active.");
                 Specification.Assert(await queued,
                     "A tick fired before a wait was not retained.");
 
-                ValueTask<bool> active = timer.WaitForNextTickAsync();
-                Specification.Assert(!active.IsCompleted,
-                    "Coalescing retained more than one queued provider tick.");
                 provider.LastTimer.Fire();
                 Specification.Assert(active.IsCompletedSuccessfully,
                     "A provider tick did not complete an active wait inline.");
