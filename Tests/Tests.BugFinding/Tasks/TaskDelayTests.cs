@@ -90,8 +90,8 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 using var source = new CancellationTokenSource();
                 Task delay = Task.Delay(TimeSpan.FromMinutes(1), source.Token);
 
-                // Let the controlled delay operation start. If this schedule selected a synchronous
-                // timeout there is no pending delay to cancel, which is a valid completion race.
+                // Let the controlled delay operation start. The exact virtual deadline can win this
+                // schedule before cancellation, which is a valid completion race.
                 await Task.Yield();
                 if (!delay.IsCompleted)
                 {
@@ -109,7 +109,7 @@ namespace Microsoft.Coyote.BugFinding.Tests
                     Specification.Assert(failure != null && failure.CancellationToken == source.Token,
                         "A pending delay ignored cancellation or lost its token.");
                 }
-            }, configuration: this.GetConfiguration().WithTestingIterations(100).WithTimeoutDelay(10));
+            }, configuration: this.GetConfiguration().WithTestingIterations(100));
         }
 
         [Fact(Timeout = 5000)]
