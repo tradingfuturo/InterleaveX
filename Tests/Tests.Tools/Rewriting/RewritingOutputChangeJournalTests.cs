@@ -58,6 +58,7 @@ namespace Microsoft.Coyote.Tools.Tests
             var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(
                 fileSystem, Out());
             journal.Capture(Out("existing.txt"));
+            fileSystem.WriteAllText(Out("existing.txt"), "after");
             fileSystem.SetReadOnly(Out("existing.txt"));
 
             Assert.Throws<IOException>(() => journal.Restore());
