@@ -56,6 +56,87 @@ namespace Microsoft.Coyote.BugFinding.Tests
             });
         }
 
+#if NET8_0_OR_GREATER
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestTimeProviderDelayIsControlled()
+        {
+            this.Test(async () =>
+            {
+                var provider = new ThrowingTimeProvider();
+                Task delay = Task.Delay(TimeSpan.FromMilliseconds(1), provider);
+                if (this.SchedulingPolicy is SchedulingPolicy.Interleaving)
+                {
+                    Specification.Assert(!CoyoteRuntime.Current.IsTaskUncontrolled(delay),
+                        "Task.Delay(TimeSpan, TimeProvider) returned an uncontrolled task.");
+                }
+
+                await delay;
+            }, configuration: this.GetConfiguration()
+                .WithTestingIterations(10)
+                .WithPartiallyControlledConcurrencyAllowed(false));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestCancellableTimeProviderDelayIsControlled()
+        {
+            this.Test(async () =>
+            {
+                var provider = new ThrowingTimeProvider();
+                using var source = new CancellationTokenSource();
+                Task delay = Task.Delay(TimeSpan.FromMinutes(1), provider, source.Token);
+                if (this.SchedulingPolicy is SchedulingPolicy.Interleaving)
+                {
+                    Specification.Assert(!CoyoteRuntime.Current.IsTaskUncontrolled(delay),
+                        "Task.Delay(TimeSpan, TimeProvider, CancellationToken) returned an uncontrolled task.");
+                    Specification.Assert(!delay.IsCompleted,
+                        "The controlled cancellable delay completed before cancellation.");
+                }
+
+                source.Cancel();
+                OperationCanceledException failure = null;
+                try
+                {
+                    await delay;
+                }
+                catch (OperationCanceledException ex)
+                {
+                    failure = ex;
+                }
+
+                if (this.SchedulingPolicy is SchedulingPolicy.Interleaving || failure != null)
+                {
+                    Specification.Assert(failure != null && failure.CancellationToken == source.Token,
+                        "The controlled TimeProvider delay did not preserve its cancellation token.");
+                }
+            }, configuration: this.GetConfiguration()
+                .WithTestingIterations(10)
+                .WithPartiallyControlledConcurrencyAllowed(false));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestTimeProviderDelayPreservesValidationOrder()
+        {
+            this.Test(() =>
+            {
+                using var source = new CancellationTokenSource();
+                source.Cancel();
+                TimeSpan invalidDelay = TimeSpan.FromMilliseconds(-2);
+
+                AssertArgumentException<ArgumentNullException>(
+                    () => Task.Delay(invalidDelay, null), "timeProvider");
+                AssertArgumentException<ArgumentNullException>(
+                    () => Task.Delay(invalidDelay, null, source.Token), "timeProvider");
+
+                var provider = new ThrowingTimeProvider();
+                AssertInvalidDelay(() => Task.Delay(invalidDelay, provider), "delay");
+                AssertInvalidDelay(() => Task.Delay(invalidDelay, provider, source.Token), "delay");
+            });
+        }
+#endif
+
         [Fact(Timeout = 5000)]
         public void TestZeroDelayObservesPreCanceledToken()
         {
@@ -190,7 +271,11 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 .WithPartiallyControlledConcurrencyAllowed(false), replay: true);
         }
 
-        private static void AssertInvalidDelay(Action action, string expectedParameterName)
+        private static void AssertInvalidDelay(Action action, string expectedParameterName) =>
+            AssertArgumentException<ArgumentOutOfRangeException>(action, expectedParameterName);
+
+        private static void AssertArgumentException<TException>(Action action, string expectedParameterName)
+            where TException : ArgumentException
         {
             Exception failure = null;
             try
@@ -203,12 +288,13 @@ namespace Microsoft.Coyote.BugFinding.Tests
             }
 
             Specification.Assert(
-                failure is ArgumentOutOfRangeException argument &&
+                failure is TException argument &&
                 argument.ParamName == expectedParameterName,
-                "Invalid delay produced '{0}' for parameter '{1}' instead of ArgumentOutOfRangeException for '{2}'.",
+                "Expected {0} for parameter '{1}', but received {2} for parameter '{3}'.",
+                typeof(TException).Name,
+                expectedParameterName,
                 failure?.GetType().Name ?? "no exception",
-                (failure as ArgumentException)?.ParamName ?? "none",
-                expectedParameterName);
+                (failure as ArgumentException)?.ParamName ?? "none");
         }
 
         private static async Task WriteWithLoopAndDelayAsync(SharedEntry entry, int value, int delay)
@@ -492,5 +578,13 @@ namespace Microsoft.Coyote.BugFinding.Tests
             expectedError: "Value is 3 instead of 5.",
             replay: true);
         }
+
+#if NET8_0_OR_GREATER
+        private sealed class ThrowingTimeProvider : TimeProvider
+        {
+            public override ITimer CreateTimer(TimerCallback callback, object state, TimeSpan dueTime, TimeSpan period) =>
+                throw new InvalidOperationException("The controlled Task.Delay model invoked TimeProvider.CreateTimer.");
+        }
+#endif
     }
 }

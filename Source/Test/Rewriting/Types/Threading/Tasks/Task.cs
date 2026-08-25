@@ -348,6 +348,32 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             return runtime.ScheduleDelay(delay, cancellationToken);
         }
 
+#if NET8_0_OR_GREATER
+        /// <summary>
+        /// Creates a task that completes after a specified time interval according to the specified time provider.
+        /// </summary>
+        public static SystemTask Delay(TimeSpan delay, TimeProvider timeProvider) =>
+            Delay(delay, timeProvider, default);
+
+        /// <summary>
+        /// Creates a cancellable task that completes after a specified time interval according to the specified
+        /// time provider.
+        /// </summary>
+        public static SystemTask Delay(TimeSpan delay, TimeProvider timeProvider,
+            SystemCancellationToken cancellationToken)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return SystemTask.Delay(delay, timeProvider, cancellationToken);
+            }
+
+            ArgumentNullException.ThrowIfNull(timeProvider);
+            ValidateDelay(delay);
+            return runtime.ScheduleDelay(delay, cancellationToken);
+        }
+#endif
+
         /// <summary>
         /// Validates the specified delay in milliseconds.
         /// </summary>
