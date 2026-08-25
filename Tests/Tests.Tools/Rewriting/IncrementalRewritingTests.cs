@@ -312,6 +312,9 @@ namespace Microsoft.Coyote.Tools.Tests
             workspace.Rewrite();
             string runtimeConfig = Path.ChangeExtension(
                 workspace.InputAssemblyPath, ".runtimeconfig.json");
+            string outputRuntimeConfig = Path.ChangeExtension(
+                workspace.OutputAssemblyPath, ".runtimeconfig.json");
+            byte[] outputBeforeMutation = File.ReadAllBytes(outputRuntimeConfig);
             bool mutated = false;
             var fileSystem = new CallbackFileSystem(HostFileSystem.Instance,
                 (directory, searchPattern) =>
@@ -337,6 +340,11 @@ namespace Microsoft.Coyote.Tools.Tests
             Assert.NotEqual(
                 new FileInfo(workspace.InputAssemblyPath).Length,
                 new FileInfo(workspace.OutputAssemblyPath).Length);
+            byte[] outputAfterMutation = File.ReadAllBytes(outputRuntimeConfig);
+            byte[] mutatedInput = File.ReadAllBytes(runtimeConfig);
+            Assert.False(outputBeforeMutation.SequenceEqual(outputAfterMutation),
+                "The output runtime configuration was left at its pre-drift bytes.");
+            Assert.Equal(mutatedInput, outputAfterMutation);
         }
 
         [Fact(Timeout = 60000)]
@@ -1132,6 +1140,12 @@ namespace Microsoft.Coyote.Tools.Tests
             {
                 this.BeforeMoveFile?.Invoke(sourcePath, targetPath);
                 this.Inner.MoveFile(sourcePath, targetPath);
+            }
+
+            public MoveFileNoReplaceResult MoveFileNoReplace(string sourcePath, string targetPath)
+            {
+                this.BeforeMoveFile?.Invoke(sourcePath, targetPath);
+                return this.Inner.MoveFileNoReplace(sourcePath, targetPath);
             }
 
             public void ReplaceFile(string sourcePath, string targetPath, string backupPath)
