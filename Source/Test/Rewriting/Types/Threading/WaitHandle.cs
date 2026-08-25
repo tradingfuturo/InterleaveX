@@ -7,7 +7,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using Microsoft.Coyote.Runtime;
+using SystemManualResetEventSlim = System.Threading.ManualResetEventSlim;
 using SystemThread = System.Threading.Thread;
+using SystemThreadPool = System.Threading.ThreadPool;
 using SystemTimeout = System.Threading.Timeout;
 using SystemWaitHandle = System.Threading.WaitHandle;
 
@@ -123,6 +125,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
             }
 
+            Resource.ValidateWaitHandles(waitHandles);
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
             {
@@ -179,6 +183,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
             }
 
+            Resource.ValidateWaitHandles(waitHandles);
+
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
             {
@@ -204,6 +210,18 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         {
             Resource.Remove(instance);
             instance.Dispose();
+        }
+
+        /// <summary>
+        /// Installs an instance-scoped callback that is invoked after a wait registration has been attached.
+        /// Used only by regression tests to observe registration without timing sleeps.
+        /// </summary>
+        internal static void SetWaitRegistrationCallbackForTesting(SystemWaitHandle instance, Action callback)
+        {
+            if (Resource.TryFind(instance, out Resource resource))
+            {
+                resource.WaitRegistrationCallback = callback;
+            }
         }
 
         /// <summary>
@@ -253,6 +271,24 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             private readonly HashSet<WaitRegistration> WaitRegistrations;
 
             /// <summary>
+            /// Serializes alias ownership for named wait handles. A named alias has a distinct CLR
+            /// handle but shares this modeled resource with every alias in the same runtime.
+            /// </summary>
+            private readonly object AliasSyncObject;
+
+            private int AliasCount;
+
+            /// <summary>
+            /// Optional instance-scoped regression-test callback invoked after a wait registration is attached.
+            /// </summary>
+            internal Action WaitRegistrationCallback;
+
+            /// <summary>
+            /// Invoked exactly once after the final alias has been removed.
+            /// </summary>
+            internal Action<Resource> LastAliasRemoved;
+
+            /// <summary>
             /// The debug name of this handle.
             /// </summary>
             protected readonly string DebugName;
@@ -269,13 +305,30 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 this.Mode = mode;
                 this.IsSignaled = isSignaled;
                 this.WaitRegistrations = new HashSet<WaitRegistration>();
+                this.AliasSyncObject = new object();
                 this.DebugName = $"{handle.GetType().Name}({this.ResourceId})";
             }
+
+            internal Guid OwnerRuntimeId => this.RuntimeId;
 
             /// <summary>
             /// Adds the specified resource to the cache.
             /// </summary>
-            internal static void Add(Resource handle) => Cache.GetOrAdd(handle.Handle, key => handle);
+            internal static void Add(Resource handle) => handle.AddAlias(handle.Handle);
+
+            /// <summary>
+            /// Associates an additional CLR handle with this modeled resource.
+            /// </summary>
+            internal void AddAlias(SystemWaitHandle handle)
+            {
+                if (Cache.TryAdd(handle, this))
+                {
+                    lock (this.AliasSyncObject)
+                    {
+                        this.AliasCount++;
+                    }
+                }
+            }
 
             /// <summary>
             /// Removes the resource associated with the specified wait handle. from the cache.
@@ -284,7 +337,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             {
                 if (Cache.TryRemove(handle, out Resource resource))
                 {
-                    resource.TearDown();
+                    resource.RemoveAlias();
                 }
             }
 
@@ -299,14 +352,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// </summary>
             internal bool WaitOne(CoyoteRuntime runtime, int millisecondsTimeout)
             {
+                if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
+                {
+                    return this.WaitOneExternally(runtime, millisecondsTimeout);
+                }
+
                 using (runtime.EnterSynchronizedSection())
                 {
                     this.CheckRuntime(runtime);
-                    if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
-                    {
-                        runtime.NotifyUncontrolledSynchronizationInvocation("WaitHandle.WaitOne");
-                    }
-                    else if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
+                    if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
                     {
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Acquire);
                     }
@@ -354,18 +408,19 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// </summary>
             internal static bool WaitAll(CoyoteRuntime runtime, SystemWaitHandle[] waitHandles, int millisecondsTimeout)
             {
+                if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
+                {
+                    return WaitAllExternally(runtime, waitHandles, millisecondsTimeout);
+                }
+
                 using (runtime.EnterSynchronizedSection())
                 {
-                    if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
-                    {
-                        runtime.NotifyUncontrolledSynchronizationInvocation("WaitHandle.WaitAll");
-                    }
-                    else if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
+                    if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
                     {
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Acquire);
                     }
 
-                    Resource[] resources = GetResources(runtime, waitHandles);
+                    Resource[] resources = GetResources(runtime, waitHandles, rejectDuplicateAliases: true);
                     var registration = new WaitRegistration(current, resources, WaitRegistrationKind.All);
                     if (registration.TryComplete())
                     {
@@ -409,19 +464,20 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// </summary>
             internal static int WaitAny(CoyoteRuntime runtime, SystemWaitHandle[] waitHandles, int millisecondsTimeout)
             {
+                if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
+                {
+                    return WaitAnyExternally(runtime, waitHandles, millisecondsTimeout);
+                }
+
                 using (runtime.EnterSynchronizedSection())
                 {
-                    if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
-                    {
-                        runtime.NotifyUncontrolledSynchronizationInvocation("WaitHandle.WaitAny");
-                    }
-                    else if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
+                    if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
                     {
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Acquire);
                     }
 
                     int result = SystemWaitHandle.WaitTimeout;
-                    Resource[] resources = GetResources(runtime, waitHandles);
+                    Resource[] resources = GetResources(runtime, waitHandles, rejectDuplicateAliases: false);
                     var registration = new WaitRegistration(current, resources, WaitRegistrationKind.Any);
                     if (registration.TryComplete())
                     {
@@ -514,6 +570,148 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             }
 
             /// <summary>
+            /// Waits on this resource from a raw CLR thread. The registration and signal reservation
+            /// still happen while holding the runtime lock, but the physical thread blocks only on a
+            /// raw completion gate and finite waits use wall-clock milliseconds.
+            /// </summary>
+            private bool WaitOneExternally(CoyoteRuntime runtime, int millisecondsTimeout)
+            {
+                var sink = new ExternalCompletionSink();
+                WaitRegistration registration = null;
+                try
+                {
+                    using (runtime.EnterSynchronizedSection())
+                    {
+                        this.CheckRuntime(runtime);
+                        runtime.NotifyUncontrolledSynchronizationInvocation("WaitHandle.WaitOne");
+                        registration = new WaitRegistration(sink, new[] { this }, WaitRegistrationKind.One);
+                        if (registration.TryComplete())
+                        {
+                            return true;
+                        }
+
+                        if (millisecondsTimeout is 0)
+                        {
+                            return false;
+                        }
+
+                        registration.Register();
+                    }
+
+                    _ = sink.Wait(millisecondsTimeout);
+                    using (runtime.EnterSynchronizedSection())
+                    {
+                        registration.ThrowIfDisposed();
+                        return registration.IsCompleted;
+                    }
+                }
+                finally
+                {
+                    if (registration != null)
+                    {
+                        using (runtime.EnterSynchronizedSection())
+                        {
+                            registration.Unregister();
+                        }
+                    }
+
+                    sink.Dispose();
+                }
+            }
+
+            private static bool WaitAllExternally(CoyoteRuntime runtime, SystemWaitHandle[] waitHandles,
+                int millisecondsTimeout)
+            {
+                var sink = new ExternalCompletionSink();
+                WaitRegistration registration = null;
+                try
+                {
+                    using (runtime.EnterSynchronizedSection())
+                    {
+                        runtime.NotifyUncontrolledSynchronizationInvocation("WaitHandle.WaitAll");
+                        Resource[] resources = GetResources(runtime, waitHandles, rejectDuplicateAliases: true);
+                        registration = new WaitRegistration(sink, resources, WaitRegistrationKind.All);
+                        if (registration.TryComplete())
+                        {
+                            return true;
+                        }
+
+                        if (millisecondsTimeout is 0)
+                        {
+                            return false;
+                        }
+
+                        registration.Register();
+                    }
+
+                    _ = sink.Wait(millisecondsTimeout);
+                    using (runtime.EnterSynchronizedSection())
+                    {
+                        registration.ThrowIfDisposed();
+                        return registration.IsCompleted;
+                    }
+                }
+                finally
+                {
+                    if (registration != null)
+                    {
+                        using (runtime.EnterSynchronizedSection())
+                        {
+                            registration.Unregister();
+                        }
+                    }
+
+                    sink.Dispose();
+                }
+            }
+
+            private static int WaitAnyExternally(CoyoteRuntime runtime, SystemWaitHandle[] waitHandles,
+                int millisecondsTimeout)
+            {
+                var sink = new ExternalCompletionSink();
+                WaitRegistration registration = null;
+                try
+                {
+                    using (runtime.EnterSynchronizedSection())
+                    {
+                        runtime.NotifyUncontrolledSynchronizationInvocation("WaitHandle.WaitAny");
+                        Resource[] resources = GetResources(runtime, waitHandles, rejectDuplicateAliases: false);
+                        registration = new WaitRegistration(sink, resources, WaitRegistrationKind.Any);
+                        if (registration.TryComplete())
+                        {
+                            return registration.ResultIndex;
+                        }
+
+                        if (millisecondsTimeout is 0)
+                        {
+                            return SystemWaitHandle.WaitTimeout;
+                        }
+
+                        registration.Register();
+                    }
+
+                    _ = sink.Wait(millisecondsTimeout);
+                    using (runtime.EnterSynchronizedSection())
+                    {
+                        registration.ThrowIfDisposed();
+                        return registration.IsCompleted ? registration.ResultIndex : SystemWaitHandle.WaitTimeout;
+                    }
+                }
+                finally
+                {
+                    if (registration != null)
+                    {
+                        using (runtime.EnterSynchronizedSection())
+                        {
+                            registration.Unregister();
+                        }
+                    }
+
+                    sink.Dispose();
+                }
+            }
+
+            /// <summary>
             /// Represents one pending wait and atomically reserves the signals that satisfy it.
             /// </summary>
             private sealed class WaitRegistration
@@ -536,7 +734,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 /// <summary>
                 /// The operation blocked by this registration.
                 /// </summary>
-                private readonly ControlledOperation Operation;
+                private readonly ICompletionSink CompletionSink;
 
                 /// <summary>
                 /// The complete ordered set of resources participating in this wait.
@@ -559,8 +757,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 private bool IsDisposed;
 
                 internal WaitRegistration(ControlledOperation operation, Resource[] resources, WaitRegistrationKind kind)
+                    : this(new ControlledCompletionSink(operation), resources, kind)
                 {
-                    this.Operation = operation;
+                }
+
+                internal WaitRegistration(ICompletionSink completionSink, Resource[] resources, WaitRegistrationKind kind)
+                {
+                    this.CompletionSink = completionSink;
                     this.Resources = resources;
                     this.Kind = kind;
                 }
@@ -581,6 +784,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     }
 
                     this.IsRegistered = true;
+                    this.Resources[0].WaitRegistrationCallback?.Invoke();
                 }
 
                 /// <summary>
@@ -637,7 +841,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
                     // Before registration, the current operation is still enabled and no wake-up is necessary.
                     // Once registered, enabling it and consuming auto-reset signals happen under the same runtime lock.
-                    if (this.IsRegistered && !this.Operation.TryEnable(this.ResourceId))
+                    if (this.IsRegistered && !this.CompletionSink.TryEnable(this.ResourceId))
                     {
                         return false;
                     }
@@ -673,7 +877,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         this.IsDisposed = true;
                         if (this.IsRegistered)
                         {
-                            _ = this.Operation.TryEnable(this.ResourceId);
+                            _ = this.CompletionSink.TryEnable(this.ResourceId);
                         }
                     }
 
@@ -719,9 +923,37 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// <remarks>
             /// It is assumed that this method runs in the scope of the runtime <see cref="SynchronizedSection"/>.
             /// </remarks>
-            private static Resource[] GetResources(CoyoteRuntime runtime, SystemWaitHandle[] waitHandles)
+            internal static void ValidateWaitHandles(SystemWaitHandle[] waitHandles)
+            {
+                if (waitHandles is null)
+                {
+                    throw new ArgumentNullException(nameof(waitHandles));
+                }
+
+                if (waitHandles.Length is 0)
+                {
+                    throw new ArgumentException("The wait handle array must not be empty.", nameof(waitHandles));
+                }
+
+                if (waitHandles.Length > 64)
+                {
+                    throw new NotSupportedException("The number of wait handles must not exceed 64.");
+                }
+
+                foreach (SystemWaitHandle handle in waitHandles)
+                {
+                    if (handle is null)
+                    {
+                        throw new ArgumentNullException(nameof(waitHandles));
+                    }
+                }
+            }
+
+            private static Resource[] GetResources(CoyoteRuntime runtime, SystemWaitHandle[] waitHandles,
+                bool rejectDuplicateAliases)
             {
                 var resources = new Resource[waitHandles.Length];
+                var seenResources = rejectDuplicateAliases ? new HashSet<Resource>() : null;
                 for (int idx = 0; idx < waitHandles.Length; idx++)
                 {
                     if (!TryFind(waitHandles[idx], out Resource resource))
@@ -732,6 +964,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     }
 
                     resource.CheckRuntime(runtime);
+                    if (rejectDuplicateAliases && !seenResources.Add(resource))
+                    {
+                        throw new DuplicateWaitObjectException();
+                    }
+
                     resources[idx] = resource;
                 }
 
@@ -749,6 +986,76 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     runtime.NotifyAssertionFailure($"Accessing '{this.DebugName}' that was created in a " +
                         $"previous test iteration with runtime id '{this.RuntimeId}':\n{trace}");
                 }
+            }
+
+            private void RemoveAlias()
+            {
+                bool isLastAlias;
+                lock (this.AliasSyncObject)
+                {
+                    this.AliasCount--;
+                    isLastAlias = this.AliasCount is 0;
+                }
+
+                if (isLastAlias)
+                {
+                    this.TearDown();
+                    this.LastAliasRemoved?.Invoke(this);
+                }
+            }
+
+            /// <summary>
+            /// Unifies modeled and raw-thread completion paths. Completion is always decided under
+            /// the runtime lock; only the sink determines how the waiter is made runnable.
+            /// </summary>
+            private interface ICompletionSink
+            {
+                bool TryEnable(Guid resourceId);
+            }
+
+            private sealed class ControlledCompletionSink : ICompletionSink
+            {
+                private readonly ControlledOperation Operation;
+
+                internal ControlledCompletionSink(ControlledOperation operation) => this.Operation = operation;
+
+                public bool TryEnable(Guid resourceId) => this.Operation.TryEnable(resourceId);
+            }
+
+            private sealed class ExternalCompletionSink : ICompletionSink, IDisposable
+            {
+                private readonly SystemManualResetEventSlim Gate = new SystemManualResetEventSlim(false);
+                private bool IsEnabled;
+
+                public bool TryEnable(Guid resourceId)
+                {
+                    if (this.IsEnabled)
+                    {
+                        return false;
+                    }
+
+                    this.IsEnabled = true;
+                    _ = SystemThreadPool.UnsafeQueueUserWorkItem(
+                        _ => this.Signal(), null);
+                    return true;
+                }
+
+                private void Signal()
+                {
+                    try
+                    {
+                        this.Gate.Set();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // A finite waiter can time out and dispose its raw gate before the queued
+                        // signal runs. Its modeled result was already decided under the runtime lock.
+                    }
+                }
+
+                internal bool Wait(int millisecondsTimeout) => this.Gate.Wait(millisecondsTimeout);
+
+                public void Dispose() => this.Gate.Dispose();
             }
 
             /// <summary>
