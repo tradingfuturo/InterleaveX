@@ -406,6 +406,56 @@ namespace Microsoft.Coyote.BugFinding.Tests
         }
 
         [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestCancellationAfterVirtualTimerDeadlinePublicationDoesNotAdvanceTime()
+        {
+            if (this.SchedulingPolicy is not SchedulingPolicy.Interleaving)
+            {
+                return;
+            }
+
+            this.Test(async () =>
+            {
+                using var source = new CancellationTokenSource();
+                CoyoteRuntime runtime = CoyoteRuntime.Current;
+                runtime.VirtualTimerDeadlinePublishedCallback = _ => source.Cancel();
+                Task canceled;
+                try
+                {
+                    canceled = Task.Delay(TimeSpan.FromMilliseconds(10), source.Token);
+                }
+                finally
+                {
+                    runtime.VirtualTimerDeadlinePublishedCallback = null;
+                }
+
+                Specification.Assert(canceled.IsCanceled,
+                    "Cancellation after virtual deadline publication did not complete the delay immediately.");
+                OperationCanceledException failure = null;
+                try
+                {
+                    await canceled;
+                }
+                catch (OperationCanceledException ex)
+                {
+                    failure = ex;
+                }
+
+                Specification.Assert(failure != null && failure.CancellationToken == source.Token,
+                    "Cancellation after virtual deadline publication did not preserve its token.");
+                Specification.Assert(runtime.GetVirtualTimeTicksForTesting() is 0,
+                    "A canceled timer advanced virtual time after publishing its deadline.");
+
+                await Task.Delay(TimeSpan.FromMilliseconds(5));
+                Specification.Assert(runtime.GetVirtualTimeTicksForTesting() ==
+                    TimeSpan.FromMilliseconds(5).Ticks,
+                    "A canceled timer shifted the deadline of a later delay.");
+            }, configuration: this.GetConfiguration()
+                .WithTestingIterations(1)
+                .WithPartiallyControlledConcurrencyAllowed(false));
+        }
+
+        [Fact(Timeout = 5000)]
         [Trait("Category", "VirtualTimeRemediation")]
         public void TestFractionalTaskDelaysUseBclMillisecondTruncation()
         {
