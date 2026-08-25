@@ -192,6 +192,61 @@ namespace Microsoft.Coyote.BugFinding.Tests
             });
         }
 
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestSynchronousCancellationWinsAReleaseRaceWhenItIsObservedFirst()
+        {
+            this.Test(async () =>
+            {
+                using var semaphore = new SemaphoreSlim(0, 1);
+                using var cancellation = new CancellationTokenSource();
+                var queued = new TaskCompletionSource<bool>();
+                ControlledSemaphoreSlim.SetWaiterQueuedCallbackForTesting(
+                    semaphore, () => queued.TrySetResult(true));
+                Task wait = Task.Run(() => semaphore.Wait(cancellation.Token));
+
+                await queued.Task;
+                cancellation.Cancel();
+                semaphore.Release();
+                bool cancelled = false;
+                try
+                {
+                    await wait;
+                }
+                catch (OperationCanceledException)
+                {
+                    cancelled = true;
+                }
+
+                Specification.Assert(cancelled,
+                    "Synchronous cancellation observed before Release did not win the wait race.");
+                Specification.Assert(semaphore.CurrentCount is 1,
+                    "A synchronously cancelled waiter consumed the following release.");
+            });
+        }
+
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestSynchronousReleaseWinsACancellationRaceWhenItIsObservedFirst()
+        {
+            this.Test(async () =>
+            {
+                using var semaphore = new SemaphoreSlim(0, 1);
+                using var cancellation = new CancellationTokenSource();
+                var queued = new TaskCompletionSource<bool>();
+                ControlledSemaphoreSlim.SetWaiterQueuedCallbackForTesting(
+                    semaphore, () => queued.TrySetResult(true));
+                Task wait = Task.Run(() => semaphore.Wait(cancellation.Token));
+
+                await queued.Task;
+                semaphore.Release();
+                cancellation.Cancel();
+                await wait;
+                Specification.Assert(semaphore.CurrentCount is 0,
+                    "The synchronous waiter did not retain the release that won its cancellation race.");
+            });
+        }
+
         [Theory(Timeout = 5000)]
         [InlineData(0)]
         [InlineData(-1)]

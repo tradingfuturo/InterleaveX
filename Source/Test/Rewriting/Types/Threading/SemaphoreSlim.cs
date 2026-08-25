@@ -288,9 +288,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             private readonly Queue<ControlledOperation> PausedOperations;
 
             /// <summary>
-            /// Synchronous waiters that have won a release race and already own a reserved token.
+            /// Synchronous waiters whose cancellation callback won before a release woke them.
             /// </summary>
-            private readonly HashSet<ControlledOperation> GrantedOperations;
+            private readonly HashSet<ControlledOperation> CancelledOperations;
 
             /// <summary>
             /// Queue of completion sources that operations are asynchronously awaiting to get released.
@@ -331,7 +331,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 this.RuntimeId = runtime.Id;
                 this.ResourceId = Guid.NewGuid();
                 this.PausedOperations = new Queue<ControlledOperation>();
-                this.GrantedOperations = new HashSet<ControlledOperation>();
+                this.CancelledOperations = new HashSet<ControlledOperation>();
                 this.AsyncAwaiters = new Queue<SystemTasks.TaskCompletionSource<bool>>();
                 this.AsyncCancellationRegistrations =
                     new Dictionary<SystemTasks.TaskCompletionSource<bool>, SystemCancellationTokenRegistration>();
@@ -367,9 +367,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                             runtime.CreateVirtualDeadline(TimeSpan.FromMilliseconds(millisecondsTimeout));
                         while (true)
                         {
-                            if (this.GrantedOperations.Remove(current))
+                            if (this.CancelledOperations.Remove(current))
                             {
-                                return true;
+                                cancellationToken.ThrowIfCancellationRequested();
                             }
 
                             if (this.LockCount > 0)
@@ -406,11 +406,6 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                             this.PausedOperations.Enqueue(current);
                             this.WaiterQueuedCallback?.Invoke();
                             runtime.ScheduleNextOperation(current, SchedulingPointType.Pause);
-                            if (this.GrantedOperations.Remove(current))
-                            {
-                                return true;
-                            }
-
                             if (current.WakeReason is OperationWakeReason.Deadline)
                             {
                                 return false;
@@ -425,6 +420,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         if (current != null)
                         {
                             this.RemovePausedOperation(current);
+                            this.CancelledOperations.Remove(current);
                         }
                     }
 
@@ -572,10 +568,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         }
                     }
 
-                    // Reserve tokens for synchronous waiters before enabling them. This makes a
-                    // release/cancellation/timeout race have one winner rather than letting a
-                    // later cancellation consume an already-granted release.
-                    while (remainingReleaseCount > 0 && this.PausedOperations.Count > 0)
+                    // Wake synchronous waiters without reserving a token for a specific operation.
+                    // SemaphoreSlim permits a waiter or a concurrent barging Wait to acquire the
+                    // released count; the awakened waiter rechecks LockCount under the runtime lock.
+                    int synchronousWakeCount = remainingReleaseCount;
+                    while (synchronousWakeCount > 0 && this.PausedOperations.Count > 0)
                     {
                         ControlledOperation operation = this.PausedOperations.Dequeue();
                         if (operation.Status is not (OperationStatus.PausedOnAllResources or
@@ -586,10 +583,10 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                             continue;
                         }
 
-                        this.GrantedOperations.Add(operation);
-                        lockCount--;
-                        remainingReleaseCount--;
-                        operation.TryEnable(this.ResourceId);
+                        if (operation.TryEnable(this.ResourceId))
+                        {
+                            synchronousWakeCount--;
+                        }
                     }
 
                     this.LockCount = lockCount;
@@ -610,13 +607,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             {
                 using (runtime.EnterSynchronizedSection())
                 {
-                    if (this.GrantedOperations.Contains(operation))
-                    {
-                        return;
-                    }
-
                     this.RemovePausedOperation(operation);
-                    operation.TryEnable(this.ResourceId);
+                    if (operation.TryEnable(this.ResourceId))
+                    {
+                        this.CancelledOperations.Add(operation);
+                    }
                 }
             }
 
