@@ -210,6 +210,17 @@ namespace Microsoft.Coyote.BugFinding.Tests
         }
 
         [Fact(Timeout = 5000)]
+        public void TestFiniteWaitAllRejectsLaterNullTask()
+        {
+            this.TestWithException<ArgumentException>(() =>
+            {
+                var pending = new TaskCompletionSource<bool>();
+                Task[] tasks = { pending.Task, null };
+                _ = Task.WaitAll(tasks, 0);
+            }, configuration: this.GetConfiguration().WithTestingIterations(1), replay: true);
+        }
+
+        [Fact(Timeout = 5000)]
         public void TestWaitAllWithExceptionThrown()
         {
             this.TestWithException<InvalidOperationException>(() =>
