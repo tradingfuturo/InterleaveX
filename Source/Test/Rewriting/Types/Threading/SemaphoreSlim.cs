@@ -8,13 +8,16 @@ using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Runtime.CompilerServices;
 using SystemCancellationToken = System.Threading.CancellationToken;
 using SystemCancellationTokenRegistration = System.Threading.CancellationTokenRegistration;
+using SystemManualResetEventSlim = System.Threading.ManualResetEventSlim;
 using SystemSemaphoreSlim = System.Threading.SemaphoreSlim;
 using SystemTask = System.Threading.Tasks.Task;
 using SystemTaskCreationOptions = System.Threading.Tasks.TaskCreationOptions;
 using SystemTasks = System.Threading.Tasks;
 using SystemThread = System.Threading.Thread;
 using SystemThreading = System.Threading;
+using SystemThreadPool = System.Threading.ThreadPool;
 using SystemTimeout = System.Threading.Timeout;
+using SystemTimer = System.Threading.Timer;
 using SystemWaitHandle = System.Threading.WaitHandle;
 
 namespace Microsoft.Coyote.Rewriting.Types.Threading
@@ -60,6 +63,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         {
             if (instance is Wrapper wrapper)
             {
+                _ = wrapper.GetRuntime();
                 var runtime = CoyoteRuntime.Current;
                 if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
                 {
@@ -83,7 +87,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         {
             if (instance is Wrapper wrapper)
             {
-                return wrapper.LockCount;
+                return wrapper.CurrentCount;
             }
 
             return instance.CurrentCount;
@@ -293,6 +297,19 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             private readonly HashSet<ControlledOperation> CancelledOperations;
 
             /// <summary>
+            /// Permits reserved for synchronous controlled waiters. Reservation prevents a later
+            /// async waiter from consuming the permit before the scheduler resumes the sync waiter.
+            /// </summary>
+            private readonly HashSet<ControlledOperation> GrantedOperations;
+
+            /// <summary>
+            /// Raw CLR-thread waiters. They participate in the same runtime-locked permit
+            /// accounting but block or complete through raw gates and TCS instances.
+            /// </summary>
+            private readonly Queue<ExternalWaiter> ExternalSynchronousWaiters;
+            private readonly Queue<ExternalWaiter> ExternalAsyncAwaiters;
+
+            /// <summary>
             /// Queue of completion sources that operations are asynchronously awaiting to get released.
             /// </summary>
             private readonly Queue<SystemTasks.TaskCompletionSource<bool>> AsyncAwaiters;
@@ -332,6 +349,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 this.ResourceId = Guid.NewGuid();
                 this.PausedOperations = new Queue<ControlledOperation>();
                 this.CancelledOperations = new HashSet<ControlledOperation>();
+                this.GrantedOperations = new HashSet<ControlledOperation>();
+                this.ExternalSynchronousWaiters = new Queue<ExternalWaiter>();
+                this.ExternalAsyncAwaiters = new Queue<ExternalWaiter>();
                 this.AsyncAwaiters = new Queue<SystemTasks.TaskCompletionSource<bool>>();
                 this.AsyncCancellationRegistrations =
                     new Dictionary<SystemTasks.TaskCompletionSource<bool>, SystemCancellationTokenRegistration>();
@@ -346,7 +366,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             internal bool Enter(int millisecondsTimeout, SystemCancellationToken cancellationToken)
             {
                 CoyoteRuntime runtime = this.GetRuntime();
-                ControlledOperation current = null;
+                if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
+                {
+                    return this.EnterExternally(runtime, millisecondsTimeout, cancellationToken);
+                }
+
                 SystemCancellationTokenRegistration registration = default;
                 bool hasRegistration = false;
                 try
@@ -354,11 +378,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     using (runtime.EnterSynchronizedSection())
                     {
                         this.ThrowIfDisposed();
-                        if (!runtime.TryGetExecutingOperation(out current))
-                        {
-                            runtime.NotifyUncontrolledSynchronizationInvocation("SemaphoreSlim.Wait");
-                        }
-                        else if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
+                        if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
                         {
                             runtime.ScheduleNextOperation(current, SchedulingPointType.Acquire);
                         }
@@ -370,6 +390,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                             if (this.CancelledOperations.Remove(current))
                             {
                                 cancellationToken.ThrowIfCancellationRequested();
+                            }
+
+                            if (this.GrantedOperations.Remove(current))
+                            {
+                                return true;
                             }
 
                             if (this.LockCount > 0)
@@ -435,14 +460,15 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 SystemCancellationToken cancellationToken)
             {
                 CoyoteRuntime runtime = this.GetRuntime();
+                if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
+                {
+                    return this.EnterAsyncExternally(runtime, millisecondsTimeout, cancellationToken);
+                }
+
                 using (runtime.EnterSynchronizedSection())
                 {
                     this.ThrowIfDisposed();
-                    if (!runtime.TryGetExecutingOperation(out ControlledOperation current))
-                    {
-                        runtime.NotifyUncontrolledSynchronizationInvocation("SemaphoreSlim.WaitAsync");
-                    }
-                    else if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
+                    if (runtime.Configuration.IsLockAccessRaceCheckingEnabled)
                     {
                         runtime.ScheduleNextOperation(current, SchedulingPointType.Acquire);
                     }
@@ -456,8 +482,10 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
                         if (millisecondsTimeout is SystemTimeout.Infinite)
                         {
-                            var tcs = new SystemTasks.TaskCompletionSource<bool>(
-                                SystemTaskCreationOptions.RunContinuationsAsynchronously);
+                            // This is a controlled waiter: completing inline lets the Coyote state-machine
+                            // continuation become runnable without escaping to an uncontrolled thread pool.
+                            // Only external async waiters use RunContinuationsAsynchronously below.
+                            var tcs = new SystemTasks.TaskCompletionSource<bool>();
                             this.AsyncAwaiters.Enqueue(tcs);
                             this.AsyncCancellationRegistrations.Add(tcs, default);
                             if (cancellationToken.CanBeCanceled)
@@ -551,8 +579,40 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     int lockCount = previousCount + releaseCount;
                     int remainingReleaseCount = releaseCount;
 
-                    // Release asynchronous awaiters first. Completion reserves exactly one token;
-                    // cancellation and release race under the same runtime synchronization lock.
+                    // Synchronous waiters are granted before asynchronous ones. The grant reserves
+                    // the permit under the runtime lock, so cancellation, timeout and a later async
+                    // WaitAsync cannot steal a permit that already won this race.
+                    while (remainingReleaseCount > 0 && this.PausedOperations.Count > 0)
+                    {
+                        ControlledOperation operation = this.PausedOperations.Dequeue();
+                        if (operation.Status is not (OperationStatus.PausedOnAllResources or
+                            OperationStatus.PausedOnResourceOrDelay))
+                        {
+                            // Cancellation or the absolute deadline already won and made this
+                            // waiter runnable. Do not let a later release overwrite that outcome.
+                            continue;
+                        }
+
+                        if (operation.TryEnable(this.ResourceId))
+                        {
+                            this.GrantedOperations.Add(operation);
+                            lockCount--;
+                            remainingReleaseCount--;
+                        }
+                    }
+
+                    while (remainingReleaseCount > 0 && this.ExternalSynchronousWaiters.Count > 0)
+                    {
+                        ExternalWaiter waiter = this.ExternalSynchronousWaiters.Dequeue();
+                        if (waiter.TryGrant())
+                        {
+                            lockCount--;
+                            remainingReleaseCount--;
+                        }
+                    }
+
+                    // Async completions also reserve a permit, but only after all synchronous
+                    // waiters observed at this release have had a chance to acquire it.
                     while (remainingReleaseCount > 0 && this.AsyncAwaiters.Count > 0)
                     {
                         var tcs = this.AsyncAwaiters.Dequeue();
@@ -568,24 +628,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                         }
                     }
 
-                    // Wake synchronous waiters without reserving a token for a specific operation.
-                    // SemaphoreSlim permits a waiter or a concurrent barging Wait to acquire the
-                    // released count; the awakened waiter rechecks LockCount under the runtime lock.
-                    int synchronousWakeCount = remainingReleaseCount;
-                    while (synchronousWakeCount > 0 && this.PausedOperations.Count > 0)
+                    while (remainingReleaseCount > 0 && this.ExternalAsyncAwaiters.Count > 0)
                     {
-                        ControlledOperation operation = this.PausedOperations.Dequeue();
-                        if (operation.Status is not (OperationStatus.PausedOnAllResources or
-                            OperationStatus.PausedOnResourceOrDelay))
+                        ExternalWaiter waiter = this.ExternalAsyncAwaiters.Dequeue();
+                        if (waiter.TryGrant())
                         {
-                            // Cancellation or the absolute deadline already won and made this
-                            // waiter runnable. Do not let a later release overwrite that outcome.
-                            continue;
-                        }
-
-                        if (operation.TryEnable(this.ResourceId))
-                        {
-                            synchronousWakeCount--;
+                            lockCount--;
+                            remainingReleaseCount--;
                         }
                     }
 
@@ -607,6 +656,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             {
                 using (runtime.EnterSynchronizedSection())
                 {
+                    if (this.GrantedOperations.Contains(operation))
+                    {
+                        return;
+                    }
+
                     this.RemovePausedOperation(operation);
                     if (operation.TryEnable(this.ResourceId))
                     {
@@ -627,6 +681,145 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     {
                         Remove(this.AsyncAwaiters, waiter);
                         waiter.TrySetCanceled(cancellationToken);
+                    }
+                }
+            }
+
+            /// <summary>
+            /// Waits from a raw CLR thread using a wall-clock completion gate. The modeled count,
+            /// cancellation and release transitions are still all decided under the runtime lock.
+            /// </summary>
+            private bool EnterExternally(CoyoteRuntime runtime, int millisecondsTimeout,
+                SystemCancellationToken cancellationToken)
+            {
+                var waiter = new ExternalWaiter(isAsync: false);
+                try
+                {
+                    using (runtime.EnterSynchronizedSection())
+                    {
+                        this.ThrowIfDisposed();
+                        runtime.NotifyUncontrolledSynchronizationInvocation("SemaphoreSlim.Wait");
+                        if (this.LockCount > 0)
+                        {
+                            this.LockCount--;
+                            return true;
+                        }
+
+                        if (millisecondsTimeout is 0)
+                        {
+                            return false;
+                        }
+
+                        this.ExternalSynchronousWaiters.Enqueue(waiter);
+                    }
+
+                    this.WaiterQueuedCallback?.Invoke();
+                    waiter.RegisterCancellation(
+                        () => this.CancelExternalWaiter(runtime, waiter, cancellationToken), cancellationToken);
+                    if (!waiter.Wait(millisecondsTimeout))
+                    {
+                        this.TimeoutExternalWaiter(runtime, waiter);
+                    }
+
+                    using (runtime.EnterSynchronizedSection())
+                    {
+                        if (waiter.IsGranted)
+                        {
+                            return true;
+                        }
+
+                        if (waiter.IsCancelled)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                        }
+
+                        return false;
+                    }
+                }
+                finally
+                {
+                    using (runtime.EnterSynchronizedSection())
+                    {
+                        RemoveExternalWaiter(this.ExternalSynchronousWaiters, waiter);
+                    }
+
+                    waiter.Dispose();
+                }
+            }
+
+            /// <summary>
+            /// Returns a raw task for an uncontrolled WaitAsync. Its continuations are forced off
+            /// the release/cancellation callback thread with RunContinuationsAsynchronously.
+            /// </summary>
+            private SystemTasks.Task<bool> EnterAsyncExternally(CoyoteRuntime runtime, int millisecondsTimeout,
+                SystemCancellationToken cancellationToken)
+            {
+                var waiter = new ExternalWaiter(isAsync: true);
+                using (runtime.EnterSynchronizedSection())
+                {
+                    this.ThrowIfDisposed();
+                    runtime.NotifyUncontrolledSynchronizationInvocation("SemaphoreSlim.WaitAsync");
+                    if (this.LockCount > 0)
+                    {
+                        this.LockCount--;
+                        return Tasks.Task.FromResult(true);
+                    }
+
+                    if (millisecondsTimeout is 0)
+                    {
+                        return Tasks.Task.FromResult(false);
+                    }
+
+                    this.ExternalAsyncAwaiters.Enqueue(waiter);
+                }
+
+                this.WaiterQueuedCallback?.Invoke();
+                waiter.RegisterCancellation(
+                    () => this.CancelExternalWaiter(runtime, waiter, cancellationToken), cancellationToken);
+                waiter.StartTimeout(millisecondsTimeout, () => this.TimeoutExternalWaiter(runtime, waiter));
+                return waiter.Task;
+            }
+
+            private void CancelExternalWaiter(CoyoteRuntime runtime, ExternalWaiter waiter,
+                SystemCancellationToken cancellationToken)
+            {
+                using (runtime.EnterSynchronizedSection())
+                {
+                    if (!waiter.TryCancel())
+                    {
+                        return;
+                    }
+
+                    RemoveExternalWaiter(this.ExternalSynchronousWaiters, waiter);
+                    RemoveExternalWaiter(this.ExternalAsyncAwaiters, waiter);
+                    waiter.CompleteCancellation(cancellationToken);
+                }
+            }
+
+            private void TimeoutExternalWaiter(CoyoteRuntime runtime, ExternalWaiter waiter)
+            {
+                using (runtime.EnterSynchronizedSection())
+                {
+                    if (!waiter.TryTimeout())
+                    {
+                        return;
+                    }
+
+                    RemoveExternalWaiter(this.ExternalSynchronousWaiters, waiter);
+                    RemoveExternalWaiter(this.ExternalAsyncAwaiters, waiter);
+                    waiter.CompleteTimeout();
+                }
+            }
+
+            private static void RemoveExternalWaiter(Queue<ExternalWaiter> queue, ExternalWaiter waiter)
+            {
+                int count = queue.Count;
+                for (int idx = 0; idx < count; idx++)
+                {
+                    ExternalWaiter candidate = queue.Dequeue();
+                    if (candidate != waiter)
+                    {
+                        queue.Enqueue(candidate);
                     }
                 }
             }
@@ -655,10 +848,154 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                 }
             }
 
+            internal new int CurrentCount
+            {
+                get
+                {
+                    CoyoteRuntime runtime = this.GetRuntime();
+                    using (runtime.EnterSynchronizedSection())
+                    {
+                        return this.LockCount;
+                    }
+                }
+            }
+
+            private sealed class ExternalWaiter : IDisposable
+            {
+                private readonly SystemManualResetEventSlim Gate;
+                private readonly SystemTasks.TaskCompletionSource<bool> CompletionSource;
+                private SystemCancellationTokenRegistration CancellationRegistration;
+                private SystemTimer TimeoutTimer;
+
+                internal bool IsGranted { get; private set; }
+                internal bool IsCancelled { get; private set; }
+                private bool IsTimedOut;
+
+                internal SystemTasks.Task<bool> Task => this.CompletionSource.Task;
+
+                internal ExternalWaiter(bool isAsync)
+                {
+                    if (isAsync)
+                    {
+                        this.CompletionSource = new SystemTasks.TaskCompletionSource<bool>(
+                            SystemTaskCreationOptions.RunContinuationsAsynchronously);
+                    }
+                    else
+                    {
+                        this.Gate = new SystemManualResetEventSlim(false);
+                    }
+                }
+
+                internal bool Wait(int millisecondsTimeout) => this.Gate.Wait(millisecondsTimeout);
+
+                internal void RegisterCancellation(Action callback, SystemCancellationToken cancellationToken)
+                {
+                    if (cancellationToken.CanBeCanceled)
+                    {
+                        this.CancellationRegistration = cancellationToken.Register(callback);
+                    }
+                }
+
+                internal void StartTimeout(int millisecondsTimeout, Action callback)
+                {
+                    if (millisecondsTimeout is not SystemTimeout.Infinite)
+                    {
+                        this.TimeoutTimer = new SystemTimer(_ => callback(), null, millisecondsTimeout,
+                            SystemTimeout.Infinite);
+                    }
+                }
+
+                internal bool TryGrant()
+                {
+                    if (this.IsGranted || this.IsCancelled || this.IsTimedOut)
+                    {
+                        return false;
+                    }
+
+                    this.IsGranted = true;
+                    this.QueueCompletion();
+                    return true;
+                }
+
+                internal bool TryCancel()
+                {
+                    if (this.IsGranted || this.IsCancelled || this.IsTimedOut)
+                    {
+                        return false;
+                    }
+
+                    this.IsCancelled = true;
+                    return true;
+                }
+
+                internal void CompleteCancellation(SystemCancellationToken cancellationToken)
+                {
+                    this.CompletionCancellationToken = cancellationToken;
+                    this.QueueCompletion();
+                }
+
+                internal bool TryTimeout()
+                {
+                    if (this.IsGranted || this.IsCancelled || this.IsTimedOut)
+                    {
+                        return false;
+                    }
+
+                    this.IsTimedOut = true;
+                    return true;
+                }
+
+                internal void CompleteTimeout()
+                {
+                    this.QueueCompletion();
+                }
+
+                private SystemCancellationToken CompletionCancellationToken;
+
+                private void QueueCompletion() =>
+                    _ = SystemThreadPool.UnsafeQueueUserWorkItem(_ => this.Complete(), null);
+
+                private void Complete()
+                {
+                    try
+                    {
+                        this.Gate?.Set();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // A finite synchronous waiter can dispose its raw gate before this queued
+                        // completion runs; its modeled outcome was already fixed under the runtime lock.
+                    }
+
+                    if (this.IsGranted)
+                    {
+                        _ = this.CompletionSource?.TrySetResult(true);
+                    }
+                    else if (this.IsCancelled)
+                    {
+                        _ = this.CompletionSource?.TrySetCanceled(this.CompletionCancellationToken);
+                    }
+                    else if (this.IsTimedOut)
+                    {
+                        _ = this.CompletionSource?.TrySetResult(false);
+                    }
+
+                    this.CancellationRegistration.Dispose();
+                    this.TimeoutTimer?.Dispose();
+                }
+
+                public void Dispose()
+                {
+                    this.CancellationRegistration.Dispose();
+                    this.TimeoutTimer?.Dispose();
+                    this.Gate?.Dispose();
+                }
+            }
+
             /// <summary>
             /// Returns the current runtime, asserting that it is the same runtime that created this resource.
             /// </summary>
-            private CoyoteRuntime GetRuntime()
+            internal CoyoteRuntime GetRuntime()
             {
                 var runtime = CoyoteRuntime.Current;
                 if (runtime.Id != this.RuntimeId)
