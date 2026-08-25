@@ -310,7 +310,34 @@ namespace Microsoft.Coyote.Tools.Tests
 
         [Fact(Timeout = 5000)]
         [Trait("Category", "RewritingRemediation")]
-        public void TestRecoveryRemovesInterruptedMissingTargetPublication()
+        public void TestMissingTargetPublicationRacePreservesByteIdenticalExternalFile()
+        {
+            string staged = Out("staged.txt");
+            string target = Out("target.txt");
+            var fileSystem = new InMemoryFileSystem()
+                .WithDirectory(Out())
+                .WithFile(staged, "staged");
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(
+                fileSystem, Out());
+            fileSystem.BeforeMoveFile = (_, destination) =>
+            {
+                if (string.Equals(destination, target, StringComparison.Ordinal))
+                {
+                    fileSystem.WithFile(target, "staged");
+                }
+            };
+
+            Assert.Throws<IOException>(() => journal.Publish(staged, target, null));
+            journal.Restore();
+            journal.Complete();
+
+            Assert.Equal("staged", fileSystem.ReadAllText(target));
+            Assert.Equal("staged", fileSystem.ReadAllText(staged));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestRecoveryRetainsInterruptedMissingTargetPublicationWithUnknownMoveResult()
         {
             string staged = Out("staged.txt");
             string target = Out("target.txt");
@@ -330,10 +357,47 @@ namespace Microsoft.Coyote.Tools.Tests
 
             Assert.Throws<IOException>(() => journal.Publish(staged, target, null));
             fileSystem.BeforeReplaceFile = null;
-            Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out());
+            IOException error = Assert.Throws<IOException>(() =>
+                Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out()));
 
-            Assert.False(fileSystem.FileExists(target));
-            Assert.Empty(Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
+            Assert.Contains("unknown", error.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("staged", fileSystem.ReadAllText(target));
+            Assert.Single(Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
+                fileSystem, Out()));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestLegacyPendingPublicationWithNoMoveResultRemainsAmbiguous()
+        {
+            string staged = Out("staged.txt");
+            string target = Out("target.txt");
+            var fileSystem = new InMemoryFileSystem()
+                .WithDirectory(Out())
+                .WithFile(staged, "staged");
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(
+                fileSystem, Out());
+            int replacements = 0;
+            fileSystem.BeforeReplaceFile = (_, _, _) =>
+            {
+                if (++replacements is 2)
+                {
+                    throw new IOException("Simulated result-record interruption.");
+                }
+            };
+
+            Assert.Throws<IOException>(() => journal.Publish(staged, target, null));
+            fileSystem.BeforeReplaceFile = null;
+            string manifestPath = Path.Combine(journal.BackupDirectory, "journal.json");
+            fileSystem.WriteAllText(manifestPath, fileSystem.ReadAllText(manifestPath)
+                .Replace("\"Version\": 6", "\"Version\": 4", StringComparison.Ordinal));
+
+            IOException error = Assert.Throws<IOException>(() =>
+                Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out()));
+
+            Assert.Contains("legacy", error.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("staged", fileSystem.ReadAllText(target));
+            Assert.Single(Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
                 fileSystem, Out()));
         }
 
@@ -363,15 +427,20 @@ namespace Microsoft.Coyote.Tools.Tests
 
             IOException error = Assert.Throws<IOException>(() =>
                 Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out()));
-            Assert.Contains("journal-owned", error.ToString());
+            Assert.Contains("unknown", error.ToString(), StringComparison.OrdinalIgnoreCase);
             Assert.Equal("external", fileSystem.ReadAllText(target));
             Assert.Single(Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
                 fileSystem, Out()));
         }
 
-        [Fact(Timeout = 5000)]
+        [Theory(Timeout = 5000)]
+        [InlineData(1)]
+        [InlineData(2)]
+        [InlineData(3)]
+        [InlineData(4)]
+        [InlineData(5)]
         [Trait("Category", "RewritingRemediation")]
-        public void TestSchemaOneJournalRemainsRecoverable()
+        public void TestLegacySchemaJournalRemainsRecoverable(int version)
         {
             string target = Out("existing.txt");
             var fileSystem = new InMemoryFileSystem()
@@ -383,7 +452,7 @@ namespace Microsoft.Coyote.Tools.Tests
             fileSystem.WriteAllText(target, "after");
             string manifestPath = Path.Combine(journal.BackupDirectory, "journal.json");
             fileSystem.WriteAllText(manifestPath, fileSystem.ReadAllText(manifestPath)
-                .Replace("\"Version\": 4", "\"Version\": 1", StringComparison.Ordinal)
+                .Replace("\"Version\": 6", $"\"Version\": {version}", StringComparison.Ordinal)
                 .Replace(",\n  \"PendingPublications\": []", string.Empty,
                     StringComparison.Ordinal));
 
@@ -472,8 +541,38 @@ namespace Microsoft.Coyote.Tools.Tests
         }
 
         [Fact(Timeout = 5000)]
+        [Trait("Category", "RewritingRemediation")]
+        public void TestRecoveryRestoresCapturedPreReplaceRaceAfterInspectionCrash()
+        {
+            string staged = Out("staged.txt");
+            string target = Out("target.txt");
+            var inner = new InMemoryFileSystem()
+                .WithDirectory(Out())
+                .WithFile(staged, "replacement")
+                .WithFile(target, "original");
+            var fileSystem = new RejectingTargetWriteFileSystem(inner, target)
+            {
+                BeforeTargetReplace = () => inner.WriteAllText(target, "external"),
+                ThrowAfterPublicationReplaceInspection = true
+            };
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(fileSystem, Out());
+            IFileEntry targetEntry = inner.GetFile(target);
+            var expected = new Microsoft.Coyote.Rewriting.MirroredFile(
+                targetEntry.Length, targetEntry.LastWriteTimeUtc,
+                Microsoft.Coyote.Rewriting.RewritingCacheValidator.ComputeFileFingerprint(inner, target));
+
+            Assert.Throws<IOException>(() => journal.Publish(staged, target, expected));
+
+            Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out());
+
+            Assert.Equal("external", inner.ReadAllText(target));
+            Assert.Empty(Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
+                fileSystem, Out()));
+        }
+
+        [Fact(Timeout = 5000)]
         [Trait("Category", "ReviewRemediation")]
-        public void TestNewTargetPublicationRollsBackWhenMoveReportsPostEffectFailure()
+        public void TestNewTargetPublicationRetainsJournalWhenMoveResultIsUnknown()
         {
             string staged = Out("staged.txt");
             string target = Out("target.txt");
@@ -488,12 +587,13 @@ namespace Microsoft.Coyote.Tools.Tests
 
             Assert.Throws<IOException>(() => journal.Publish(staged, target, null));
 
-            // The move already published the target before reporting failure. Rollback must still
-            // recognize those journal-owned bytes and remove them.
-            journal.Restore();
-            journal.Complete();
+            // A failure after a move can leave a byte-identical target while offering no durable
+            // ownership proof. Recovery must retain the journal instead of deleting that target.
+            IOException error = Assert.Throws<IOException>(() => journal.Restore());
 
-            Assert.False(inner.FileExists(target));
+            Assert.Contains("unknown", error.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("replacement", inner.ReadAllText(target));
+            Assert.True(inner.DirectoryExists(journal.BackupDirectory));
         }
 
         [Fact(Timeout = 5000)]
@@ -589,6 +689,20 @@ namespace Microsoft.Coyote.Tools.Tests
                 }
             }
 
+            public MoveFileNoReplaceResult MoveFileNoReplace(string sourcePath, string targetPath)
+            {
+                if (this.ThrowAfterMove && string.Equals(
+                    Path.GetFullPath(targetPath), this.Target, StringComparison.OrdinalIgnoreCase))
+                {
+                    this.ThrowAfterMove = false;
+                    this.Inner.MoveFile(sourcePath, targetPath);
+                    return new MoveFileNoReplaceResult(MoveFileNoReplaceState.Unknown,
+                        new IOException("Simulated move failure after the transfer took effect."));
+                }
+
+                return this.Inner.MoveFileNoReplace(sourcePath, targetPath);
+            }
+
             public void ReplaceFile(string sourcePath, string targetPath, string backupPath)
             {
                 this.Inner.ReplaceFile(sourcePath, targetPath, backupPath);
@@ -619,6 +733,10 @@ namespace Microsoft.Coyote.Tools.Tests
 
             internal bool ThrowAfterTargetReplace { get; set; }
 
+            internal bool ThrowAfterPublicationReplaceInspection { get; set; }
+
+            private bool IsPublicationReplaceComplete { get; set; }
+
             internal Action BeforeTargetReplace { get; set; }
 
             internal RejectingTargetWriteFileSystem(IFileSystem inner, string target)
@@ -629,7 +747,17 @@ namespace Microsoft.Coyote.Tools.Tests
 
             public bool FileExists(string path) => this.Inner.FileExists(path);
             public bool DirectoryExists(string path) => this.Inner.DirectoryExists(path);
-            public IFileEntry GetFile(string path) => this.Inner.GetFile(path);
+            public IFileEntry GetFile(string path)
+            {
+                if (this.IsPublicationReplaceComplete)
+                {
+                    this.IsPublicationReplaceComplete = false;
+                    throw new IOException("Simulated crash while inspecting the publication backup.");
+                }
+
+                return this.Inner.GetFile(path);
+            }
+
             public string ReadAllText(string path) => this.Inner.ReadAllText(path);
             public void WriteAllText(string path, string contents) => this.Inner.WriteAllText(path, contents);
             public Stream OpenRead(string path, FileReadSharing sharing) => this.Inner.OpenRead(path, sharing);
@@ -642,6 +770,8 @@ namespace Microsoft.Coyote.Tools.Tests
             public void CopyFile(string sourcePath, string targetPath, bool overwrite) =>
                 this.Inner.CopyFile(sourcePath, targetPath, overwrite);
             public void MoveFile(string sourcePath, string targetPath) => this.Inner.MoveFile(sourcePath, targetPath);
+            public MoveFileNoReplaceResult MoveFileNoReplace(string sourcePath, string targetPath) =>
+                this.Inner.MoveFileNoReplace(sourcePath, targetPath);
             public void ReplaceFile(string sourcePath, string targetPath, string backupPath)
             {
                 bool isTarget = string.Equals(
@@ -659,6 +789,12 @@ namespace Microsoft.Coyote.Tools.Tests
                 {
                     this.ThrowAfterTargetReplace = false;
                     throw new IOException("Simulated failure after atomic replacement took effect.");
+                }
+
+                if (isTarget && this.ThrowAfterPublicationReplaceInspection)
+                {
+                    this.ThrowAfterPublicationReplaceInspection = false;
+                    this.IsPublicationReplaceComplete = true;
                 }
             }
 
@@ -709,6 +845,9 @@ namespace Microsoft.Coyote.Tools.Tests
 
                 this.Inner.MoveFile(sourcePath, targetPath);
             }
+
+            public MoveFileNoReplaceResult MoveFileNoReplace(string sourcePath, string targetPath) =>
+                this.Inner.MoveFileNoReplace(sourcePath, targetPath);
 
             public void ReplaceFile(string sourcePath, string targetPath, string backupPath) =>
                 this.Inner.ReplaceFile(sourcePath, targetPath, backupPath);
@@ -773,6 +912,8 @@ namespace Microsoft.Coyote.Tools.Tests
 
             public void MoveFile(string sourcePath, string targetPath) =>
                 this.Inner.MoveFile(sourcePath, targetPath);
+            public MoveFileNoReplaceResult MoveFileNoReplace(string sourcePath, string targetPath) =>
+                this.Inner.MoveFileNoReplace(sourcePath, targetPath);
 
             public void ReplaceFile(string sourcePath, string targetPath, string backupPath) =>
                 this.Inner.ReplaceFile(sourcePath, targetPath, backupPath);
@@ -856,6 +997,8 @@ namespace Microsoft.Coyote.Tools.Tests
                 this.Inner.CopyFile(sourcePath, targetPath, overwrite);
             public void MoveFile(string sourcePath, string targetPath) =>
                 this.Inner.MoveFile(sourcePath, targetPath);
+            public MoveFileNoReplaceResult MoveFileNoReplace(string sourcePath, string targetPath) =>
+                this.Inner.MoveFileNoReplace(sourcePath, targetPath);
 
             public void ReplaceFile(string sourcePath, string targetPath, string backupPath)
             {
