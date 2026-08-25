@@ -23,6 +23,8 @@ namespace Microsoft.Coyote.BugFinding.Tests
     /// </summary>
     public class SemaphoreSlimRegressionShieldTests : BaseBugFindingTest
     {
+        private static SemaphoreSlim SharedStaleSemaphore;
+
         public SemaphoreSlimRegressionShieldTests(ITestOutputHelper output)
             : base(output)
         {

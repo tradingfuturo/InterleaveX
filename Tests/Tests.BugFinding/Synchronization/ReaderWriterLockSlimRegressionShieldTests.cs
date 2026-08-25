@@ -20,6 +20,8 @@ namespace Microsoft.Coyote.BugFinding.Tests
     /// </summary>
     public class ReaderWriterLockSlimRegressionShieldTests : BaseBugFindingTest
     {
+        private static ReaderWriterLockSlim SharedStaleLock;
+
         public ReaderWriterLockSlimRegressionShieldTests(ITestOutputHelper output)
             : base(output)
         {
