@@ -39,6 +39,22 @@ namespace Microsoft.Coyote.BugFinding.Tests
             }, this.GetConfiguration().WithTestingIterations(100));
         }
 
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "VirtualTimeRemediation")]
+        public void TestFiniteDeadlineSaturatingAtMaxValueExpires()
+        {
+            this.Test(async () =>
+            {
+                CoyoteRuntime runtime = CoyoteRuntime.Current;
+                runtime.SetVirtualTimeTicksForTesting(long.MaxValue - TimeSpan.TicksPerMillisecond);
+
+                await Task.Delay(1);
+
+                Specification.Assert(runtime.GetVirtualTimeTicksForTesting() is long.MaxValue,
+                    "A finite deadline saturated at long.MaxValue did not expire.");
+            }, this.GetConfiguration().WithTestingIterations(1));
+        }
+
         [Fact(Timeout = 15000)]
         [Trait("Category", "VirtualTimeRemediation")]
         public void TestPositiveMonitorTryEnterCanAcquireBeforeItsDeadline()

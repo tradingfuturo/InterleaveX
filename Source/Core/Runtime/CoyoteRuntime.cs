@@ -226,6 +226,15 @@ namespace Microsoft.Coyote.Runtime
         internal Action<ControlledOperation> VirtualTimerAdmissionCallback;
 
         /// <summary>
+        /// Test-only callback invoked immediately after a virtual timer deadline is published.
+        /// </summary>
+        /// <remarks>
+        /// This is null during normal execution. It provides a deterministic cancellation seam without
+        /// changing timer admission or scheduling behavior.
+        /// </remarks>
+        internal Action<ControlledOperation> VirtualTimerDeadlinePublishedCallback;
+
+        /// <summary>
         /// Orders operations by <see cref="ControlledOperation.RegistrationIndex"/>, which is the
         /// order that <see cref="SchedulableOperations"/> is kept sorted by.
         /// </summary>
@@ -625,10 +634,24 @@ namespace Microsoft.Coyote.Runtime
         /// </summary>
         internal void DispatchProviderTimerCallback(Action callback)
         {
+            // A provider can retain a callback after the iteration has detached. It is no longer
+            // meaningful to admit that callback into a runtime whose operation and thread-pool state is
+            // being torn down, and attempting to do so can throw from the reservation path below.
+            if (this.HasExecutionEnded)
+            {
+                return;
+            }
+
             if (this.SchedulingPolicy is not SchedulingPolicy.Interleaving ||
                 this.IsThreadControlled(Thread.CurrentThread))
             {
-                callback();
+                // Completion can race with a callback that was already admitted by its provider. Do not
+                // let that late callback publish a result into the next iteration's teardown window.
+                if (!this.HasExecutionEnded)
+                {
+                    callback();
+                }
+
                 return;
             }
 
@@ -642,9 +665,18 @@ namespace Microsoft.Coyote.Runtime
                 shouldSchedule = this.TryHandleUncontrolledConcurrency(message, methodName);
             }
 
-            if (shouldSchedule)
+            if (shouldSchedule && !this.HasExecutionEnded)
             {
-                this.Schedule(callback);
+                try
+                {
+                    // The last check deliberately sits immediately before scheduling. Completion can
+                    // still win just after it; that one teardown race is the only scheduling failure
+                    // that a provider callback is allowed to suppress.
+                    this.Schedule(callback);
+                }
+                catch (Exception) when (this.HasExecutionEnded)
+                {
+                }
             }
         }
 
@@ -752,6 +784,17 @@ namespace Microsoft.Coyote.Runtime
         internal Task ScheduleDelay(TimeSpan delay, CancellationToken cancellationToken)
         {
             delay = NormalizeTimeout(delay, nameof(delay), uint.MaxValue - 1);
+
+            if (delay == Timeout.InfiniteTimeSpan)
+            {
+                // Let the BCL own the promise and its continuation semantics. In particular, cancellation
+                // of an infinite delay must behave exactly like Task.Delay rather than like a hand-rolled
+                // completion source. It is still known to this runtime, so an await remains controlled.
+                Task infiniteDelay = Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                this.RegisterKnownControlledTask(infiniteDelay);
+                return infiniteDelay;
+            }
+
             if (cancellationToken.IsCancellationRequested)
             {
                 return Task.FromCanceled(cancellationToken);
@@ -763,33 +806,12 @@ namespace Microsoft.Coyote.Runtime
                 return Task.CompletedTask;
             }
 
-            if (delay == Timeout.InfiniteTimeSpan)
-            {
-                // Infinite is a contract, not a large value for a strategy to fuzz. Only the token
-                // can complete this delay, matching the behavior outside systematic execution. The
-                // task itself must still be registered with this runtime: a raw BCL delay is otherwise
-                // classified as uncontrolled when awaited under strict systematic testing.
-                // Complete continuations inline under the controlled operation that cancels the token.
-                // RunContinuationsAsynchronously would send Task.WhenAny's internal continuation to an
-                // uncontrolled thread-pool thread, leaving a controlled waiter paused long enough for the
-                // scheduler to report a false deadlock. Rewritten user awaiters still resume through the
-                // controlled synchronization context, so this does not inline user code.
-                var completion = new TaskCompletionSource<bool>();
-                this.RegisterKnownControlledTask(completion.Task);
-                if (cancellationToken.CanBeCanceled)
-                {
-                    cancellationToken.Register(() =>
-                        completion.TrySetCanceled(cancellationToken));
-                }
-
-                return completion.Task;
-            }
-
             if (this.SchedulingPolicy is SchedulingPolicy.Interleaving)
             {
                 long deadline = this.CreateVirtualDeadline(delay);
                 ControlledOperation op = this.CreateControlledOperation(group: ExecutingOperation?.Group);
                 op.IsVirtualTimerOperation = true;
+                op.DelayCancellationToken = cancellationToken;
                 this.VirtualTimerAdmissionCallback?.Invoke(op);
                 if (!cancellationToken.IsCancellationRequested)
                 {
@@ -798,10 +820,24 @@ namespace Microsoft.Coyote.Runtime
                     // admission seam publishes no deadline and therefore cannot move the virtual clock.
                     op.VirtualDeadlineTicks = deadline;
                     op.HasVirtualDeadline = true;
+                    this.VirtualTimerDeadlinePublishedCallback?.Invoke(op);
                 }
 
                 var completion = new TaskCompletionSource<bool>();
                 this.RegisterKnownControlledTask(completion.Task);
+                CancellationTokenRegistration cancellationRegistration = default;
+                if (cancellationToken.CanBeCanceled)
+                {
+                    cancellationRegistration = cancellationToken.Register(() =>
+                    {
+                        // Retire the published deadline before completing the promise. This prevents a
+                        // cancellation that wins between publication and timer admission from advancing
+                        // virtual time or delaying a later timer.
+                        this.RetireVirtualTimerDeadline(op);
+                        completion.TrySetCanceled(cancellationToken);
+                    });
+                }
+
                 this.SuppressScheduling();
                 try
                 {
@@ -811,19 +847,27 @@ namespace Microsoft.Coyote.Runtime
                     _ = this.TaskFactory.StartNew(state =>
                     {
                         var delayedOp = state as ControlledOperation;
-                        if (!cancellationToken.IsCancellationRequested)
+                        try
                         {
-                            delayedOp.PauseWithDelay(deadline, cancellationToken);
-                            this.ScheduleNextOperation(delayedOp, SchedulingPointType.Yield);
-                        }
+                            if (!cancellationToken.IsCancellationRequested)
+                            {
+                                delayedOp.PauseWithDelay(deadline, cancellationToken);
+                                this.ScheduleNextOperation(delayedOp, SchedulingPointType.Yield);
+                            }
 
-                        if (cancellationToken.IsCancellationRequested)
-                        {
-                            completion.TrySetCanceled(cancellationToken);
+                            if (cancellationToken.IsCancellationRequested)
+                            {
+                                this.RetireVirtualTimerDeadline(delayedOp);
+                                completion.TrySetCanceled(cancellationToken);
+                            }
+                            else
+                            {
+                                completion.TrySetResult(true);
+                            }
                         }
-                        else
+                        finally
                         {
-                            completion.TrySetResult(true);
+                            cancellationRegistration.Dispose();
                         }
                     },
                     op,
@@ -842,7 +886,9 @@ namespace Microsoft.Coyote.Runtime
             if (!this.TryGetExecutingOperation(out ControlledOperation current))
             {
                 // Cannot fuzz the delay of an uncontrolled operation.
-                return Task.Delay(delay, cancellationToken);
+                Task fallbackDelay = Task.Delay(delay, cancellationToken);
+                this.RegisterKnownControlledTask(fallbackDelay);
+                return fallbackDelay;
             }
 
             // TODO: we need to come up with something better!
@@ -850,8 +896,25 @@ namespace Microsoft.Coyote.Runtime
             int configuredMaximum = this.GetMaxFuzzingDelay();
             double boundedDelay = Math.Min(delay.TotalMilliseconds, configuredMaximum);
             int maxDelay = boundedDelay >= int.MaxValue ? int.MaxValue : (int)boundedDelay;
-            return Task.Delay(TimeSpan.FromMilliseconds(
+            Task fuzzedDelay = Task.Delay(TimeSpan.FromMilliseconds(
                 this.GetNondeterministicDelay(current, maxDelay)), cancellationToken);
+            this.RegisterKnownControlledTask(fuzzedDelay);
+            return fuzzedDelay;
+        }
+
+        /// <summary>
+        /// Removes a virtual timer deadline when its owning delay is canceled or disposed.
+        /// </summary>
+        /// <remarks>
+        /// The token is marked canceled before its callbacks run. The scheduler also checks that token
+        /// while it holds this lock, so neither side can advance the clock through a retired deadline.
+        /// </remarks>
+        private void RetireVirtualTimerDeadline(ControlledOperation op)
+        {
+            using (SynchronizedSection.Enter(this.RuntimeLock))
+            {
+                op.HasVirtualDeadline = false;
+            }
         }
 
         /// <summary>
@@ -2302,16 +2365,34 @@ namespace Microsoft.Coyote.Runtime
         }
 
         /// <summary>
+        /// Sets the virtual clock for a regression test.
+        /// </summary>
+        internal void SetVirtualTimeTicksForTesting(long ticks)
+        {
+            if (ticks < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(ticks));
+            }
+
+            using (SynchronizedSection.Enter(this.RuntimeLock))
+            {
+                this.VirtualTimeTicks = ticks;
+            }
+        }
+
+        /// <summary>
         /// Advances virtual time to the earliest active deadline when the clock wins its scheduler choice.
         /// The boolean decision is recorded in the execution trace, making time advancement replayable.
         /// </summary>
         private void TryAdvanceVirtualTime(ControlledOperation current, bool isAnyOperationEnabled)
         {
-            long earliest = long.MaxValue;
+            long earliest = 0;
+            bool foundDeadline = false;
             for (int idx = 0; idx < this.SchedulableOperations.Count; ++idx)
             {
                 ControlledOperation op = this.SchedulableOperations[idx];
                 if (op.IsVirtualTimerOperation && op.HasVirtualDeadline &&
+                    !op.DelayCancellationToken.IsCancellationRequested &&
                     op.Status is OperationStatus.Enabled &&
                     op.VirtualDeadlineTicks <= this.VirtualTimeTicks)
                 {
@@ -2321,15 +2402,17 @@ namespace Microsoft.Coyote.Runtime
                     return;
                 }
 
-                if (op.HasVirtualDeadline &&
+                if (op.HasVirtualDeadline && (!op.IsVirtualTimerOperation ||
+                    !op.DelayCancellationToken.IsCancellationRequested) &&
                     (op.IsPaused || op.IsVirtualTimerOperation) &&
-                    op.VirtualDeadlineTicks < earliest)
+                    (!foundDeadline || op.VirtualDeadlineTicks < earliest))
                 {
                     earliest = op.VirtualDeadlineTicks;
+                    foundDeadline = true;
                 }
             }
 
-            if (earliest is long.MaxValue)
+            if (!foundDeadline)
             {
                 return;
             }
