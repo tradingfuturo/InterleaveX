@@ -470,6 +470,147 @@ namespace Microsoft.Coyote.Tools.Tests
             Assert.Equal("external", inner.ReadAllText(target));
         }
 
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestNewTargetPublicationRollsBackWhenMoveReportsPostEffectFailure()
+        {
+            string staged = Out("staged.txt");
+            string target = Out("target.txt");
+            var inner = new InMemoryFileSystem()
+                .WithDirectory(Out())
+                .WithFile(staged, "replacement");
+            var fileSystem = new PostEffectTransferFileSystem(inner, target)
+            {
+                ThrowAfterMove = true
+            };
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(fileSystem, Out());
+
+            Assert.Throws<IOException>(() => journal.Publish(staged, target, null));
+
+            // The move already published the target before reporting failure. Rollback must still
+            // recognize those journal-owned bytes and remove them.
+            journal.Restore();
+            journal.Complete();
+
+            Assert.False(inner.FileExists(target));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestRecoveryRetriesRestoreAfterPostEffectReplaceFailure()
+        {
+            string target = Out("existing.txt");
+            var inner = new InMemoryFileSystem()
+                .WithDirectory(Out())
+                .WithFile(target, "before");
+            var fileSystem = new PostEffectTransferFileSystem(inner, target)
+            {
+                ThrowAfterReplace = true
+            };
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(fileSystem, Out());
+            journal.Capture(target);
+            inner.WriteAllText(target, "after");
+
+            Assert.Throws<IOException>(() => journal.Restore());
+            Assert.Equal("before", inner.ReadAllText(target));
+
+            // Restore consumed the backup before reporting failure. A fresh process must treat the
+            // already-restored target as success and finish the retained restoring journal.
+            Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out());
+
+            Assert.Equal("before", inner.ReadAllText(target));
+            Assert.Empty(Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
+                fileSystem, Out()));
+        }
+
+        [Fact(Timeout = 5000)]
+        [Trait("Category", "ReviewRemediation")]
+        public void TestRecoveryRetriesRestoreAfterPostEffectMoveFailure()
+        {
+            string target = Out("existing.txt");
+            var inner = new InMemoryFileSystem()
+                .WithDirectory(Out())
+                .WithFile(target, "before");
+            var fileSystem = new PostEffectTransferFileSystem(inner, target)
+            {
+                ThrowAfterMove = true
+            };
+            var journal = new Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal(fileSystem, Out());
+            journal.Capture(target);
+            inner.WriteAllText(target, "after");
+            inner.DeleteFile(target);
+
+            Assert.Throws<IOException>(() => journal.Restore());
+            Assert.Equal("before", inner.ReadAllText(target));
+
+            Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.RecoverAll(fileSystem, Out());
+
+            Assert.Equal("before", inner.ReadAllText(target));
+            Assert.Empty(Microsoft.Coyote.Rewriting.RewritingOutputChangeJournal.FindJournals(
+                fileSystem, Out()));
+        }
+
+        private sealed class PostEffectTransferFileSystem : IFileSystem
+        {
+            private readonly IFileSystem Inner;
+            private readonly string Target;
+
+            internal bool ThrowAfterMove { get; set; }
+
+            internal bool ThrowAfterReplace { get; set; }
+
+            internal PostEffectTransferFileSystem(IFileSystem inner, string target)
+            {
+                this.Inner = inner;
+                this.Target = Path.GetFullPath(target);
+            }
+
+            public bool FileExists(string path) => this.Inner.FileExists(path);
+            public bool DirectoryExists(string path) => this.Inner.DirectoryExists(path);
+            public IFileEntry GetFile(string path) => this.Inner.GetFile(path);
+            public string ReadAllText(string path) => this.Inner.ReadAllText(path);
+            public void WriteAllText(string path, string contents) => this.Inner.WriteAllText(path, contents);
+            public Stream OpenRead(string path, FileReadSharing sharing) => this.Inner.OpenRead(path, sharing);
+            public Stream OpenWriteExclusive(string path) => this.Inner.OpenWriteExclusive(path);
+            public Stream OpenWriteNewExclusive(string path) => this.Inner.OpenWriteNewExclusive(path);
+            public void FlushWrite(Stream stream) => this.Inner.FlushWrite(stream);
+            public void CopyFile(string sourcePath, string targetPath, bool overwrite) =>
+                this.Inner.CopyFile(sourcePath, targetPath, overwrite);
+
+            public void MoveFile(string sourcePath, string targetPath)
+            {
+                this.Inner.MoveFile(sourcePath, targetPath);
+                if (this.ThrowAfterMove && string.Equals(
+                    Path.GetFullPath(targetPath), this.Target, StringComparison.OrdinalIgnoreCase))
+                {
+                    this.ThrowAfterMove = false;
+                    throw new IOException("Simulated move failure after the transfer took effect.");
+                }
+            }
+
+            public void ReplaceFile(string sourcePath, string targetPath, string backupPath)
+            {
+                this.Inner.ReplaceFile(sourcePath, targetPath, backupPath);
+                if (this.ThrowAfterReplace && string.IsNullOrEmpty(backupPath) && string.Equals(
+                    Path.GetFullPath(targetPath), this.Target, StringComparison.OrdinalIgnoreCase))
+                {
+                    this.ThrowAfterReplace = false;
+                    throw new IOException("Simulated replacement failure after the transfer took effect.");
+                }
+            }
+
+            public void DeleteFile(string path) => this.Inner.DeleteFile(path);
+            public void CreateDirectory(string path) => this.Inner.CreateDirectory(path);
+            public void DeleteDirectory(string path, bool recursive) => this.Inner.DeleteDirectory(path, recursive);
+            public string[] GetFiles(string directory, string searchPattern) =>
+                this.Inner.GetFiles(directory, searchPattern);
+            public IReadOnlyList<IFileEntry> GetFileEntries(string directory, string searchPattern) =>
+                this.Inner.GetFileEntries(directory, searchPattern);
+            public string[] GetDirectories(string directory, string searchPattern, bool recursive) =>
+                this.Inner.GetDirectories(directory, searchPattern, recursive);
+            public bool IsCaseInsensitive(string directory) => this.Inner.IsCaseInsensitive(directory);
+        }
+
         private sealed class RejectingTargetWriteFileSystem : IFileSystem
         {
             private readonly IFileSystem Inner;

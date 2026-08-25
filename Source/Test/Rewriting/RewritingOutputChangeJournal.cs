@@ -158,11 +158,43 @@ namespace Microsoft.Coyote.Rewriting
                 {
                     this.FileSystem.MoveFile(source, target);
                 }
-                catch
+                catch (Exception moveFailure)
                 {
-                    this.RemovePendingPublication(pending);
+                    bool containsStagedBytes;
+                    try
+                    {
+                        // MoveFile can report an error after the destination was created. Keep the
+                        // durable pending record whenever the destination contains bytes owned by
+                        // this journal, so rollback can remove the publication.
+                        containsStagedBytes = this.ContainsBytes(
+                            target, pending.StagedLength, pending.StagedFingerprint);
+                    }
+                    catch (Exception reconciliationFailure)
+                    {
+                        this.IsMutationStateAmbiguous = true;
+                        throw new IOException(
+                            "The rewrite journal cannot determine whether a new output publication took effect.",
+                            new AggregateException(moveFailure, reconciliationFailure));
+                    }
+
+                    if (!containsStagedBytes)
+                    {
+                        try
+                        {
+                            this.RemovePendingPublication(pending);
+                        }
+                        catch (Exception cleanupFailure)
+                        {
+                            this.IsMutationStateAmbiguous = true;
+                            throw new IOException(
+                                "The rewrite journal cannot durably reconcile a failed output publication.",
+                                new AggregateException(moveFailure, cleanupFailure));
+                        }
+                    }
+
                     throw new IOException(
-                        $"The source directory '{this.OutputDirectory}' changed after its rewrite snapshot was created.");
+                        $"The source directory '{this.OutputDirectory}' changed after its rewrite snapshot was created.",
+                        moveFailure);
                 }
 
                 var change = new Change() { TargetPath = target, Existed = false };
@@ -495,8 +527,36 @@ namespace Microsoft.Coyote.Rewriting
                     // Restore the bytes atomically captured by ReplaceFile. They can intentionally
                     // differ from ExpectedFingerprint when the target raced immediately before the
                     // replacement; restoring those actual bytes is still the only lossless action.
-                    this.FileSystem.ReplaceFile(
-                        pending.ReplacementBackupPath, pending.TargetPath, null);
+                    try
+                    {
+                        this.FileSystem.ReplaceFile(
+                            pending.ReplacementBackupPath, pending.TargetPath, null);
+                    }
+                    catch (Exception transferFailure)
+                    {
+                        bool restored;
+                        try
+                        {
+                            restored = this.ContainsBytes(
+                                pending.TargetPath, pending.ExpectedLength, pending.ExpectedFingerprint);
+                        }
+                        catch (Exception reconciliationFailure)
+                        {
+                            throw new IOException(
+                                $"Unable to determine whether recovery restored '{pending.TargetPath}'.",
+                                new AggregateException(transferFailure, reconciliationFailure));
+                        }
+
+                        if (!restored)
+                        {
+                            throw;
+                        }
+
+                        // Preserve the original transfer failure for this attempt. The durable
+                        // restoring state and the now-restored target make the next recovery
+                        // attempt idempotent without silently hiding an I/O error.
+                        throw;
+                    }
 
                     if (!this.ContainsBytes(pending.TargetPath,
                         pending.ExpectedLength, pending.ExpectedFingerprint))
@@ -549,6 +609,16 @@ namespace Microsoft.Coyote.Rewriting
                     if (change.Existed)
                     {
                         bool exists = this.FileSystem.FileExists(change.TargetPath);
+
+                        // A previous restore can have completed the atomic transfer before the
+                        // filesystem reported its failure. Treat the recorded original bytes as
+                        // the durable success condition, even when the backup has been consumed.
+                        if (exists && this.ContainsBytes(
+                            change.TargetPath, change.BackupLength, change.BackupFingerprint))
+                        {
+                            continue;
+                        }
+
                         IFileEntry backup = this.FileSystem.GetFile(change.BackupPath);
                         if (!backup.Exists || backup.Length != change.BackupLength ||
                             !string.Equals(RewritingCacheValidator.ComputeFileFingerprint(
@@ -560,13 +630,40 @@ namespace Microsoft.Coyote.Rewriting
                         }
 
                         this.FileSystem.CreateDirectory(Path.GetDirectoryName(change.TargetPath));
-                        if (exists)
+                        try
                         {
-                            this.FileSystem.ReplaceFile(change.BackupPath, change.TargetPath, null);
+                            if (exists)
+                            {
+                                this.FileSystem.ReplaceFile(change.BackupPath, change.TargetPath, null);
+                            }
+                            else
+                            {
+                                this.FileSystem.MoveFile(change.BackupPath, change.TargetPath);
+                            }
                         }
-                        else
+                        catch (Exception transferFailure)
                         {
-                            this.FileSystem.MoveFile(change.BackupPath, change.TargetPath);
+                            bool restored;
+                            try
+                            {
+                                restored = this.ContainsBytes(
+                                    change.TargetPath, change.BackupLength, change.BackupFingerprint);
+                            }
+                            catch (Exception reconciliationFailure)
+                            {
+                                throw new IOException(
+                                    $"Unable to determine whether recovery restored '{change.TargetPath}'.",
+                                    new AggregateException(transferFailure, reconciliationFailure));
+                            }
+
+                            if (!restored)
+                            {
+                                throw;
+                            }
+
+                            // Keep the journal in restoring state for a retry even though the
+                            // target now proves that the transfer took effect.
+                            throw;
                         }
                     }
                     else
