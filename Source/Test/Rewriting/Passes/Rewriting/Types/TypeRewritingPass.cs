@@ -109,6 +109,7 @@ namespace Microsoft.Coyote.Rewriting
             this.KnownTypes[NameCache.EventWaitHandle] = typeof(Types.Threading.EventWaitHandle);
             this.KnownTypes[NameCache.WaitHandle] = typeof(Types.Threading.WaitHandle);
             this.KnownTypes[typeof(System.Threading.Mutex).FullName] = typeof(Types.Threading.Mutex);
+            this.KnownTypes[typeof(System.Guid).FullName] = typeof(Types.GuidProvider);
 #if NET
             // A periodic timer is a synchronization primitive as much as a clock: a loop driven by
             // WaitForNextTickAsync only advances when the tick arrives, and an unmodelled tick arrives
