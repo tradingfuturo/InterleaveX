@@ -151,6 +151,7 @@ namespace Microsoft.Coyote.Rewriting
 
             // Populate the map with the known HTTP and web-related types.
             this.KnownTypes[NameCache.HttpClient] = typeof(Types.Net.Http.HttpClient);
+            this.KnownTypes[typeof(System.Net.Http.HttpMessageInvoker).FullName] = typeof(Types.Net.Http.HttpMessageInvoker);
             this.KnownTypes[NameCache.HttpRequestMessage] = typeof(Types.Net.Http.HttpRequestMessage);
 #endif
 
