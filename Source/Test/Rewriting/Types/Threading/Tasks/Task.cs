@@ -185,6 +185,61 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
         }
 
         /// <summary>
+        /// Creates a continuation that is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTask task, Action<SystemTask> continuationAction,
+            SystemTaskScheduler scheduler) => ContinueWith(task, continuationAction, SystemCancellationToken.None,
+                SystemTaskContinuationOptions.None, scheduler);
+
+        /// <summary>
+        /// Creates a result continuation that is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TResult> ContinueWith<TResult>(SystemTask task,
+            Func<SystemTask, TResult> continuationFunction, SystemTaskScheduler scheduler) =>
+            ContinueWith(task, continuationFunction, SystemCancellationToken.None,
+                SystemTaskContinuationOptions.None, scheduler);
+
+        /// <summary>
+        /// Creates a continuation with cancellation and filtering options that is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTask task, Action<SystemTask> continuationAction,
+            SystemCancellationToken cancellationToken, SystemTaskContinuationOptions continuationOptions,
+            SystemTaskScheduler scheduler)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return task.ContinueWith(continuationAction, cancellationToken, continuationOptions, scheduler);
+            }
+
+            runtime.CheckIfReturnedTaskIsUncontrolled(task, "Task.ContinueWith antecedent");
+            SystemTask continuation = task.ContinueWith(continuationAction, cancellationToken, continuationOptions,
+                GetControlledContinuationScheduler(runtime, scheduler, continuationOptions));
+            runtime.RegisterKnownControlledTask(continuation);
+            return continuation;
+        }
+
+        /// <summary>
+        /// Creates a result continuation with cancellation and filtering options that is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TResult> ContinueWith<TResult>(SystemTask task,
+            Func<SystemTask, TResult> continuationFunction, SystemCancellationToken cancellationToken,
+            SystemTaskContinuationOptions continuationOptions, SystemTaskScheduler scheduler)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return task.ContinueWith(continuationFunction, cancellationToken, continuationOptions, scheduler);
+            }
+
+            runtime.CheckIfReturnedTaskIsUncontrolled(task, "Task.ContinueWith antecedent");
+            SystemTasks.Task<TResult> continuation = task.ContinueWith(continuationFunction, cancellationToken,
+                continuationOptions, GetControlledContinuationScheduler(runtime, scheduler, continuationOptions));
+            runtime.RegisterKnownControlledTask(continuation);
+            return continuation;
+        }
+
+        /// <summary>
         /// Queues the specified work to run on the thread pool and returns a task object that
         /// represents that work. A cancellation token allows the work to be cancelled.
         /// </summary>
@@ -1311,6 +1366,27 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
         /// Creates an awaitable that asynchronously yields back to the current context when awaited.
         /// </summary>
         public static YieldAwaitable Yield() => new YieldAwaitable(default);
+
+        internal static SystemTaskScheduler GetControlledContinuationScheduler(CoyoteRuntime runtime,
+            SystemTaskScheduler scheduler, SystemTaskContinuationOptions continuationOptions)
+        {
+            const SystemTaskContinuationOptions UnsupportedOptions =
+                SystemTaskContinuationOptions.LongRunning | SystemTaskContinuationOptions.PreferFairness;
+            if ((continuationOptions & UnsupportedOptions) != 0)
+            {
+                throw new NotSupportedException(
+                    $"Task.ContinueWith does not support '{continuationOptions & UnsupportedOptions}' during systematic testing.");
+            }
+
+            if (!ReferenceEquals(scheduler, SystemTaskScheduler.Default) &&
+                !ReferenceEquals(scheduler, runtime.ControlledTaskScheduler))
+            {
+                throw new NotSupportedException(
+                    "Task.ContinueWith supports only TaskScheduler.Default during systematic testing.");
+            }
+
+            return runtime.ControlledTaskScheduler;
+        }
     }
 
     /// <summary>
@@ -1421,6 +1497,66 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
 #pragma warning restore CA1707 // Remove the underscores from member name
 #pragma warning restore SA1300 // Element should begin with an uppercase letter
 #pragma warning restore IDE1006 // Naming Styles
+
+        /// <summary>
+        /// Creates a continuation that is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTasks.Task<TResult> task,
+            Action<SystemTasks.Task<TResult>> continuationAction, SystemTaskScheduler scheduler) =>
+            ContinueWith(task, continuationAction, SystemCancellationToken.None,
+                SystemTaskContinuationOptions.None, scheduler);
+
+        /// <summary>
+        /// Creates a result continuation that is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TNewResult> ContinueWith<TNewResult>(SystemTasks.Task<TResult> task,
+            Func<SystemTasks.Task<TResult>, TNewResult> continuationFunction, SystemTaskScheduler scheduler) =>
+            ContinueWith(task, continuationFunction, SystemCancellationToken.None,
+                SystemTaskContinuationOptions.None, scheduler);
+
+        /// <summary>
+        /// Creates a continuation with cancellation and filtering options that is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTasks.Task<TResult> task,
+            Action<SystemTasks.Task<TResult>> continuationAction, SystemCancellationToken cancellationToken,
+            SystemTaskContinuationOptions continuationOptions, SystemTaskScheduler scheduler)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return task.ContinueWith(continuationAction, cancellationToken, continuationOptions, scheduler);
+            }
+
+            runtime.CheckIfReturnedTaskIsUncontrolled(task, "Task.ContinueWith antecedent");
+            SystemTask continuation = task.ContinueWith(continuationAction, cancellationToken, continuationOptions,
+                global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.GetControlledContinuationScheduler(
+                    runtime, scheduler, continuationOptions));
+            runtime.RegisterKnownControlledTask(continuation);
+            return continuation;
+        }
+
+        /// <summary>
+        /// Creates a result continuation with cancellation and filtering options that is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TNewResult> ContinueWith<TNewResult>(SystemTasks.Task<TResult> task,
+            Func<SystemTasks.Task<TResult>, TNewResult> continuationFunction,
+            SystemCancellationToken cancellationToken, SystemTaskContinuationOptions continuationOptions,
+            SystemTaskScheduler scheduler)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return task.ContinueWith(continuationFunction, cancellationToken, continuationOptions, scheduler);
+            }
+
+            runtime.CheckIfReturnedTaskIsUncontrolled(task, "Task.ContinueWith antecedent");
+            SystemTasks.Task<TNewResult> continuation = task.ContinueWith(continuationFunction, cancellationToken,
+                continuationOptions,
+                global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.GetControlledContinuationScheduler(
+                    runtime, scheduler, continuationOptions));
+            runtime.RegisterKnownControlledTask(continuation);
+            return continuation;
+        }
 
 #if NET6_0_OR_GREATER
         /// <summary>
