@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.Linq;
 using Microsoft.Coyote.Runtime;
 using SystemManualResetEventSlim = System.Threading.ManualResetEventSlim;
+using SystemMutex = System.Threading.Mutex;
 using SystemThread = System.Threading.Thread;
 using SystemThreadPool = System.Threading.ThreadPool;
 using SystemTimeout = System.Threading.Timeout;
@@ -69,6 +70,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             }
 
             var runtime = CoyoteRuntime.Current;
+            if (instance is SystemMutex mutex)
+            {
+                return Mutex.WaitOne(mutex, runtime, millisecondsTimeout, exitContext);
+            }
+
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
                 Resource.TryFind(instance, out Resource resource))
             {
@@ -130,6 +136,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
             {
+                Mutex.ThrowIfUnsupportedMultiWait(waitHandles, runtime, nameof(WaitAll));
                 return Resource.WaitAll(runtime, waitHandles, millisecondsTimeout);
             }
 
@@ -188,6 +195,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
             {
+                Mutex.ThrowIfUnsupportedMultiWait(waitHandles, runtime, nameof(WaitAny));
                 return Resource.WaitAny(runtime, waitHandles, millisecondsTimeout);
             }
 
@@ -199,6 +207,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static void Close(SystemWaitHandle instance)
         {
+            if (instance is SystemMutex mutex && CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.Interleaving)
+            {
+                Mutex.Dispose(mutex);
+                return;
+            }
+
             Resource.Remove(instance);
             instance.Close();
         }
@@ -208,6 +222,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// </summary>
         public static void Dispose(SystemWaitHandle instance)
         {
+            if (instance is SystemMutex mutex && CoyoteRuntime.Current.SchedulingPolicy is SchedulingPolicy.Interleaving)
+            {
+                Mutex.Dispose(mutex);
+                return;
+            }
+
             Resource.Remove(instance);
             instance.Dispose();
         }

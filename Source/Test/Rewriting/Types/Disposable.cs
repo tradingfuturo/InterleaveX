@@ -10,6 +10,7 @@ using System;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using SystemBackgroundService = Microsoft.Extensions.Hosting.BackgroundService;
+using SystemMutex = System.Threading.Mutex;
 
 namespace Microsoft.Coyote.Rewriting.Types
 {
@@ -26,6 +27,10 @@ namespace Microsoft.Coyote.Rewriting.Types
             else if (instance is IHost host)
             {
                 Hosting.Host.Dispose(host);
+            }
+            else if (instance is SystemMutex mutex)
+            {
+                Threading.Mutex.Dispose(mutex);
             }
             else
             {

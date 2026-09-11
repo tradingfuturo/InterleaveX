@@ -1783,6 +1783,9 @@ namespace Microsoft.Coyote.Runtime
         /// <summary>
         /// Notifies that the specified controlled operation completed executing.
         /// </summary>
+        internal event Action<ControlledOperation> OperationCompleted;
+
+        /// <summary>Completes a logical operation and notifies synchronization models.</summary>
         /// <param name="op">The operation that completed executing.</param>
         internal void OnCompleted(ControlledOperation op)
         {
@@ -1792,6 +1795,7 @@ namespace Microsoft.Coyote.Runtime
                 this.LogWriter.LogDebug("[coyote::debug] Operation {0} completed on thread '{1}'.",
                     op.DebugInfo, Thread.CurrentThread.ManagedThreadId);
                 op.Status = OperationStatus.Completed;
+                this.OperationCompleted?.Invoke(op);
             }
         }
 
@@ -3886,6 +3890,7 @@ namespace Microsoft.Coyote.Runtime
                     this.SpecificationMonitors.Clear();
                     this.TaskLivenessMonitors.Clear();
                     this.StateHashingFunctions.Clear();
+                    this.OperationCompleted = null;
 
                     if (!(this.Extension is NullRuntimeExtension))
                     {
