@@ -867,7 +867,15 @@ namespace Microsoft.Coyote.Runtime
                         }
                         finally
                         {
+#if NET || NETSTANDARD2_1_OR_GREATER
+                            // Cancellation completes the promise while its callback is still on the
+                            // stack. A controlled continuation can schedule this timer worker before
+                            // that callback returns. Dispose would block an OS thread waiting for the
+                            // paused callback; unregister without waiting instead.
+                            cancellationRegistration.Unregister();
+#else
                             cancellationRegistration.Dispose();
+#endif
                         }
                     },
                     op,
