@@ -41,6 +41,11 @@ namespace Microsoft.Coyote.Rewriting
             {
                 // Get the first instruction in the body.
                 Instruction nextInstruction = body.Instructions.FirstOrDefault();
+                // Runtime-implemented methods such as UnsafeAccessor externs have no IL.
+                if (nextInstruction is null)
+                {
+                    return;
+                }
 
                 // Construct the instructions for notifying the runtime which method is executing.
                 string methodName = GetFullyQualifiedMethodName(this.Method);
