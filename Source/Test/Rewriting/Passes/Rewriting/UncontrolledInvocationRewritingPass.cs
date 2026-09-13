@@ -160,9 +160,16 @@ namespace Microsoft.Coyote.Rewriting
                     type.Name is nameof(System.Threading.ReaderWriterLock) ||
                     type.Name is nameof(System.Threading.RegisteredWaitHandle) ||
                     type.Name is nameof(System.Threading.Semaphore) ||
-                    type.Name is nameof(System.Threading.SpinLock) ||
-                    type.Name is nameof(System.Threading.SynchronizationContext))
+                    type.Name is nameof(System.Threading.SpinLock))
                 {
+                    return true;
+                }
+                else if (type.Name is nameof(System.Threading.SynchronizationContext) &&
+                    member?.Name is not $"get_{nameof(System.Threading.SynchronizationContext.Current)}")
+                {
+                    // Reading the ambient context schedules nothing: on a controlled operation it is the runtime's
+                    // own context. What can escape control is posting or sending through a context, and every
+                    // such member stays reported.
                     return true;
                 }
 #if !NET8_0_OR_GREATER
