@@ -382,26 +382,52 @@ namespace Microsoft.Coyote.BugFinding.Tests
             // stay explorable, but if it could keep winning - each tick re-arming the next deadline - an unfair
             // strategy starved every other operation until the step bound, and the iteration ended silently without
             // the test body ever completing. Every iteration here must complete, and none may hit the bound.
-            const int iterations = 300;
+            const int iterations = 5000;
             int completed = 0;
             TestReport report = this.RunSystematicTest(async () =>
             {
-                using var timer = new Timer(_ => { }, null, 1, 1);
-                Task worker = Task.Run(async () =>
+                // Restarting and stopping an hourly timer from two operations, the shape that exposed the starvation.
+                var sync = new object();
+                Timer timer = null;
+                Task starter = Task.Run(async () =>
                 {
-                    for (int i = 0; i < 20; i++)
+                    for (int i = 0; i < 10; i++)
                     {
+                        lock (sync)
+                        {
+                            timer?.Dispose();
+                            timer = new Timer(_ => { }, null, TimeSpan.FromHours(1), TimeSpan.FromHours(1));
+                        }
+
                         await Task.Yield();
                     }
                 });
 
-                await worker;
+                Task stopper = Task.Run(async () =>
+                {
+                    for (int i = 0; i < 10; i++)
+                    {
+                        lock (sync)
+                        {
+                            timer?.Dispose();
+                            timer = null;
+                        }
+
+                        await Task.Yield();
+                    }
+                });
+
+                await Task.WhenAll(starter, stopper);
+                lock (sync)
+                {
+                    timer?.Dispose();
+                }
+
                 Interlocked.Increment(ref completed);
             },
             this.GetConfiguration()
                 .WithTestingIterations(iterations)
-                .WithProbabilisticStrategy(3)
-                .WithMaxSchedulingSteps(2000)
+                .WithQLearningStrategy()
                 .WithPartiallyControlledConcurrencyAllowed(false)
                 .WithPartiallyControlledDataNondeterminismAllowed(false)
                 .WithSystematicFuzzingFallbackEnabled(false));

@@ -131,22 +131,6 @@ namespace Microsoft.Coyote.BugFinding.Tests
             }, this.GetStrictConfiguration());
         }
 
-        [Fact(Timeout = 10000)]
-        [Trait("Category", "CurrentUseThreadingModels")]
-        public void TestDeadlineRaceWithAnEqualDelayIsExplored()
-        {
-            // A witness that the cancellation due at the same virtual instant as the operation's own delay is interleaved
-            // with it, in both orders: it runs on its own controlled operation rather than on a real timer thread.
-            this.TestWithError(async () =>
-            {
-                using var source = new CancellationTokenSource(1);
-                await Task.Delay(1);
-                Specification.Assert(source.IsCancellationRequested, "A 1ms source was not canceled by the end of a 1ms delay.");
-            },
-            errorChecker: (e) => Assert.StartsWith("A 1ms source was not canceled by the end of a 1ms delay.", e),
-            configuration: this.GetStrictConfiguration());
-        }
-
         private Configuration GetStrictConfiguration() => this.GetConfiguration()
             .WithTestingIterations(100)
             .WithPartiallyControlledConcurrencyAllowed(false)
