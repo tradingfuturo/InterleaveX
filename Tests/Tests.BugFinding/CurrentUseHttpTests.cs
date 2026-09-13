@@ -206,15 +206,26 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 await ExpectAsync<InvalidOperationException>(() => client.SendAsync(duplicate, CancellationToken.None));
 
                 client.Dispose();
-                Assert.Throws<ObjectDisposedException>(() => { _ = client.SendAsync(
-                    new HttpRequestMessage(HttpMethod.Get, "https://example.test/disposed"), CancellationToken.None); });
+                Assert.Throws<ObjectDisposedException>(() =>
+                {
+                    _ = client.SendAsync(
+                        new HttpRequestMessage(HttpMethod.Get, "https://example.test/disposed"), CancellationToken.None);
+                });
             }, configuration: this.StrictConfiguration());
         }
 
-        private static async Task<TException> ExpectAsync<TException>(Func<Task> action) where TException : Exception
+        private static async Task<TException> ExpectAsync<TException>(Func<Task> action)
+            where TException : Exception
         {
-            try { await action(); }
-            catch (TException exception) { return exception; }
+            try
+            {
+                await action();
+            }
+            catch (TException exception)
+            {
+                return exception;
+            }
+
             throw new InvalidOperationException("Expected " + typeof(TException).Name);
         }
 

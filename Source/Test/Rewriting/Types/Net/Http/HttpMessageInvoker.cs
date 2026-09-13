@@ -5,13 +5,13 @@
 using System;
 using System.Reflection;
 using Microsoft.Coyote.Runtime;
+using ControlledTask = Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task;
 using SystemCancellationToken = System.Threading.CancellationToken;
 using SystemHttpMessageHandler = System.Net.Http.HttpMessageHandler;
 using SystemHttpMessageInvoker = System.Net.Http.HttpMessageInvoker;
 using SystemHttpRequestMessage = System.Net.Http.HttpRequestMessage;
 using SystemHttpResponseMessage = System.Net.Http.HttpResponseMessage;
 using SystemTasks = System.Threading.Tasks;
-using ControlledTask = Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task;
 
 namespace Microsoft.Coyote.Rewriting.Types.Net.Http
 {
@@ -32,6 +32,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Net.Http
             {
                 throw new ArgumentNullException(nameof(request));
             }
+
             if (invoker is System.Net.Http.HttpClient client)
             {
                 return HttpClient.SendAsync(client, request, cancellationToken);
@@ -59,11 +60,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Net.Http
             }
 
             var handler = (SystemHttpMessageHandler)handlerField.GetValue(invoker);
-            return SendHandlerAsync(handler, HttpRequestMessage.WithRuntimeHeaders(request), cancellationToken, runtime);
+            return SendHandlerAsync(handler, HttpRequestMessage.WithRuntimeHeaders(request), runtime, cancellationToken);
         }
 
         internal static SystemTasks.Task<SystemHttpResponseMessage> SendHandlerAsync(SystemHttpMessageHandler handler,
-            SystemHttpRequestMessage request, SystemCancellationToken cancellationToken, CoyoteRuntime runtime)
+            SystemHttpRequestMessage request, CoyoteRuntime runtime, SystemCancellationToken cancellationToken)
         {
             SystemHttpMessageHandler leaf = handler;
             while (leaf is System.Net.Http.DelegatingHandler delegating)
@@ -101,6 +102,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Net.Http
             {
                 throw new InvalidOperationException($"{operation} returned a null task.");
             }
+
             if (!task.IsCompleted && runtime.IsTaskUncontrolled(task))
             {
                 runtime.CheckIfReturnedTaskIsUncontrolled(task, operation);

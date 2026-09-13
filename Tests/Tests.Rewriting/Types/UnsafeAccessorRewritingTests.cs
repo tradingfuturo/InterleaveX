@@ -8,7 +8,10 @@ namespace Microsoft.Coyote.Rewriting.Tests
 {
     public class UnsafeAccessorRewritingTests : BaseRewritingTest
     {
-        public UnsafeAccessorRewritingTests(ITestOutputHelper output) : base(output) { }
+        public UnsafeAccessorRewritingTests(ITestOutputHelper output)
+            : base(output)
+        {
+        }
 
         private sealed class Entry
         {

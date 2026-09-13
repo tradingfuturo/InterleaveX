@@ -9,7 +9,10 @@ namespace Microsoft.Coyote.BugFinding.Tests
 {
     public class CurrentUseDelayCancellationTests : BaseBugFindingTest
     {
-        public CurrentUseDelayCancellationTests(ITestOutputHelper output) : base(output) { }
+        public CurrentUseDelayCancellationTests(ITestOutputHelper output)
+            : base(output)
+        {
+        }
 
         [Fact(Timeout = 10000)]
         public void TestTimerCancellationCallbackAndWorkerCleanupCannotBlockEachOther()
@@ -29,8 +32,13 @@ namespace Microsoft.Coyote.BugFinding.Tests
 
         private static async Task ObserveAsync(Task delay)
         {
-            try { await delay; }
-            catch (OperationCanceledException) { }
+            try
+            {
+                await delay;
+            }
+            catch (OperationCanceledException)
+            {
+            }
         }
     }
 }

@@ -84,6 +84,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             {
                 return instance.WaitOne(millisecondsTimeout, exitContext);
             }
+
             HandleState handle = GetHandleState(instance, runtime, "Mutex.WaitOne");
             Resource resource = handle.Resource;
             if (millisecondsTimeout != SystemTimeout.Infinite || exitContext)

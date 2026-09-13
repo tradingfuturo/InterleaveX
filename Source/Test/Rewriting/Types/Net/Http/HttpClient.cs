@@ -1,10 +1,11 @@
-﻿// Copyright (c) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 #if NET
 using System;
 using System.Reflection;
 using Microsoft.Coyote.Runtime;
+using ControlledTask = Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task;
 using SystemCancellationToken = System.Threading.CancellationToken;
 using SystemCancellationTokenSource = System.Threading.CancellationTokenSource;
 using SystemHttpClient = System.Net.Http.HttpClient;
@@ -15,7 +16,6 @@ using SystemHttpRequestMessage = System.Net.Http.HttpRequestMessage;
 using SystemHttpResponseMessage = System.Net.Http.HttpResponseMessage;
 using SystemTask = System.Threading.Tasks.Task;
 using SystemTasks = System.Threading.Tasks;
-using ControlledTask = Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task;
 
 namespace Microsoft.Coyote.Rewriting.Types.Net.Http
 {
@@ -101,13 +101,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Net.Http
             // version policy.  Calling HttpClient.SendAsync itself would manufacture an uncontrolled
             // outer BCL task before the rewritten handler is reached.
             Invoke(CheckRequestBeforeSendMethod, client, request);
-            return SendCoreAsync(client, request, completionOption, cancellationToken, runtime);
+            return SendCoreAsync(client, request, completionOption, runtime, cancellationToken);
         }
 
         [System.Runtime.CompilerServices.AsyncMethodBuilder(typeof(Types.Runtime.CompilerServices.AsyncTaskMethodBuilder<>))]
         private static async SystemTasks.Task<SystemHttpResponseMessage> SendCoreAsync(SystemHttpClient client,
             SystemHttpRequestMessage request, SystemHttpCompletionOption completionOption,
-            SystemCancellationToken cancellationToken, CoyoteRuntime runtime)
+            CoyoteRuntime runtime, SystemCancellationToken cancellationToken)
         {
             var pendingSource = (SystemCancellationTokenSource)PendingRequestsSourceField.GetValue(client);
             // Own the links explicitly: LinkedTokenSource.Dispose waits for callbacks on other
@@ -116,13 +116,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Net.Http
             var linkedSource = links.Source;
             var timeoutLifetime = new SystemCancellationTokenSource();
             SystemTask timeout = client.Timeout == System.Threading.Timeout.InfiniteTimeSpan ? SystemTask.CompletedTask :
-                CancelOnTimeoutAsync(client.Timeout, timeoutLifetime.Token, links);
+                CancelOnTimeoutAsync(client.Timeout, links, timeoutLifetime.Token);
             SystemHttpResponseMessage response = null;
             try
             {
                 var handler = (SystemHttpMessageHandler)HandlerField.GetValue(client);
                 var handlerTask = HttpMessageInvoker.SendHandlerAsync(handler,
-                    HttpRequestMessage.WithRuntimeHeaders(request), linkedSource.Token, runtime);
+                    HttpRequestMessage.WithRuntimeHeaders(request), runtime, linkedSource.Token);
                 response = await Types.Threading.Tasks.Task<SystemHttpResponseMessage>.ConfigureAwait(handlerTask, false);
                 if (response is null)
                 {
@@ -177,8 +177,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Net.Http
         }
 
         [System.Runtime.CompilerServices.AsyncMethodBuilder(typeof(Types.Runtime.CompilerServices.AsyncTaskMethodBuilder))]
-        private static async SystemTask CancelOnTimeoutAsync(TimeSpan timeout,
-            SystemCancellationToken lifetime, CancellationLinks links)
+        private static async SystemTask CancelOnTimeoutAsync(TimeSpan timeout, CancellationLinks links,
+            SystemCancellationToken lifetime)
         {
             try
             {
@@ -212,16 +212,26 @@ namespace Microsoft.Coyote.Rewriting.Types.Net.Http
             {
                 lock (this.Sync)
                 {
-                    if (this.Retired) { return; }
+                    if (this.Retired)
+                    {
+                        return;
+                    }
+
                     this.Active++;
                 }
 
-                try { this.Source.Cancel(); }
+                try
+                {
+                    this.Source.Cancel();
+                }
                 finally
                 {
                     lock (this.Sync)
                     {
-                        if (--this.Active == 0 && this.Retired) { this.Source.Dispose(); }
+                        if (--this.Active == 0 && this.Retired)
+                        {
+                            this.Source.Dispose();
+                        }
                     }
                 }
             }
@@ -230,9 +240,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Net.Http
             {
                 lock (this.Sync)
                 {
-                    if (this.Retired) { return; }
+                    if (this.Retired)
+                    {
+                        return;
+                    }
+
                     this.Retired = true;
-                    if (this.Active == 0) { this.Source.Dispose(); }
+                    if (this.Active == 0)
+                    {
+                        this.Source.Dispose();
+                    }
                 }
 
                 // An in-flight forwarding callback owns final disposal after Cancel returns.

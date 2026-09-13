@@ -92,6 +92,9 @@ namespace Microsoft.Coyote.Rewriting.Tests
                     "Closed and selected explicitly for constrained generic calls.",
                 ["Microsoft.Coyote.Rewriting.Types.Hosting.HostedService::StopAsync(T&, CancellationToken)"] =
                     "Closed and selected explicitly for constrained generic calls.",
+                ["Microsoft.Coyote.Rewriting.Types.Threading.Mutex::Dispose(Mutex)"] =
+                    "Selected by the IDisposable and WaitHandle routers for Mutex instances; Mutex inherits " +
+                    "Dispose from WaitHandle, so there is no declared method for it to replace.",
             };
 
         /// <summary>
