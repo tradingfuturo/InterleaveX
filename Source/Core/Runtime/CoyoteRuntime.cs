@@ -2911,6 +2911,27 @@ namespace Microsoft.Coyote.Runtime
         }
 
         /// <summary>
+        /// Returns true if the thread with the specified managed thread id is a controlled thread of this runtime.
+        /// </summary>
+        /// <remarks>
+        /// For framework state that records only the managed id of the thread doing some work, such as the thread
+        /// running the callbacks of a cancellation source, so that a wait on that work can say whether its progress is
+        /// visible to the scheduler.
+        /// </remarks>
+        internal bool IsManagedThreadIdControlled(int managedThreadId)
+        {
+            foreach (Thread thread in this.ThreadPool.Values)
+            {
+                if (thread.ManagedThreadId == managedThreadId)
+                {
+                    return this.IsThreadControlled(thread);
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// Returns true if the specified task is uncontrolled, else false.
         /// </summary>
         internal bool IsTaskUncontrolled(Task task) => this.IsTaskUncontrolled(task, out _);

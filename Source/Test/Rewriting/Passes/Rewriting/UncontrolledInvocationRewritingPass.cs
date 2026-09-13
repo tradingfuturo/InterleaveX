@@ -156,17 +156,22 @@ namespace Microsoft.Coyote.Rewriting
                     return true;
                 }
                 else if (type.Name is nameof(System.Threading.ExecutionContext) ||
-                    type.Name is nameof(System.Threading.ManualResetEventSlim) ||
                     type.Name is nameof(System.Threading.Mutex) ||
                     type.Name is nameof(System.Threading.ReaderWriterLock) ||
                     type.Name is nameof(System.Threading.RegisteredWaitHandle) ||
                     type.Name is nameof(System.Threading.Semaphore) ||
                     type.Name is nameof(System.Threading.SpinLock) ||
-                    type.Name is nameof(System.Threading.SynchronizationContext) ||
-                    type.Name is nameof(System.Threading.Timer))
+                    type.Name is nameof(System.Threading.SynchronizationContext))
                 {
                     return true;
                 }
+#if !NET8_0_OR_GREATER
+                else if (type.Name is nameof(System.Threading.Timer))
+                {
+                    // Modelled only from .NET 8, where the virtual time provider its schedule is built on exists.
+                    return true;
+                }
+#endif
             }
             else if (type.Namespace.StartsWith(typeof(System.Timers.Timer).Namespace))
             {

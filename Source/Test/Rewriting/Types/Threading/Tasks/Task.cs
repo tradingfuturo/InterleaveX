@@ -184,12 +184,75 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             task.RunSynchronously(runtime.ControlledTaskScheduler);
         }
 
+#pragma warning disable CA1068 // CancellationToken parameters must come last: these mirror the framework signatures.
+        // Every public Task.ContinueWith overload is modelled. The framework overloads that take no scheduler use
+        // TaskScheduler.Current, so the corresponding models pass it explicitly; all of them funnel into
+        // ContinueWithControlled, which is the single place where a continuation is moved onto the controlled
+        // scheduler. An overload left out here is not merely unmodelled: the uncontrolled-invocation pass reports
+        // Task.ContinueWith by name, so a missing shape surfaces as an uncontrolled invocation at every call site.
+
+        /// <summary>
+        /// Creates a continuation that is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTask task, Action<SystemTask> continuationAction) =>
+            ContinueWith(task, continuationAction, SystemCancellationToken.None, SystemTaskContinuationOptions.None,
+                SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a cancellable continuation that is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTask task, Action<SystemTask> continuationAction,
+            SystemCancellationToken cancellationToken) =>
+            ContinueWith(task, continuationAction, cancellationToken, SystemTaskContinuationOptions.None,
+                SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a filtered continuation that is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTask task, Action<SystemTask> continuationAction,
+            SystemTaskContinuationOptions continuationOptions) =>
+            ContinueWith(task, continuationAction, SystemCancellationToken.None, continuationOptions,
+                SystemTaskScheduler.Current);
+
         /// <summary>
         /// Creates a continuation that is scheduled by the specified scheduler.
         /// </summary>
         public static SystemTask ContinueWith(SystemTask task, Action<SystemTask> continuationAction,
             SystemTaskScheduler scheduler) => ContinueWith(task, continuationAction, SystemCancellationToken.None,
                 SystemTaskContinuationOptions.None, scheduler);
+
+        /// <summary>
+        /// Creates a continuation with cancellation and filtering options that is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTask task, Action<SystemTask> continuationAction,
+            SystemCancellationToken cancellationToken, SystemTaskContinuationOptions continuationOptions,
+            SystemTaskScheduler scheduler) =>
+            ContinueWithControlled(task, continuationOptions, scheduler, controlledScheduler =>
+                task.ContinueWith(continuationAction, cancellationToken, continuationOptions, controlledScheduler));
+
+        /// <summary>
+        /// Creates a result continuation that is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TResult> ContinueWith<TResult>(SystemTask task,
+            Func<SystemTask, TResult> continuationFunction) =>
+            ContinueWith(task, continuationFunction, SystemCancellationToken.None,
+                SystemTaskContinuationOptions.None, SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a cancellable result continuation that is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TResult> ContinueWith<TResult>(SystemTask task,
+            Func<SystemTask, TResult> continuationFunction, SystemCancellationToken cancellationToken) =>
+            ContinueWith(task, continuationFunction, cancellationToken, SystemTaskContinuationOptions.None,
+                SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a filtered result continuation that is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TResult> ContinueWith<TResult>(SystemTask task,
+            Func<SystemTask, TResult> continuationFunction, SystemTaskContinuationOptions continuationOptions) =>
+            ContinueWith(task, continuationFunction, SystemCancellationToken.None, continuationOptions,
+                SystemTaskScheduler.Current);
 
         /// <summary>
         /// Creates a result continuation that is scheduled by the specified scheduler.
@@ -200,44 +263,104 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                 SystemTaskContinuationOptions.None, scheduler);
 
         /// <summary>
-        /// Creates a continuation with cancellation and filtering options that is scheduled by the specified scheduler.
-        /// </summary>
-        public static SystemTask ContinueWith(SystemTask task, Action<SystemTask> continuationAction,
-            SystemCancellationToken cancellationToken, SystemTaskContinuationOptions continuationOptions,
-            SystemTaskScheduler scheduler)
-        {
-            var runtime = CoyoteRuntime.Current;
-            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
-            {
-                return task.ContinueWith(continuationAction, cancellationToken, continuationOptions, scheduler);
-            }
-
-            runtime.CheckIfReturnedTaskIsUncontrolled(task, "Task.ContinueWith antecedent");
-            SystemTask continuation = task.ContinueWith(continuationAction, cancellationToken, continuationOptions,
-                GetControlledContinuationScheduler(runtime, scheduler, continuationOptions));
-            runtime.RegisterKnownControlledTask(continuation);
-            return continuation;
-        }
-
-        /// <summary>
         /// Creates a result continuation with cancellation and filtering options that is scheduled by the specified scheduler.
         /// </summary>
         public static SystemTasks.Task<TResult> ContinueWith<TResult>(SystemTask task,
             Func<SystemTask, TResult> continuationFunction, SystemCancellationToken cancellationToken,
-            SystemTaskContinuationOptions continuationOptions, SystemTaskScheduler scheduler)
-        {
-            var runtime = CoyoteRuntime.Current;
-            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
-            {
-                return task.ContinueWith(continuationFunction, cancellationToken, continuationOptions, scheduler);
-            }
+            SystemTaskContinuationOptions continuationOptions, SystemTaskScheduler scheduler) =>
+            ContinueWithControlled(task, continuationOptions, scheduler, controlledScheduler =>
+                task.ContinueWith(continuationFunction, cancellationToken, continuationOptions, controlledScheduler));
 
-            runtime.CheckIfReturnedTaskIsUncontrolled(task, "Task.ContinueWith antecedent");
-            SystemTasks.Task<TResult> continuation = task.ContinueWith(continuationFunction, cancellationToken,
-                continuationOptions, GetControlledContinuationScheduler(runtime, scheduler, continuationOptions));
-            runtime.RegisterKnownControlledTask(continuation);
-            return continuation;
-        }
+        /// <summary>
+        /// Creates a continuation that receives caller-supplied state and is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTask task, Action<SystemTask, object> continuationAction,
+            object state) =>
+            ContinueWith(task, continuationAction, state, SystemCancellationToken.None,
+                SystemTaskContinuationOptions.None, SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a cancellable continuation that receives caller-supplied state and is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTask task, Action<SystemTask, object> continuationAction,
+            object state, SystemCancellationToken cancellationToken) =>
+            ContinueWith(task, continuationAction, state, cancellationToken, SystemTaskContinuationOptions.None,
+                SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a filtered continuation that receives caller-supplied state and is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTask task, Action<SystemTask, object> continuationAction,
+            object state, SystemTaskContinuationOptions continuationOptions) =>
+            ContinueWith(task, continuationAction, state, SystemCancellationToken.None, continuationOptions,
+                SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a continuation that receives caller-supplied state and is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTask task, Action<SystemTask, object> continuationAction,
+            object state, SystemTaskScheduler scheduler) =>
+            ContinueWith(task, continuationAction, state, SystemCancellationToken.None,
+                SystemTaskContinuationOptions.None, scheduler);
+
+        /// <summary>
+        /// Creates a continuation that receives caller-supplied state, with cancellation and filtering options, that is
+        /// scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTask task, Action<SystemTask, object> continuationAction,
+            object state, SystemCancellationToken cancellationToken, SystemTaskContinuationOptions continuationOptions,
+            SystemTaskScheduler scheduler) =>
+            ContinueWithControlled(task, continuationOptions, scheduler, controlledScheduler =>
+                task.ContinueWith(continuationAction, state, cancellationToken, continuationOptions, controlledScheduler));
+
+        /// <summary>
+        /// Creates a result continuation that receives caller-supplied state and is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TResult> ContinueWith<TResult>(SystemTask task,
+            Func<SystemTask, object, TResult> continuationFunction, object state) =>
+            ContinueWith(task, continuationFunction, state, SystemCancellationToken.None,
+                SystemTaskContinuationOptions.None, SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a cancellable result continuation that receives caller-supplied state and is scheduled by the
+        /// current scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TResult> ContinueWith<TResult>(SystemTask task,
+            Func<SystemTask, object, TResult> continuationFunction, object state,
+            SystemCancellationToken cancellationToken) =>
+            ContinueWith(task, continuationFunction, state, cancellationToken, SystemTaskContinuationOptions.None,
+                SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a filtered result continuation that receives caller-supplied state and is scheduled by the current
+        /// scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TResult> ContinueWith<TResult>(SystemTask task,
+            Func<SystemTask, object, TResult> continuationFunction, object state,
+            SystemTaskContinuationOptions continuationOptions) =>
+            ContinueWith(task, continuationFunction, state, SystemCancellationToken.None, continuationOptions,
+                SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a result continuation that receives caller-supplied state and is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TResult> ContinueWith<TResult>(SystemTask task,
+            Func<SystemTask, object, TResult> continuationFunction, object state, SystemTaskScheduler scheduler) =>
+            ContinueWith(task, continuationFunction, state, SystemCancellationToken.None,
+                SystemTaskContinuationOptions.None, scheduler);
+
+        /// <summary>
+        /// Creates a result continuation that receives caller-supplied state, with cancellation and filtering options,
+        /// that is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TResult> ContinueWith<TResult>(SystemTask task,
+            Func<SystemTask, object, TResult> continuationFunction, object state,
+            SystemCancellationToken cancellationToken, SystemTaskContinuationOptions continuationOptions,
+            SystemTaskScheduler scheduler) =>
+            ContinueWithControlled(task, continuationOptions, scheduler, controlledScheduler =>
+                task.ContinueWith(continuationFunction, state, cancellationToken, continuationOptions,
+                    controlledScheduler));
+#pragma warning restore CA1068 // CancellationToken parameters must come last
 
         /// <summary>
         /// Queues the specified work to run on the thread pool and returns a task object that
@@ -1367,6 +1490,36 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
         /// </summary>
         public static YieldAwaitable Yield() => new YieldAwaitable(default);
 
+        /// <summary>
+        /// Creates a continuation of the specified antecedent and registers it as a controlled task.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="continueWith"/> receives the scheduler to create the continuation on: the caller's own when
+        /// the runtime is not controlling execution, and the controlled scheduler otherwise.
+        /// </remarks>
+        internal static TContinuation ContinueWithControlled<TContinuation>(SystemTask antecedent,
+            SystemTaskContinuationOptions continuationOptions, SystemTaskScheduler scheduler,
+            Func<SystemTaskScheduler, TContinuation> continueWith)
+            where TContinuation : SystemTask
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
+            {
+                return continueWith(scheduler);
+            }
+
+            if (scheduler is null)
+            {
+                throw new ArgumentNullException(nameof(scheduler));
+            }
+
+            runtime.CheckIfReturnedTaskIsUncontrolled(antecedent, "Task.ContinueWith antecedent");
+            TContinuation continuation = continueWith(
+                GetControlledContinuationScheduler(runtime, scheduler, continuationOptions));
+            runtime.RegisterKnownControlledTask(continuation);
+            return continuation;
+        }
+
         internal static SystemTaskScheduler GetControlledContinuationScheduler(CoyoteRuntime runtime,
             SystemTaskScheduler scheduler, SystemTaskContinuationOptions continuationOptions)
         {
@@ -1498,6 +1651,34 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
 #pragma warning restore SA1300 // Element should begin with an uppercase letter
 #pragma warning restore IDE1006 // Naming Styles
 
+#pragma warning disable CA1068 // CancellationToken parameters must come last: these mirror the framework signatures.
+        // As on the non-generic model, every public ContinueWith overload of a generic task is modelled, and the
+        // overloads without a scheduler pass TaskScheduler.Current exactly as the framework does.
+
+        /// <summary>
+        /// Creates a continuation that is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTasks.Task<TResult> task,
+            Action<SystemTasks.Task<TResult>> continuationAction) =>
+            ContinueWith(task, continuationAction, SystemCancellationToken.None,
+                SystemTaskContinuationOptions.None, SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a cancellable continuation that is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTasks.Task<TResult> task,
+            Action<SystemTasks.Task<TResult>> continuationAction, SystemCancellationToken cancellationToken) =>
+            ContinueWith(task, continuationAction, cancellationToken, SystemTaskContinuationOptions.None,
+                SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a filtered continuation that is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTasks.Task<TResult> task,
+            Action<SystemTasks.Task<TResult>> continuationAction, SystemTaskContinuationOptions continuationOptions) =>
+            ContinueWith(task, continuationAction, SystemCancellationToken.None, continuationOptions,
+                SystemTaskScheduler.Current);
+
         /// <summary>
         /// Creates a continuation that is scheduled by the specified scheduler.
         /// </summary>
@@ -1505,6 +1686,40 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
             Action<SystemTasks.Task<TResult>> continuationAction, SystemTaskScheduler scheduler) =>
             ContinueWith(task, continuationAction, SystemCancellationToken.None,
                 SystemTaskContinuationOptions.None, scheduler);
+
+        /// <summary>
+        /// Creates a continuation with cancellation and filtering options that is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTasks.Task<TResult> task,
+            Action<SystemTasks.Task<TResult>> continuationAction, SystemCancellationToken cancellationToken,
+            SystemTaskContinuationOptions continuationOptions, SystemTaskScheduler scheduler) =>
+            ContinueWithControlled(task, continuationOptions, scheduler, controlledScheduler =>
+                task.ContinueWith(continuationAction, cancellationToken, continuationOptions, controlledScheduler));
+
+        /// <summary>
+        /// Creates a result continuation that is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TNewResult> ContinueWith<TNewResult>(SystemTasks.Task<TResult> task,
+            Func<SystemTasks.Task<TResult>, TNewResult> continuationFunction) =>
+            ContinueWith(task, continuationFunction, SystemCancellationToken.None,
+                SystemTaskContinuationOptions.None, SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a cancellable result continuation that is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TNewResult> ContinueWith<TNewResult>(SystemTasks.Task<TResult> task,
+            Func<SystemTasks.Task<TResult>, TNewResult> continuationFunction, SystemCancellationToken cancellationToken) =>
+            ContinueWith(task, continuationFunction, cancellationToken, SystemTaskContinuationOptions.None,
+                SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a filtered result continuation that is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TNewResult> ContinueWith<TNewResult>(SystemTasks.Task<TResult> task,
+            Func<SystemTasks.Task<TResult>, TNewResult> continuationFunction,
+            SystemTaskContinuationOptions continuationOptions) =>
+            ContinueWith(task, continuationFunction, SystemCancellationToken.None, continuationOptions,
+                SystemTaskScheduler.Current);
 
         /// <summary>
         /// Creates a result continuation that is scheduled by the specified scheduler.
@@ -1515,48 +1730,116 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Tasks
                 SystemTaskContinuationOptions.None, scheduler);
 
         /// <summary>
-        /// Creates a continuation with cancellation and filtering options that is scheduled by the specified scheduler.
-        /// </summary>
-        public static SystemTask ContinueWith(SystemTasks.Task<TResult> task,
-            Action<SystemTasks.Task<TResult>> continuationAction, SystemCancellationToken cancellationToken,
-            SystemTaskContinuationOptions continuationOptions, SystemTaskScheduler scheduler)
-        {
-            var runtime = CoyoteRuntime.Current;
-            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
-            {
-                return task.ContinueWith(continuationAction, cancellationToken, continuationOptions, scheduler);
-            }
-
-            runtime.CheckIfReturnedTaskIsUncontrolled(task, "Task.ContinueWith antecedent");
-            SystemTask continuation = task.ContinueWith(continuationAction, cancellationToken, continuationOptions,
-                global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.GetControlledContinuationScheduler(
-                    runtime, scheduler, continuationOptions));
-            runtime.RegisterKnownControlledTask(continuation);
-            return continuation;
-        }
-
-        /// <summary>
         /// Creates a result continuation with cancellation and filtering options that is scheduled by the specified scheduler.
         /// </summary>
         public static SystemTasks.Task<TNewResult> ContinueWith<TNewResult>(SystemTasks.Task<TResult> task,
             Func<SystemTasks.Task<TResult>, TNewResult> continuationFunction,
             SystemCancellationToken cancellationToken, SystemTaskContinuationOptions continuationOptions,
-            SystemTaskScheduler scheduler)
-        {
-            var runtime = CoyoteRuntime.Current;
-            if (runtime.SchedulingPolicy is SchedulingPolicy.None)
-            {
-                return task.ContinueWith(continuationFunction, cancellationToken, continuationOptions, scheduler);
-            }
+            SystemTaskScheduler scheduler) =>
+            ContinueWithControlled(task, continuationOptions, scheduler, controlledScheduler =>
+                task.ContinueWith(continuationFunction, cancellationToken, continuationOptions, controlledScheduler));
 
-            runtime.CheckIfReturnedTaskIsUncontrolled(task, "Task.ContinueWith antecedent");
-            SystemTasks.Task<TNewResult> continuation = task.ContinueWith(continuationFunction, cancellationToken,
-                continuationOptions,
-                global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.GetControlledContinuationScheduler(
-                    runtime, scheduler, continuationOptions));
-            runtime.RegisterKnownControlledTask(continuation);
-            return continuation;
-        }
+        /// <summary>
+        /// Creates a continuation that receives caller-supplied state and is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTasks.Task<TResult> task,
+            Action<SystemTasks.Task<TResult>, object> continuationAction, object state) =>
+            ContinueWith(task, continuationAction, state, SystemCancellationToken.None,
+                SystemTaskContinuationOptions.None, SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a cancellable continuation that receives caller-supplied state and is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTasks.Task<TResult> task,
+            Action<SystemTasks.Task<TResult>, object> continuationAction, object state,
+            SystemCancellationToken cancellationToken) =>
+            ContinueWith(task, continuationAction, state, cancellationToken, SystemTaskContinuationOptions.None,
+                SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a filtered continuation that receives caller-supplied state and is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTasks.Task<TResult> task,
+            Action<SystemTasks.Task<TResult>, object> continuationAction, object state,
+            SystemTaskContinuationOptions continuationOptions) =>
+            ContinueWith(task, continuationAction, state, SystemCancellationToken.None, continuationOptions,
+                SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a continuation that receives caller-supplied state and is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTasks.Task<TResult> task,
+            Action<SystemTasks.Task<TResult>, object> continuationAction, object state, SystemTaskScheduler scheduler) =>
+            ContinueWith(task, continuationAction, state, SystemCancellationToken.None,
+                SystemTaskContinuationOptions.None, scheduler);
+
+        /// <summary>
+        /// Creates a continuation that receives caller-supplied state, with cancellation and filtering options, that is
+        /// scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTask ContinueWith(SystemTasks.Task<TResult> task,
+            Action<SystemTasks.Task<TResult>, object> continuationAction, object state,
+            SystemCancellationToken cancellationToken, SystemTaskContinuationOptions continuationOptions,
+            SystemTaskScheduler scheduler) =>
+            ContinueWithControlled(task, continuationOptions, scheduler, controlledScheduler =>
+                task.ContinueWith(continuationAction, state, cancellationToken, continuationOptions, controlledScheduler));
+
+        /// <summary>
+        /// Creates a result continuation that receives caller-supplied state and is scheduled by the current scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TNewResult> ContinueWith<TNewResult>(SystemTasks.Task<TResult> task,
+            Func<SystemTasks.Task<TResult>, object, TNewResult> continuationFunction, object state) =>
+            ContinueWith(task, continuationFunction, state, SystemCancellationToken.None,
+                SystemTaskContinuationOptions.None, SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a cancellable result continuation that receives caller-supplied state and is scheduled by the
+        /// current scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TNewResult> ContinueWith<TNewResult>(SystemTasks.Task<TResult> task,
+            Func<SystemTasks.Task<TResult>, object, TNewResult> continuationFunction, object state,
+            SystemCancellationToken cancellationToken) =>
+            ContinueWith(task, continuationFunction, state, cancellationToken, SystemTaskContinuationOptions.None,
+                SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a filtered result continuation that receives caller-supplied state and is scheduled by the current
+        /// scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TNewResult> ContinueWith<TNewResult>(SystemTasks.Task<TResult> task,
+            Func<SystemTasks.Task<TResult>, object, TNewResult> continuationFunction, object state,
+            SystemTaskContinuationOptions continuationOptions) =>
+            ContinueWith(task, continuationFunction, state, SystemCancellationToken.None, continuationOptions,
+                SystemTaskScheduler.Current);
+
+        /// <summary>
+        /// Creates a result continuation that receives caller-supplied state and is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TNewResult> ContinueWith<TNewResult>(SystemTasks.Task<TResult> task,
+            Func<SystemTasks.Task<TResult>, object, TNewResult> continuationFunction, object state,
+            SystemTaskScheduler scheduler) =>
+            ContinueWith(task, continuationFunction, state, SystemCancellationToken.None,
+                SystemTaskContinuationOptions.None, scheduler);
+
+        /// <summary>
+        /// Creates a result continuation that receives caller-supplied state, with cancellation and filtering options,
+        /// that is scheduled by the specified scheduler.
+        /// </summary>
+        public static SystemTasks.Task<TNewResult> ContinueWith<TNewResult>(SystemTasks.Task<TResult> task,
+            Func<SystemTasks.Task<TResult>, object, TNewResult> continuationFunction, object state,
+            SystemCancellationToken cancellationToken, SystemTaskContinuationOptions continuationOptions,
+            SystemTaskScheduler scheduler) =>
+            ContinueWithControlled(task, continuationOptions, scheduler, controlledScheduler =>
+                task.ContinueWith(continuationFunction, state, cancellationToken, continuationOptions,
+                    controlledScheduler));
+
+        private static TContinuation ContinueWithControlled<TContinuation>(SystemTasks.Task<TResult> task,
+            SystemTaskContinuationOptions continuationOptions, SystemTaskScheduler scheduler,
+            Func<SystemTaskScheduler, TContinuation> continueWith)
+            where TContinuation : SystemTask =>
+            global::Microsoft.Coyote.Rewriting.Types.Threading.Tasks.Task.ContinueWithControlled(
+                task, continuationOptions, scheduler, continueWith);
+#pragma warning restore CA1068 // CancellationToken parameters must come last
 
 #if NET6_0_OR_GREATER
         /// <summary>

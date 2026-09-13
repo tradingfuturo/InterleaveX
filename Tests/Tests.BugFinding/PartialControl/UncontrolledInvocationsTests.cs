@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
 // Modifications Copyright (c) 2026 pipflow.com <https://pipflow.com>
@@ -13,6 +13,14 @@ using Xunit.Abstractions;
 
 namespace Microsoft.Coyote.BugFinding.Tests
 {
+    /// <summary>
+    /// Covers how an invocation the rewriter does not control is reported and tolerated.
+    /// </summary>
+    /// <remarks>
+    /// These tests need an API that is genuinely uncontrolled. <c>Task.ContinueWith</c> and
+    /// <c>System.Threading.Timer</c> used to be the examples; both are modelled now, so the thread pool, which remains
+    /// uncontrolled by design, stands in for them.
+    /// </remarks>
     public class UncontrolledInvocationsTests : BaseBugFindingTest
     {
         public UncontrolledInvocationsTests(ITestOutputHelper output)
@@ -21,12 +29,11 @@ namespace Microsoft.Coyote.BugFinding.Tests
         }
 
         [Fact(Timeout = 5000)]
-        public void TestUncontrolledContinueWithTaskInvocation()
+        public void TestUncontrolledThreadPoolInvocation()
         {
             this.Test(() =>
             {
-                var task = new Task(() => { });
-                task.ContinueWith(_ => { }, TaskScheduler.Current);
+                ThreadPool.QueueUserWorkItem(_ => Console.WriteLine("Hello!"));
             },
             configuration: this.GetConfiguration()
                 .WithPartiallyControlledConcurrencyAllowed()
@@ -34,49 +41,22 @@ namespace Microsoft.Coyote.BugFinding.Tests
         }
 
         [Fact(Timeout = 5000)]
-        public void TestUncontrolledContinueWithTaskInvocationWithNoPartialControl()
-        {
-            this.TestWithError(() =>
-            {
-                var task = new Task(() => { });
-                task.ContinueWith(_ => { }, TaskScheduler.Current);
-            },
-            errorChecker: (e) =>
-            {
-                var expectedMethodName = GetFullyQualifiedMethodName(typeof(Task), nameof(Task.ContinueWith));
-                Assert.StartsWith($"Invoking '{expectedMethodName}' is not intercepted", e);
-            });
-        }
-
-        [Fact(Timeout = 5000)]
-        public void TestUncontrolledTimerInvocation()
-        {
-            this.Test(() =>
-            {
-                using var timer = new Timer(_ => Console.WriteLine("Hello!"), null, 1, 0);
-            },
-            configuration: this.GetConfiguration()
-                .WithPartiallyControlledConcurrencyAllowed()
-                .WithTestingIterations(10));
-        }
-
-        [Fact(Timeout = 5000)]
-        public void TestUncontrolledTimerCallbackWithLock()
+        public void TestUncontrolledThreadPoolCallbackWithLock()
         {
             this.Test(async () =>
             {
                 var lockObj = new object();
                 var tcs = new TaskCompletionSource<bool>();
-                using var timer = new Timer(_ =>
+                ThreadPool.QueueUserWorkItem(_ =>
                 {
-                    // Timer callbacks run on uncontrolled threads. Acquiring a lock
+                    // Thread pool callbacks run on uncontrolled threads. Acquiring a lock
                     // inside the callback must not cause a NullReferenceException
                     // when the rewritten Monitor.Enter falls back to native locking.
                     lock (lockObj)
                     {
                         tcs.TrySetResult(true);
                     }
-                }, null, 1, Timeout.Infinite);
+                });
                 await tcs.Task;
             },
             configuration: this.GetConfiguration()
@@ -85,15 +65,15 @@ namespace Microsoft.Coyote.BugFinding.Tests
         }
 
         [Fact(Timeout = 5000)]
-        public void TestUncontrolledTimerInvocationWithNoPartialControl()
+        public void TestUncontrolledThreadPoolInvocationWithNoPartialControl()
         {
             this.TestWithError(() =>
             {
-                using var timer = new Timer(_ => Console.WriteLine("Hello!"), null, 1, 0);
+                ThreadPool.QueueUserWorkItem(_ => Console.WriteLine("Hello!"));
             },
             errorChecker: (e) =>
             {
-                var expectedMethodName = GetFullyQualifiedMethodName(typeof(Timer), ".ctor");
+                var expectedMethodName = GetFullyQualifiedMethodName(typeof(ThreadPool), nameof(ThreadPool.QueueUserWorkItem));
                 Assert.StartsWith($"Invoking '{expectedMethodName}' is not intercepted", e);
             });
         }

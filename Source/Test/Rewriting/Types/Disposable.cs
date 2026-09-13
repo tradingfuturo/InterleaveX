@@ -32,6 +32,16 @@ namespace Microsoft.Coyote.Rewriting.Types
             {
                 Threading.Mutex.Dispose(mutex);
             }
+            else if (instance is System.Threading.ManualResetEventSlim manualResetEventSlim)
+            {
+                Threading.ManualResetEventSlim.Dispose(manualResetEventSlim);
+            }
+#if NET8_0_OR_GREATER
+            else if (instance is System.Threading.Timer timer)
+            {
+                Threading.Timer.Dispose(timer);
+            }
+#endif
             else
             {
                 instance.Dispose();
@@ -48,6 +58,19 @@ namespace Microsoft.Coyote.Rewriting.Types
             {
                 return Hosting.Host.DisposeAsync(host);
             }
+
+#if NET8_0_OR_GREATER
+            if (instance is System.Threading.Timer timer)
+            {
+                return Threading.Timer.DisposeAsync(timer);
+            }
+
+            if (instance is System.Threading.CancellationTokenRegistration registration)
+            {
+                // A boxed copy is disposed. The registration is an immutable handle, so the copy denotes the same one.
+                return Threading.CancellationTokenRegistration.DisposeAsync(ref registration);
+            }
+#endif
 
             return instance.DisposeAsync();
         }

@@ -682,21 +682,22 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 Exception failure = null;
                 int taken = -1;
 
-                using var timer = new Timer(
-                    _ =>
+                // A real thread the scheduler has no record of. A timer callback used to serve here, but timers are
+                // modelled now: their callbacks are controlled operations, and would not exercise this path at all.
+                _ = ThreadPool.QueueUserWorkItem(state =>
+                {
+                    reached.TrySetResult(true);
+                    try
                     {
-                        reached.TrySetResult(true);
-                        try
-                        {
-                            taken = collection.Take();
-                        }
-                        catch (Exception ex)
-                        {
-                            failure = ex;
-                        }
+                        taken = collection.Take();
+                    }
+                    catch (Exception ex)
+                    {
+                        failure = ex;
+                    }
 
-                        finished.TrySetResult(true);
-                    }, null, 1, Timeout.Infinite);
+                    finished.TrySetResult(true);
+                });
 
                 await reached.Task;
                 collection.Add(7);
@@ -728,13 +729,13 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 var reached = new TaskCompletionSource<bool>();
                 var finished = new TaskCompletionSource<bool>();
 
-                using var timer = new Timer(
-                    _ =>
-                    {
-                        reached.TrySetResult(true);
-                        collection.Add(2);
-                        finished.TrySetResult(true);
-                    }, null, 1, Timeout.Infinite);
+                // A real thread the scheduler has no record of; see the test above for why it is not a timer.
+                _ = ThreadPool.QueueUserWorkItem(state =>
+                {
+                    reached.TrySetResult(true);
+                    collection.Add(2);
+                    finished.TrySetResult(true);
+                });
 
                 // Freeing the slot is what lets a blocking add complete; the callback is already committed
                 // to its add by then.

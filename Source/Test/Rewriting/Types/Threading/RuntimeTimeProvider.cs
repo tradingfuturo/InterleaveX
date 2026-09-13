@@ -57,9 +57,10 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         }
 
         /// <summary>
-        /// Uses scheduler-owned virtual delays as the timer source supplied to the BCL delay promise.
+        /// Uses scheduler-owned virtual delays as the timer source supplied to the BCL delay promise, and as the
+        /// schedule of a modelled <see cref="System.Threading.Timer"/>.
         /// </summary>
-        private sealed class VirtualTimeProvider : TimeProvider
+        internal sealed class VirtualTimeProvider : TimeProvider
         {
             private readonly CoyoteRuntime Runtime;
 
@@ -168,6 +169,17 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     this.CurrentDelay = delay;
                 }
 
+                if ((long)dueTime.TotalMilliseconds is 0 && this.Runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
+                {
+                    // A zero-delay schedule completes synchronously, and the synchronous continuation below would then
+                    // run the callback inline on the thread arming the timer - inside a Timer constructor or Change
+                    // call. A framework timer never does that: a due callback is always queued. So it is queued here
+                    // too, as a new operation that the scheduler decides when to run.
+                    delay.SetTask(Task.CompletedTask);
+                    this.Runtime.Schedule(() => this.OnDelayCompleted(delay, Task.CompletedTask));
+                    return;
+                }
+
                 Task task = this.Runtime.ScheduleDelay(dueTime, delay.Cancellation.Token);
                 delay.SetTask(task);
                 task.ContinueWith(static (completed, state) =>
@@ -232,7 +244,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             private sealed class ScheduledDelay : IDisposable
             {
                 internal readonly VirtualTimer Owner;
-                internal readonly CancellationTokenSource Cancellation = new CancellationTokenSource();
+                internal readonly System.Threading.CancellationTokenSource Cancellation =
+                    new System.Threading.CancellationTokenSource();
                 private Task Task;
 
                 internal ScheduledDelay(VirtualTimer owner)

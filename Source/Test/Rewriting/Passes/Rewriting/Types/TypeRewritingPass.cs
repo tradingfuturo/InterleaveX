@@ -109,6 +109,8 @@ namespace Microsoft.Coyote.Rewriting
             this.KnownTypes[NameCache.EventWaitHandle] = typeof(Types.Threading.EventWaitHandle);
             this.KnownTypes[NameCache.WaitHandle] = typeof(Types.Threading.WaitHandle);
             this.KnownTypes[typeof(System.Threading.Mutex).FullName] = typeof(Types.Threading.Mutex);
+            this.KnownTypes[typeof(System.Threading.ManualResetEventSlim).FullName] =
+                typeof(Types.Threading.ManualResetEventSlim);
             this.KnownTypes[typeof(System.Guid).FullName] = typeof(Types.GuidProvider);
 #if NET
             // A periodic timer is a synchronization primitive as much as a clock: a loop driven by
@@ -116,6 +118,22 @@ namespace Microsoft.Coyote.Rewriting
             // from a thread the scheduler has no record of, so the loop is never interleaved with
             // anything and a test over it explores nothing.
             this.KnownTypes[NameCache.PeriodicTimer] = typeof(Types.Threading.PeriodicTimer);
+#if NET8_0_OR_GREATER
+            // A framework timer fires from the real thread pool for the same reason, and its callbacks are
+            // the work: nothing they touch is interleaved with the rest of the test. ITimer is registered
+            // with it because Timer implements it, and a change made through the interface would otherwise
+            // reach the unarmed framework timer rather than the modelled schedule.
+            this.KnownTypes[typeof(System.Threading.Timer).FullName] = typeof(Types.Threading.Timer);
+            this.KnownTypes[typeof(System.Threading.ITimer).FullName] = typeof(Types.Threading.TimerInterface);
+
+            // CancelAsync runs the callbacks, and a registration's DisposeAsync waits for one, from work that
+            // CoreLib queues to the real thread pool. Only those members are modelled: everything else on these
+            // types is synchronous and keeps its framework implementation.
+            this.KnownTypes[typeof(System.Threading.CancellationTokenSource).FullName] =
+                typeof(Types.Threading.CancellationTokenSource);
+            this.KnownTypes[typeof(System.Threading.CancellationTokenRegistration).FullName] =
+                typeof(Types.Threading.CancellationTokenRegistration);
+#endif
 
             // A hosted service's StopAsync waits on WhenAny over an infinite Task.Delay, and it does so
             // inside Microsoft.Extensions.Hosting.Abstractions — an assembly the rewriter does not visit.
