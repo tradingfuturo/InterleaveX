@@ -208,17 +208,18 @@ namespace Microsoft.Coyote.Rewriting
                 ))
             {
 #if NET8_0_OR_GREATER
-                // 'await using' over a CancellationTokenRegistration compiles to exactly this shape, with the
-                // registration's address on the stack. Its model takes the registration by reference, so the
-                // address is already the argument it needs: dropping the prefix is the whole reroute.
-                if (method.DeclaringType.FullName == NameCache.IAsyncDisposable &&
-                    instruction.Previous.Operand is TypeReference disposedValueType &&
+                // 'using' and 'await using' over a CancellationTokenRegistration compile to exactly this shape, with
+                // the registration's address on the stack. Its models take the registration by reference, so the
+                // address is already the argument they need: dropping the prefix is the whole reroute.
+                if (instruction.Previous.Operand is TypeReference disposedValueType &&
                     disposedValueType.FullName == typeof(System.Threading.CancellationTokenRegistration).FullName &&
                     this.TryImportMethod(typeof(Types.Threading.CancellationTokenRegistration),
-                        nameof(Types.Threading.CancellationTokenRegistration.DisposeAsync)) is MethodReference disposeAsync)
+                        method.DeclaringType.FullName == NameCache.IDisposable ?
+                            nameof(Types.Threading.CancellationTokenRegistration.Dispose) :
+                            nameof(Types.Threading.CancellationTokenRegistration.DisposeAsync)) is MethodReference dispose)
                 {
                     this.Replace(instruction.Previous, Instruction.Create(OpCodes.Nop));
-                    Instruction routed = Instruction.Create(OpCodes.Call, disposeAsync);
+                    Instruction routed = Instruction.Create(OpCodes.Call, dispose);
                     routed.Offset = instruction.Offset;
                     this.LogWriter.LogDebug("............. [-] {0}", instruction);
                     this.Replace(instruction, routed);

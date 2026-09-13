@@ -159,6 +159,120 @@ namespace Microsoft.Coyote.BugFinding.Tests
             }, this.GetStrictConfiguration());
         }
 
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "CurrentUseThreadingModels")]
+        public void TestDisposeWaitsForAnInFlightCallback()
+        {
+            this.Test(async () =>
+            {
+                using var source = new CancellationTokenSource();
+                var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                bool finished = false;
+                CancellationTokenRegistration registration = source.Token.Register(() =>
+                {
+                    entered.SetResult(true);
+                    release.Task.Wait();
+                    finished = true;
+                });
+
+                Task canceller = Task.Run(source.Cancel);
+                await entered.Task;
+                _ = Task.Run(() => release.SetResult(true));
+                registration.Dispose();
+                Specification.Assert(finished, "Dispose returned before the in-flight callback returned.");
+                await canceller;
+            }, this.GetStrictConfiguration());
+        }
+
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "CurrentUseThreadingModels")]
+        public void TestUsingWaitsForACallbackThatCompletedTheAwaitedTask()
+        {
+            // The awaited task completes from inside the callback, so the disposing operation resumes while the callback
+            // walk is still in flight on the cancelling operation: the framework's spin-wait could never let it finish.
+            this.Test(async () =>
+            {
+                using var source = new CancellationTokenSource();
+                var canceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                bool finished = false;
+                Task canceller;
+                using (CancellationTokenRegistration registration = source.Token.Register(() =>
+                {
+                    canceled.SetResult();
+                    finished = true;
+                }))
+                {
+                    canceller = Task.Run(source.Cancel);
+                    await canceled.Task;
+                }
+
+                Specification.Assert(finished, "Leaving 'using' returned before the in-flight callback returned.");
+                await canceller;
+            }, this.GetStrictConfiguration());
+        }
+
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "CurrentUseThreadingModels")]
+        public void TestBoxedDisposableRegistrationWaitsForAnInFlightCallback()
+        {
+            this.Test(async () =>
+            {
+                using var source = new CancellationTokenSource();
+                var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                bool finished = false;
+                IDisposable disposable = source.Token.Register(() =>
+                {
+                    entered.SetResult(true);
+                    release.Task.Wait();
+                    finished = true;
+                });
+
+                Task canceller = Task.Run(source.Cancel);
+                await entered.Task;
+                _ = Task.Run(() => release.SetResult(true));
+                disposable.Dispose();
+                Specification.Assert(finished, "Disposing through IDisposable returned before the in-flight callback returned.");
+                await canceller;
+            }, this.GetStrictConfiguration());
+        }
+
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "CurrentUseThreadingModels")]
+        public void TestDisposeInsideItsOwnCallbackReturnsImmediately()
+        {
+            this.Test(() =>
+            {
+                using var source = new CancellationTokenSource();
+                CancellationTokenRegistration registration = default;
+                bool returned = false;
+                registration = source.Token.Register(() =>
+                {
+                    registration.Dispose();
+                    returned = true;
+                });
+
+                source.Cancel();
+                Specification.Assert(returned, "A registration disposed from inside its own callback waited for itself.");
+            }, this.GetStrictConfiguration());
+        }
+
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "CurrentUseThreadingModels")]
+        public void TestDisposeBeforeCancellationRemovesTheCallback()
+        {
+            this.Test(() =>
+            {
+                using var source = new CancellationTokenSource();
+                bool ran = false;
+                CancellationTokenRegistration registration = source.Token.Register(() => ran = true);
+                registration.Dispose();
+                source.Cancel();
+                Specification.Assert(!ran, "A callback disposed before cancellation still ran.");
+            }, this.GetStrictConfiguration());
+        }
+
         private Configuration GetStrictConfiguration() => this.GetConfiguration()
             .WithTestingIterations(100)
             .WithPartiallyControlledConcurrencyAllowed(false)

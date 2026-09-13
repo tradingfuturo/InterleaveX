@@ -34,6 +34,38 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
     public static class CancellationTokenRegistration
     {
         /// <summary>
+        /// Disposes the registration, returning once an in-flight invocation of its callback has returned.
+        /// </summary>
+        /// <remarks>
+        /// The framework blocks the disposing thread in a spin-and-sleep loop over the same callback id. The controlled
+        /// operation that runs the callback is never scheduled while the disposing operation spins, so a callback that
+        /// had reached any scheduling point - completing a task, for instance - left both parked until the periodic
+        /// monitor reported a hang. The model pauses the disposing operation on that id instead.
+        /// </remarks>
+        public static void Dispose(ref SystemCancellationTokenRegistration registration)
+        {
+            var runtime = CoyoteRuntime.Current;
+            if (runtime.SchedulingPolicy is not SchedulingPolicy.Interleaving ||
+                !runtime.TryGetExecutingOperation(out ControlledOperation _))
+            {
+                registration.Dispose();
+                return;
+            }
+
+            if (registration.Unregister() ||
+                !CancellationTokenSource.Internals.TryGetInFlightCallback(registration, out object registrations, out long id))
+            {
+                return;
+            }
+
+            bool isCallbackControlled = runtime.IsManagedThreadIdControlled(
+                CancellationTokenSource.Internals.GetThreadIdExecutingCallbacks(registrations));
+            runtime.PauseOperationUntil(null,
+                () => CancellationTokenSource.Internals.GetExecutingCallbackId(registrations) != id,
+                isCallbackControlled, "an in-flight cancellation callback to return");
+        }
+
+        /// <summary>
         /// Disposes the registration, completing once an in-flight invocation of its callback has returned.
         /// </summary>
         public static SystemValueTask DisposeAsync(ref SystemCancellationTokenRegistration registration)

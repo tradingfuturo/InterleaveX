@@ -85,6 +85,17 @@ namespace Microsoft.Coyote.Rewriting.Tests
                 nameof(CancellationTokenSource.CancelAsync), 1);
             AssertInstanceMethodsIntercepted(typeof(CancellationTokenRegistration),
                 typeof(ControlledCancellationTokenRegistration), nameof(CancellationTokenRegistration.DisposeAsync), 1);
+            AssertInstanceMethodsIntercepted(typeof(CancellationTokenRegistration),
+                typeof(ControlledCancellationTokenRegistration), nameof(CancellationTokenRegistration.Dispose), 1);
+            AssertInstanceMethodsIntercepted(typeof(CancellationTokenSource), typeof(ControlledCancellationTokenSource),
+                nameof(CancellationTokenSource.CancelAfter), 2);
+            foreach (Type delayType in new[] { typeof(TimeSpan), typeof(int) })
+            {
+                ConstructorInfo constructor = typeof(CancellationTokenSource).GetConstructor(new[] { delayType });
+                Assert.True(HasInterceptor(typeof(ControlledCancellationTokenSource), "Create", null,
+                    constructor.GetParameters(), typeof(CancellationTokenSource)),
+                    $"The CancellationTokenSource constructor is left to the framework: .ctor({Describe(constructor)}).");
+            }
         }
 
         private static void AssertInstanceMethodsIntercepted(Type real, Type model, string name, int expectedCount)

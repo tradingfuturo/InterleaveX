@@ -4,12 +4,14 @@
 #if NET8_0_OR_GREATER
 using System;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Microsoft.Coyote.Runtime;
 using SystemCancellationToken = System.Threading.CancellationToken;
 using SystemCancellationTokenRegistration = System.Threading.CancellationTokenRegistration;
 using SystemCancellationTokenSource = System.Threading.CancellationTokenSource;
 using SystemTask = System.Threading.Tasks.Task;
 using SystemTaskCreationOptions = System.Threading.Tasks.TaskCreationOptions;
+using SystemTimeout = System.Threading.Timeout;
 
 namespace Microsoft.Coyote.Rewriting.Types.Threading
 {
@@ -31,6 +33,214 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
     [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public static class CancellationTokenSource
     {
+        /// <summary>
+        /// The largest delay the framework accepts, in milliseconds.
+        /// </summary>
+        private const long MaxSupportedMilliseconds = 0xFFFFFFFE;
+
+        /// <summary>
+        /// The virtual cancellation schedule of each source armed through a model, keyed weakly by the source.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="SystemCancellationTokenSource.CancelAfter(TimeSpan)"/> and the delay constructors arm a framework
+        /// timer whose callback cancels the source from the real timer queue. That cancellation completes controlled
+        /// waiters from a thread the scheduler has no record of, so a wait that only the deadline could end parks until
+        /// the periodic monitor reports a hang. The model owns the deadline instead, as a one-shot virtual timer whose
+        /// callback cancels the source on a controlled operation.
+        /// </remarks>
+        private static readonly ConditionalWeakTable<SystemCancellationTokenSource, CancelSchedule> Schedules =
+            new ConditionalWeakTable<SystemCancellationTokenSource, CancelSchedule>();
+
+        /// <summary>
+        /// Initializes a source that is canceled after the specified delay.
+        /// </summary>
+        public static SystemCancellationTokenSource Create(TimeSpan delay)
+        {
+            long milliseconds = GetDelayMilliseconds(delay, nameof(delay));
+            if (!IsControlled(out CoyoteRuntime runtime))
+            {
+                return new SystemCancellationTokenSource(delay);
+            }
+
+            return CreateArmed(runtime, milliseconds);
+        }
+
+        /// <summary>
+        /// Initializes a source that is canceled after the specified number of milliseconds.
+        /// </summary>
+        public static SystemCancellationTokenSource Create(int millisecondsDelay)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsDelay, -1, nameof(millisecondsDelay));
+            if (!IsControlled(out CoyoteRuntime runtime))
+            {
+                return new SystemCancellationTokenSource(millisecondsDelay);
+            }
+
+            return CreateArmed(runtime, millisecondsDelay);
+        }
+
+        private static SystemCancellationTokenSource CreateArmed(CoyoteRuntime runtime, long milliseconds)
+        {
+            var source = new SystemCancellationTokenSource();
+            if (milliseconds == 0)
+            {
+                // The framework constructor completes a zero delay before returning, with nothing registered to run.
+                source.Cancel();
+            }
+            else
+            {
+                Arm(runtime, source, milliseconds);
+            }
+
+            return source;
+        }
+
+        /// <summary>
+        /// Schedules a cancel operation on the source after the specified delay.
+        /// </summary>
+        public static void CancelAfter(SystemCancellationTokenSource source, TimeSpan delay)
+        {
+            long milliseconds = GetDelayMilliseconds(delay, nameof(delay));
+            if (!IsControlled(out CoyoteRuntime runtime))
+            {
+                source.CancelAfter(delay);
+                return;
+            }
+
+            // The Token getter performs the framework's own disposed check, which CancelAfter also throws.
+            _ = source.Token;
+            Arm(runtime, source, milliseconds);
+        }
+
+        /// <summary>
+        /// Schedules a cancel operation on the source after the specified number of milliseconds.
+        /// </summary>
+        public static void CancelAfter(SystemCancellationTokenSource source, int millisecondsDelay)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsDelay, -1, nameof(millisecondsDelay));
+            if (!IsControlled(out CoyoteRuntime runtime))
+            {
+                source.CancelAfter(millisecondsDelay);
+                return;
+            }
+
+            _ = source.Token;
+            Arm(runtime, source, millisecondsDelay);
+        }
+
+        private static bool IsControlled(out CoyoteRuntime runtime)
+        {
+            runtime = CoyoteRuntime.Current;
+            return runtime.SchedulingPolicy is SchedulingPolicy.Interleaving &&
+                runtime.TryGetExecutingOperation(out ControlledOperation _);
+        }
+
+        private static long GetDelayMilliseconds(TimeSpan delay, string parameterName)
+        {
+            long milliseconds = (long)delay.TotalMilliseconds;
+            if (milliseconds < -1 || milliseconds > MaxSupportedMilliseconds)
+            {
+                throw new ArgumentOutOfRangeException(parameterName);
+            }
+
+            return milliseconds;
+        }
+
+        private static void Arm(CoyoteRuntime runtime, SystemCancellationTokenSource source, long milliseconds)
+        {
+            // The framework ignores a new deadline once cancellation has been requested.
+            if (source.IsCancellationRequested)
+            {
+                return;
+            }
+
+            Schedules.GetValue(source, static value => new CancelSchedule(value)).Arm(runtime, milliseconds);
+        }
+
+        /// <summary>
+        /// The one-shot virtual deadline of a single source.
+        /// </summary>
+        private sealed class CancelSchedule
+        {
+            private readonly object SyncObject = new object();
+
+            private readonly SystemCancellationTokenSource Source;
+
+            private ProviderTimer Timer;
+
+            private Guid TimerRuntimeId;
+
+            internal CancelSchedule(SystemCancellationTokenSource source)
+            {
+                this.Source = source;
+            }
+
+            internal void Arm(CoyoteRuntime runtime, long milliseconds)
+            {
+                TimeSpan due = milliseconds == -1 ? SystemTimeout.InfiniteTimeSpan : TimeSpan.FromMilliseconds(milliseconds);
+                ProviderTimer timer;
+                ProviderTimer stale = null;
+                lock (this.SyncObject)
+                {
+                    timer = this.Timer;
+                    if (timer != null && this.TimerRuntimeId != runtime.Id)
+                    {
+                        // A source that outlives the iteration that armed it is re-armed under the runtime arming it now.
+                        stale = timer;
+                        timer = null;
+                        this.Timer = null;
+                    }
+                }
+
+                stale?.Dispose();
+                if (timer != null)
+                {
+                    timer.Change(due, SystemTimeout.InfiniteTimeSpan);
+                    return;
+                }
+
+                if (milliseconds == -1)
+                {
+                    return;
+                }
+
+                // A zero due time schedules the cancellation as a new operation that can run before this returns, so the
+                // timer is installed only after it exists, and one installed by a racing arm in the meantime wins.
+                ProviderTimer created = ProviderTimer.Create(runtime, new RuntimeTimeProvider.VirtualTimeProvider(runtime),
+                    static value => ((CancelSchedule)value).OnDeadline(), this, due, SystemTimeout.InfiniteTimeSpan);
+                ProviderTimer installed;
+                lock (this.SyncObject)
+                {
+                    if (this.Timer is null)
+                    {
+                        this.Timer = created;
+                        this.TimerRuntimeId = runtime.Id;
+                    }
+
+                    installed = this.Timer;
+                }
+
+                if (!ReferenceEquals(installed, created))
+                {
+                    created.Dispose();
+                    installed.Change(due, SystemTimeout.InfiniteTimeSpan);
+                }
+            }
+
+            private void OnDeadline()
+            {
+                try
+                {
+                    this.Source.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // The framework disposes the deadline timer together with its source, so a source disposed before its
+                    // deadline is never canceled.
+                }
+            }
+        }
+
         /// <summary>
         /// Communicates a request for cancellation, running the registered callbacks asynchronously.
         /// </summary>
