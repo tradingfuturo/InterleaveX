@@ -109,6 +109,33 @@ namespace Microsoft.Coyote.BugFinding.Tests
 
         [Fact(Timeout = 10000)]
         [Trait("Category", "CurrentUseThreadingModels")]
+        public void TestDeadlineDoesNotExpireWhileWorkIsProgressing()
+        {
+            this.Test(async () =>
+            {
+                using var source = new CancellationTokenSource();
+                source.CancelAfter(10);
+                Task worker = Task.Run(async () =>
+                {
+                    for (int i = 0; i < 20; i++)
+                    {
+                        await Task.Yield();
+                    }
+                });
+
+                for (int i = 0; i < 20; i++)
+                {
+                    Specification.Assert(!source.IsCancellationRequested,
+                        "A cancellation deadline expired while enabled work was still making progress.");
+                    await Task.Yield();
+                }
+
+                await worker;
+            }, this.GetStrictConfiguration());
+        }
+
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "CurrentUseThreadingModels")]
         public void TestSourceDisposedBeforeItsDeadlineIsNeverCanceled()
         {
             this.Test(async () =>

@@ -179,6 +179,13 @@ namespace Microsoft.Coyote.Runtime
         /// </summary>
         internal bool IsVirtualTimerCallback;
 
+        /// <summary>
+        /// True when this virtual timer's deadline may only be reached once no operation is enabled. The clock never
+        /// takes an optional advance to it, so it models a timeout that expires only when the program is otherwise
+        /// stuck; a clock advanced past it for another deadline still makes it due.
+        /// </summary>
+        internal bool IsIdleOnlyDeadline;
+
         internal OperationWakeReason WakeReason;
 
         /// <summary>
@@ -242,6 +249,7 @@ namespace Microsoft.Coyote.Runtime
             this.HasVirtualDeadline = false;
             this.IsVirtualTimerOperation = false;
             this.IsVirtualTimerCallback = false;
+            this.IsIdleOnlyDeadline = false;
             this.WakeReason = OperationWakeReason.None;
             this.IsSourceUncontrolled = false;
             this.IsDependencyUncontrolled = false;

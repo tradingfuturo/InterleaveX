@@ -47,6 +47,11 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         /// waiters from a thread the scheduler has no record of, so a wait that only the deadline could end parks until
         /// the periodic monitor reports a hang. The model owns the deadline instead, as a one-shot virtual timer whose
         /// callback cancels the source on a controlled operation.
+        /// <para>
+        /// The deadline is idle-only: the clock never takes an optional advance to it while work is enabled, so it
+        /// expires when the program is otherwise stuck, or when another deadline carries the clock past it. A budget
+        /// therefore bounds a wait that cannot end, without firing against work that is still making progress.
+        /// </para>
         /// </remarks>
         private static readonly ConditionalWeakTable<SystemCancellationTokenSource, CancelSchedule> Schedules =
             new ConditionalWeakTable<SystemCancellationTokenSource, CancelSchedule>();
@@ -206,7 +211,8 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
                 // A zero due time schedules the cancellation as a new operation that can run before this returns, so the
                 // timer is installed only after it exists, and one installed by a racing arm in the meantime wins.
-                ProviderTimer created = ProviderTimer.Create(runtime, new RuntimeTimeProvider.VirtualTimeProvider(runtime),
+                ProviderTimer created = ProviderTimer.Create(runtime,
+                    new RuntimeTimeProvider.VirtualTimeProvider(runtime, fireOnlyWhenIdle: true),
                     static value => ((CancelSchedule)value).OnDeadline(), this, due, SystemTimeout.InfiniteTimeSpan);
                 ProviderTimer installed;
                 lock (this.SyncObject)

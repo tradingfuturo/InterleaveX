@@ -795,7 +795,13 @@ namespace Microsoft.Coyote.Runtime
         /// <summary>
         /// Schedules the specified delay to be executed asynchronously.
         /// </summary>
-        internal Task ScheduleDelay(TimeSpan delay, CancellationToken cancellationToken)
+        /// <param name="delay">The virtual time to wait.</param>
+        /// <param name="cancellationToken">Cancels the delay and retires its deadline.</param>
+        /// <param name="fireOnlyWhenIdle">
+        /// True for a deadline the clock may reach only once no operation is enabled, such as a cancellation
+        /// timeout. False for a delay that races enabled work.
+        /// </param>
+        internal Task ScheduleDelay(TimeSpan delay, CancellationToken cancellationToken, bool fireOnlyWhenIdle = false)
         {
             delay = NormalizeTimeout(delay, nameof(delay), uint.MaxValue - 1);
 
@@ -825,6 +831,7 @@ namespace Microsoft.Coyote.Runtime
                 long deadline = this.CreateVirtualDeadline(delay);
                 ControlledOperation op = this.CreateControlledOperation(group: ExecutingOperation?.Group);
                 op.IsVirtualTimerOperation = true;
+                op.IsIdleOnlyDeadline = fireOnlyWhenIdle;
                 op.DelayCancellationToken = cancellationToken;
                 this.VirtualTimerAdmissionCallback?.Invoke(op);
                 if (!cancellationToken.IsCancellationRequested)
@@ -2421,6 +2428,7 @@ namespace Microsoft.Coyote.Runtime
         {
             long earliest = 0;
             bool foundDeadline = false;
+            bool foundRacingDeadline = false;
             for (int idx = 0; idx < this.SchedulableOperations.Count; ++idx)
             {
                 ControlledOperation op = this.SchedulableOperations[idx];
@@ -2437,11 +2445,15 @@ namespace Microsoft.Coyote.Runtime
 
                 if (op.HasVirtualDeadline && (!op.IsVirtualTimerOperation ||
                     !op.DelayCancellationToken.IsCancellationRequested) &&
-                    (op.IsPaused || op.IsVirtualTimerOperation) &&
-                    (!foundDeadline || op.VirtualDeadlineTicks < earliest))
+                    (op.IsPaused || op.IsVirtualTimerOperation))
                 {
-                    earliest = op.VirtualDeadlineTicks;
-                    foundDeadline = true;
+                    if (!foundDeadline || op.VirtualDeadlineTicks < earliest)
+                    {
+                        earliest = op.VirtualDeadlineTicks;
+                        foundDeadline = true;
+                    }
+
+                    foundRacingDeadline |= !op.IsIdleOnlyDeadline;
                 }
             }
 
@@ -2453,6 +2465,15 @@ namespace Microsoft.Coyote.Runtime
             bool advance = earliest <= this.VirtualTimeTicks || !isAnyOperationEnabled;
             if (!advance)
             {
+                if (!foundRacingDeadline)
+                {
+                    // Only deadlines that expire when the program is stuck are pending, and it is not stuck.
+                    return;
+                }
+
+                // An optional advance is only ever taken on behalf of a deadline that races enabled work. It still
+                // stops at the earliest deadline, so an idle-only one before that racing deadline expires on the way,
+                // in order, exactly as it would under real elapsed time; one after it is never reached this way.
                 if (!this.IsOptionalClockAdvanceAvailable)
                 {
                     // The clock already beat enabled operations once, and none of them has run since.

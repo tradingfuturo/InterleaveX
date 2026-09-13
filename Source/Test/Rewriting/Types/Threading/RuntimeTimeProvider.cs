@@ -64,9 +64,19 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         {
             private readonly CoyoteRuntime Runtime;
 
-            internal VirtualTimeProvider(CoyoteRuntime runtime)
+            private readonly bool FireOnlyWhenIdle;
+
+            /// <summary>
+            /// Initializes a new instance of the <see cref="VirtualTimeProvider"/> class.
+            /// </summary>
+            /// <param name="runtime">The runtime whose virtual clock schedules the timers.</param>
+            /// <param name="fireOnlyWhenIdle">
+            /// True when the timers model a timeout that expires only once no operation is enabled.
+            /// </param>
+            internal VirtualTimeProvider(CoyoteRuntime runtime, bool fireOnlyWhenIdle = false)
             {
                 this.Runtime = runtime;
+                this.FireOnlyWhenIdle = fireOnlyWhenIdle;
             }
 
             public override TimeZoneInfo LocalTimeZone => TimeProvider.System.LocalTimeZone;
@@ -78,7 +88,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             public override long GetTimestamp() => TimeProvider.System.GetTimestamp();
 
             public override ITimer CreateTimer(TimerCallback callback, object state, TimeSpan dueTime,
-                TimeSpan period) => new VirtualTimer(this.Runtime, callback, state, dueTime, period);
+                TimeSpan period) => new VirtualTimer(this.Runtime, callback, state, dueTime, period, this.FireOnlyWhenIdle);
         }
 
         /// <summary>
@@ -91,17 +101,19 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             private readonly CoyoteRuntime Runtime;
             private readonly TimerCallback Callback;
             private readonly object State;
+            private readonly bool FireOnlyWhenIdle;
 
             private ScheduledDelay CurrentDelay;
             private TimeSpan Period;
             private bool IsDisposed;
 
             internal VirtualTimer(CoyoteRuntime runtime, TimerCallback callback, object state, TimeSpan dueTime,
-                TimeSpan period)
+                TimeSpan period, bool fireOnlyWhenIdle)
             {
                 this.Runtime = runtime;
                 this.Callback = callback;
                 this.State = state;
+                this.FireOnlyWhenIdle = fireOnlyWhenIdle;
                 this.Period = period;
                 this.Schedule(dueTime);
             }
@@ -180,7 +192,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
                     return;
                 }
 
-                Task task = this.Runtime.ScheduleDelay(dueTime, delay.Cancellation.Token);
+                Task task = this.Runtime.ScheduleDelay(dueTime, delay.Cancellation.Token, this.FireOnlyWhenIdle);
                 delay.SetTask(task);
                 task.ContinueWith(static (completed, state) =>
                 {
