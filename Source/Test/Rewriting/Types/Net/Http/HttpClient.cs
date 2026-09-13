@@ -132,8 +132,13 @@ namespace Microsoft.Coyote.Rewriting.Types.Net.Http
                 if (completionOption is SystemHttpCompletionOption.ResponseContentRead &&
                     request.Method != System.Net.Http.HttpMethod.Head)
                 {
+#if NET9_0_OR_GREATER
                     SystemTask buffering = response.Content.LoadIntoBufferAsync(
                         client.MaxResponseContentBufferSize, linkedSource.Token);
+#else
+                    // .NET 8 has no cancellable overload; the linked token still cancels the handler dispatch.
+                    SystemTask buffering = response.Content.LoadIntoBufferAsync(client.MaxResponseContentBufferSize);
+#endif
                     HttpMessageInvoker.ValidateSupportedTask(buffering, runtime, "HttpContent.LoadIntoBufferAsync");
                     await ControlledTask.ConfigureAwait(buffering, false);
                 }

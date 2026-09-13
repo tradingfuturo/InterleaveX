@@ -165,7 +165,7 @@ namespace Microsoft.Coyote.Rewriting
                     return true;
                 }
                 else if (type.Name is nameof(System.Threading.SynchronizationContext) &&
-                    member?.Name is not $"get_{nameof(System.Threading.SynchronizationContext.Current)}")
+                    member?.Name is not "get_" + nameof(System.Threading.SynchronizationContext.Current))
                 {
                     // Reading the ambient context schedules nothing: on a controlled operation it is the runtime's
                     // own context. What can escape control is posting or sending through a context, and every
