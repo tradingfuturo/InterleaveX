@@ -216,6 +216,19 @@ namespace Microsoft.Coyote.Runtime
         private long VirtualTimeTicks;
 
         /// <summary>
+        /// True while the clock may still win an optional advance, that is, advance to a future deadline
+        /// while some other operation is enabled. Winning one spends it; it is restored only when an
+        /// operation that is not virtual-timer machinery reaches a scheduling point.
+        /// </summary>
+        /// <remarks>
+        /// Without this, a periodic timer is an endless supply of work: each optional advance fires the
+        /// callback, the callback re-arms the next deadline, and an unfair strategy can keep choosing the
+        /// clock until the step bound, starving every other operation. That schedule is not a bug, so it
+        /// was silently truncated. Forced advances (nothing else enabled) are not limited by this.
+        /// </remarks>
+        private bool IsOptionalClockAdvanceAvailable;
+
+        /// <summary>
         /// Test-only callback invoked after a virtual timer operation is registered, but before its
         /// task is admitted to the controlled scheduler.
         /// </summary>
@@ -474,6 +487,7 @@ namespace Microsoft.Coyote.Runtime
             this.SchedulableOperations = new List<ControlledOperation>();
             this.OperationRegistrationCounter = 0;
             this.VirtualTimeTicks = 0;
+            this.IsOptionalClockAdvanceAvailable = true;
             this.PendingStartOperationMap = new Dictionary<ControlledOperation, ManualResetEventSlim>();
             this.ControlledThreads = new ConcurrentDictionary<string, ControlledOperation>();
             this.ControlledTasks = new ConcurrentDictionary<Task, ControlledOperation>();
@@ -1540,6 +1554,13 @@ namespace Microsoft.Coyote.Runtime
                 current.LastSchedulingPoint = type;
                 this.LastPostponedSchedulingPoint = null;
 
+                if (!current.IsVirtualTimerOperation && !current.IsVirtualTimerCallback)
+                {
+                    // Real progress by an operation that is not timer machinery re-opens the clock's next
+                    // optional advance (see IsOptionalClockAdvanceAvailable).
+                    this.IsOptionalClockAdvanceAvailable = true;
+                }
+
                 // Update the current operation with the hashed program state.
                 current.LastHashedProgramState = this.ComputeProgramState();
 
@@ -2430,10 +2451,24 @@ namespace Microsoft.Coyote.Runtime
             }
 
             bool advance = earliest <= this.VirtualTimeTicks || !isAnyOperationEnabled;
-            if (!advance && !this.Scheduler.GetNextBoolean(current, out advance))
+            if (!advance)
             {
-                this.Detach(ExecutionStatus.BoundReached);
-                return;
+                if (!this.IsOptionalClockAdvanceAvailable)
+                {
+                    // The clock already beat enabled operations once, and none of them has run since.
+                    return;
+                }
+
+                if (!this.Scheduler.GetNextBoolean(current, out advance))
+                {
+                    this.Detach(ExecutionStatus.BoundReached);
+                    return;
+                }
+
+                if (advance)
+                {
+                    this.IsOptionalClockAdvanceAvailable = false;
+                }
             }
 
             if (advance)
@@ -2508,6 +2543,21 @@ namespace Microsoft.Coyote.Runtime
                 }
 
                 return op;
+            }
+        }
+
+        /// <summary>
+        /// Marks the currently executing operation as running a virtual timer callback, so that it does
+        /// not count as progress that re-opens the clock's next optional advance.
+        /// </summary>
+        internal void MarkExecutingOperationAsVirtualTimerCallback()
+        {
+            using (SynchronizedSection.Enter(this.RuntimeLock))
+            {
+                if (ExecutingOperation is ControlledOperation op)
+                {
+                    op.IsVirtualTimerCallback = true;
+                }
             }
         }
 

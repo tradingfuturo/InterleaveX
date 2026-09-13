@@ -194,6 +194,9 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
 
             private void OnDelayCompleted(ScheduledDelay delay, Task task)
             {
+                // Timer machinery, not progress: a periodic callback must not re-open the clock's next optional
+                // advance, or the timer alone could keep the clock running and starve every other operation.
+                this.Runtime.MarkExecutingOperationAsVirtualTimerCallback();
                 TimerCallback callback = null;
                 object state = null;
                 TimeSpan period = Timeout.InfiniteTimeSpan;

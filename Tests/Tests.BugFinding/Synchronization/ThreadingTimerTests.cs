@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Specifications;
+using Microsoft.Coyote.SystematicTesting;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -371,6 +372,43 @@ namespace Microsoft.Coyote.BugFinding.Tests
             },
             errorChecker: (e) => Assert.StartsWith("A 1ms timer had not fired by the end of a 1ms delay.", e),
             configuration: this.GetStrictConfiguration());
+        }
+
+        [Fact(Timeout = 120000)]
+        [Trait("Category", "CurrentUseThreadingModels")]
+        public void TestPeriodicTimerCannotStarveOtherOperationsUnderAnUnfairStrategy()
+        {
+            // A periodic timer is an endless supply of work. The clock may beat enabled operations, so timeout races
+            // stay explorable, but if it could keep winning - each tick re-arming the next deadline - an unfair
+            // strategy starved every other operation until the step bound, and the iteration ended silently without
+            // the test body ever completing. Every iteration here must complete, and none may hit the bound.
+            const int iterations = 300;
+            int completed = 0;
+            TestReport report = this.RunSystematicTest(async () =>
+            {
+                using var timer = new Timer(_ => { }, null, 1, 1);
+                Task worker = Task.Run(async () =>
+                {
+                    for (int i = 0; i < 20; i++)
+                    {
+                        await Task.Yield();
+                    }
+                });
+
+                await worker;
+                Interlocked.Increment(ref completed);
+            },
+            this.GetConfiguration()
+                .WithTestingIterations(iterations)
+                .WithProbabilisticStrategy(3)
+                .WithMaxSchedulingSteps(2000)
+                .WithPartiallyControlledConcurrencyAllowed(false)
+                .WithPartiallyControlledDataNondeterminismAllowed(false)
+                .WithSystematicFuzzingFallbackEnabled(false));
+
+            Assert.Equal(0, report.MaxUnfairStepsHitInUnfairTests);
+            Assert.Equal(0, report.MaxFairStepsHitInFairTests);
+            Assert.Equal(iterations, Volatile.Read(ref completed));
         }
 
         private static void AssertThrows<TException>(Func<object> action, string parameterName)

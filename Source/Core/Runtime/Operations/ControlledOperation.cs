@@ -172,6 +172,13 @@ namespace Microsoft.Coyote.Runtime
         /// </summary>
         internal bool IsVirtualTimerOperation;
 
+        /// <summary>
+        /// True when this operation runs a virtual timer's callback (and re-arms a periodic timer). Like
+        /// <see cref="IsVirtualTimerOperation"/>, it does not count as progress that lets the clock win
+        /// another optional advance.
+        /// </summary>
+        internal bool IsVirtualTimerCallback;
+
         internal OperationWakeReason WakeReason;
 
         /// <summary>
@@ -234,6 +241,7 @@ namespace Microsoft.Coyote.Runtime
             this.VirtualDeadlineTicks = 0;
             this.HasVirtualDeadline = false;
             this.IsVirtualTimerOperation = false;
+            this.IsVirtualTimerCallback = false;
             this.WakeReason = OperationWakeReason.None;
             this.IsSourceUncontrolled = false;
             this.IsDependencyUncontrolled = false;
