@@ -61,6 +61,39 @@ namespace Microsoft.Coyote.BugFinding.Tests
         }
 
         [Fact(Timeout = 5000)]
+        public void TestNamedAndRenamedThreadsStayControlled()
+        {
+            // The runtime once mapped a controlled thread to its operation by Thread.Name, so a thread named by the
+            // code under test - at construction or from inside its own body - ran as an uncontrolled one and its
+            // wait on a modelled event was reported as a potential deadlock.
+            this.Test(() =>
+            {
+                using var ready = new AutoResetEvent(false);
+                bool isDone = false;
+                Thread named = new Thread(() =>
+                {
+                    Thread.CurrentThread.Name = "Renamed";
+                    ready.WaitOne();
+                    isDone = true;
+                })
+                {
+                    Name = "Writer",
+                    IsBackground = true,
+                };
+
+                named.Start();
+                ready.Set();
+                named.Join();
+
+                Specification.Assert(isDone, "The named thread did not finish.");
+            },
+            configuration: this.GetConfiguration().WithTestingIterations(50)
+                .WithPartiallyControlledConcurrencyAllowed(false)
+                .WithPartiallyControlledDataNondeterminismAllowed(false)
+                .WithSystematicFuzzingFallbackEnabled(false));
+        }
+
+        [Fact(Timeout = 5000)]
         public void TestThreadStartAndJoinStress()
         {
             this.Test(() =>

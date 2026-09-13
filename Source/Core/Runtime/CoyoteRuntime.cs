@@ -269,7 +269,12 @@ namespace Microsoft.Coyote.Runtime
         /// <summary>
         /// Map from unique controlled thread names to their corresponding operations.
         /// </summary>
-        private readonly ConcurrentDictionary<string, ControlledOperation> ControlledThreads;
+        /// <remarks>
+        /// Keyed by the thread object, never by its name: code under test is free to name or rename a thread it
+        /// creates (<c>new Thread(Run) { Name = "Writer" }</c>), and a name-keyed map then lost the operation, so
+        /// the thread ran as an uncontrolled one.
+        /// </remarks>
+        private readonly ConcurrentDictionary<Thread, ControlledOperation> ControlledThreads;
 
         /// <summary>
         /// Map from controlled tasks to their corresponding operations.
@@ -489,7 +494,7 @@ namespace Microsoft.Coyote.Runtime
             this.VirtualTimeTicks = 0;
             this.IsOptionalClockAdvanceAvailable = true;
             this.PendingStartOperationMap = new Dictionary<ControlledOperation, ManualResetEventSlim>();
-            this.ControlledThreads = new ConcurrentDictionary<string, ControlledOperation>();
+            this.ControlledThreads = new ConcurrentDictionary<Thread, ControlledOperation>();
             this.ControlledTasks = new ConcurrentDictionary<Task, ControlledOperation>();
             this.UncontrolledTasks = new ConcurrentDictionary<Task, string>();
             this.UncontrolledInvocations = new HashSet<string>();
@@ -982,7 +987,7 @@ namespace Microsoft.Coyote.Runtime
         private void PublishThreadMappings(ControlledOperation op, Thread thread)
         {
             this.ThreadPool.AddOrUpdate(op.Id, thread, (id, oldThread) => thread);
-            this.ControlledThreads.AddOrUpdate(thread.Name, op, (threadName, oldOp) => op);
+            this.ControlledThreads.AddOrUpdate(thread, op, (mappedThread, oldOp) => op);
         }
 
         /// <summary>
@@ -996,7 +1001,7 @@ namespace Microsoft.Coyote.Runtime
         /// </remarks>
         private void RemoveThreadMappings(ControlledOperation op, Thread thread)
         {
-            this.ControlledThreads.TryRemove(thread.Name, out ControlledOperation _);
+            this.ControlledThreads.TryRemove(thread, out ControlledOperation _);
             (this.ThreadPool as ICollection<KeyValuePair<ulong, Thread>>).Remove(
                 new KeyValuePair<ulong, Thread>(op.Id, thread));
         }
@@ -1237,7 +1242,7 @@ namespace Microsoft.Coyote.Runtime
         /// leaves nothing behind.
         /// </summary>
         internal bool HasMappingsForThread(PooledThread worker) =>
-            this.ControlledThreads.ContainsKey(worker.Name) ||
+            this.ControlledThreads.ContainsKey(worker.OSThread) ||
             this.ThreadPool.Values.Contains(worker.OSThread);
 
         /// <summary>
@@ -2648,10 +2653,9 @@ namespace Microsoft.Coyote.Runtime
             using (SynchronizedSection.Enter(this.RuntimeLock))
             {
                 ControlledOperation op = null;
-                string name = thread?.Name;
-                if (!string.IsNullOrEmpty(name))
+                if (thread != null)
                 {
-                    this.ControlledThreads.TryGetValue(name, out op);
+                    this.ControlledThreads.TryGetValue(thread, out op);
                 }
 
                 return op;
@@ -2977,8 +2981,7 @@ namespace Microsoft.Coyote.Runtime
         /// </summary>
         private bool IsThreadControlled(Thread thread)
         {
-            string name = thread?.Name;
-            return name != null && this.ControlledThreads.ContainsKey(name);
+            return thread != null && this.ControlledThreads.ContainsKey(thread);
         }
 
         /// <summary>
