@@ -126,8 +126,52 @@ namespace Microsoft.Coyote.Rewriting
             {
                 instruction = this.VisitCallInstruction(instruction, methodReference);
             }
+            else if (instruction.OpCode == OpCodes.Ldftn && instruction.Operand is MethodReference functionReference)
+            {
+                instruction = this.VisitLdftnInstruction(instruction, functionReference);
+            }
 
             return instruction;
+        }
+
+        /// <summary>
+        /// Rewrites the target of a delegate created from a method group of a modelled static method.
+        /// </summary>
+        /// <remarks>
+        /// The compiler loads a method-group delegate's target with <c>ldftn</c> instead of calling it, so a delegate
+        /// such as <c>Func&lt;TimeSpan, CancellationToken, Task&gt; delay = Task.Delay</c> kept pointing at the
+        /// framework method and every invocation escaped control. Only a static method whose model has exactly the
+        /// same parameter and return types is redirected: the delegate type is unchanged, so the replacement must be
+        /// signature-identical. An instance method's model takes its receiver as a parameter and cannot bind to the
+        /// same delegate, so it is left alone.
+        /// </remarks>
+        /// <returns>The unmodified instruction, or the newly replaced instruction.</returns>
+        private Instruction VisitLdftnInstruction(Instruction instruction, MethodReference method)
+        {
+            if (method.HasThis || method.HasGenericParameters || method is GenericInstanceMethod ||
+                !this.TryRewriteMethodReference(method, out MethodReference newMethod) ||
+                ReferenceEquals(newMethod, method) || newMethod.HasThis ||
+                newMethod.Parameters.Count != method.Parameters.Count ||
+                !string.Equals(newMethod.ReturnType.FullName, method.ReturnType.FullName, StringComparison.Ordinal))
+            {
+                return instruction;
+            }
+
+            for (int idx = 0; idx < method.Parameters.Count; ++idx)
+            {
+                if (!string.Equals(newMethod.Parameters[idx].ParameterType.FullName,
+                    method.Parameters[idx].ParameterType.FullName, StringComparison.Ordinal))
+                {
+                    return instruction;
+                }
+            }
+
+            Instruction newInstruction = Instruction.Create(OpCodes.Ldftn, this.Module.ImportReference(newMethod));
+            newInstruction.Offset = instruction.Offset;
+            this.LogWriter.LogDebug("............. [-] {0}", instruction);
+            this.Replace(instruction, newInstruction);
+            this.LogWriter.LogDebug("............. [+] {0}", newInstruction);
+            return newInstruction;
         }
 
         /// <summary>
