@@ -186,6 +186,17 @@ namespace Microsoft.Coyote.Runtime
         /// </summary>
         internal bool IsIdleOnlyDeadline;
 
+        /// <summary>
+        /// The number of framework calls this operation is inside that may run rewritten callbacks, such as a key's
+        /// <c>Equals</c>, while holding a lock the scheduler cannot see.
+        /// </summary>
+        /// <remarks>
+        /// While it is non-zero, memory-access, control-flow and shared-state read/write scheduling points are not
+        /// taken: switching the operation out there would leave the framework's lock held, and the next operation to
+        /// reach that lock would block its thread outside the scheduler's view. Scheduling points that pause the operation on a controlled resource are unaffected.
+        /// </remarks>
+        internal int FrameworkCallDepth;
+
         internal OperationWakeReason WakeReason;
 
         /// <summary>
@@ -250,6 +261,7 @@ namespace Microsoft.Coyote.Runtime
             this.IsVirtualTimerOperation = false;
             this.IsVirtualTimerCallback = false;
             this.IsIdleOnlyDeadline = false;
+            this.FrameworkCallDepth = 0;
             this.WakeReason = OperationWakeReason.None;
             this.IsSourceUncontrolled = false;
             this.IsDependencyUncontrolled = false;

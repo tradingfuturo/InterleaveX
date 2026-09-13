@@ -78,7 +78,8 @@ namespace Microsoft.Coyote.Runtime
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy != SchedulingPolicy.None &&
                 runtime.Configuration.IsMemoryAccessRaceCheckingEnabled &&
-                runtime.TryGetExecutingOperation(out ControlledOperation current))
+                runtime.TryGetExecutingOperation(out ControlledOperation current) &&
+                current.FrameworkCallDepth is 0)
             {
                 if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
                 {
@@ -103,7 +104,8 @@ namespace Microsoft.Coyote.Runtime
             if (runtime.SchedulingPolicy != SchedulingPolicy.None &&
                 runtime.Configuration.IsControlFlowRaceCheckingEnabled &&
                 !runtime.Configuration.IsMemoryAccessRaceCheckingEnabled &&
-                runtime.TryGetExecutingOperation(out ControlledOperation current))
+                runtime.TryGetExecutingOperation(out ControlledOperation current) &&
+                current.FrameworkCallDepth is 0)
             {
                 if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
                 {
@@ -162,7 +164,8 @@ namespace Microsoft.Coyote.Runtime
 
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy != SchedulingPolicy.None &&
-                runtime.TryGetExecutingOperation(out ControlledOperation current))
+                runtime.TryGetExecutingOperation(out ControlledOperation current) &&
+                current.FrameworkCallDepth is 0)
             {
                 if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
                 {
@@ -195,7 +198,8 @@ namespace Microsoft.Coyote.Runtime
 
             var runtime = CoyoteRuntime.Current;
             if (runtime.SchedulingPolicy != SchedulingPolicy.None &&
-                runtime.TryGetExecutingOperation(out ControlledOperation current))
+                runtime.TryGetExecutingOperation(out ControlledOperation current) &&
+                current.FrameworkCallDepth is 0)
             {
                 if (runtime.SchedulingPolicy is SchedulingPolicy.Interleaving)
                 {

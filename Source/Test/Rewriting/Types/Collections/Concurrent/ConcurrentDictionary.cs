@@ -1,5 +1,8 @@
-﻿// Copyright (c) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+//
+// Modifications Copyright (c) 2026 pipflow.com <https://pipflow.com>
+// Modifications are licensed under the GNU General Public License v3.0 or later.
 
 using System;
 using Microsoft.Coyote.Runtime;
@@ -13,7 +16,16 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
     /// <summary>
     /// Provides methods for controlling a concurrent dictionary during testing.
     /// </summary>
-    /// <remarks>This type is intended for compiler use rather than use directly in code.</remarks>
+    /// <remarks>
+    /// This type is intended for compiler use rather than use directly in code.
+    /// <para>
+    /// Each model explores an interleaving before the call and then runs the framework method inside a
+    /// <see cref="FrameworkCall"/>. CoreLib invokes the key's <c>Equals</c> and <c>GetHashCode</c> while it holds the
+    /// dictionary's internal lock; when the key is rewritten code under memory-access interleaving, every field read
+    /// there was a scheduling point, and switching the operation out left that real lock held for the next writer to
+    /// block on outside the scheduler's view.
+    /// </para>
+    /// </remarks>
     [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public static class ConcurrentDictionary<TKey, TValue>
     {
@@ -29,6 +41,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.Count;
         }
 
@@ -44,6 +57,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.IsEmpty;
         }
 
@@ -60,6 +74,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance[key];
         }
 
@@ -76,6 +91,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             instance[key] = value;
         }
 
@@ -92,6 +108,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.Keys;
         }
 
@@ -108,6 +125,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
 #pragma warning restore CA1707 // Identifiers should not contain underscores
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.Values;
         }
 
@@ -120,6 +138,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
             TKey key, Func<TKey, TValue> addValueFactory, Func<TKey, TValue, TValue> updateValueFactory)
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.AddOrUpdate(key, addValueFactory, updateValueFactory);
         }
 
@@ -132,6 +151,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
             TKey key, TValue addValue, Func<TKey, TValue, TValue> updateValueFactory)
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.AddOrUpdate(key, addValue, updateValueFactory);
         }
 
@@ -146,6 +166,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
             TArg factoryArgument)
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.AddOrUpdate(key, addValueFactory, updateValueFactory, factoryArgument);
         }
 #endif
@@ -156,6 +177,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
         public static void Clear(SystemConcurrent.ConcurrentDictionary<TKey, TValue> instance)
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             instance.Clear();
         }
 
@@ -166,6 +188,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
             TKey key)
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.ContainsKey(key);
         }
 
@@ -176,6 +199,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
             SystemConcurrent.ConcurrentDictionary<TKey, TValue> instance)
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.GetEnumerator();
         }
 
@@ -187,6 +211,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
             TKey key, Func<TKey, TValue> valueFactory)
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.GetOrAdd(key, valueFactory);
         }
 
@@ -198,6 +223,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
             TKey key, TValue value)
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.GetOrAdd(key, value);
         }
 
@@ -210,6 +236,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
             TKey key, Func<TKey, TArg, TValue> valueFactory, TArg factoryArgument)
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.GetOrAdd(key, valueFactory, factoryArgument);
         }
 #endif
@@ -221,6 +248,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
             SystemConcurrent.ConcurrentDictionary<TKey, TValue> instance)
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.ToArray();
         }
 
@@ -231,6 +259,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
             TKey key, TValue value)
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.TryAdd(key, value);
         }
 
@@ -242,6 +271,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
             TKey key, out TValue value)
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.TryGetValue(key, out value);
         }
 
@@ -253,6 +283,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
             TKey key, out TValue value)
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.TryRemove(key, out value);
         }
 
@@ -265,6 +296,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
             SystemGenerics.KeyValuePair<TKey, TValue> item)
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.TryRemove(item);
         }
 #endif
@@ -276,6 +308,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
             TKey key, TValue newValue, TValue comparisonValue)
         {
             ExploreInterleaving();
+            using FrameworkCall call = FrameworkCall.Enter();
             return instance.TryUpdate(key, newValue, comparisonValue);
         }
 
@@ -296,6 +329,40 @@ namespace Microsoft.Coyote.Rewriting.Types.Collections.Concurrent
                 else if (runtime.SchedulingPolicy is SchedulingPolicy.Fuzzing)
                 {
                     runtime.DelayOperation(current);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Marks the executing operation as inside a framework call for the lifetime of the scope.
+        /// </summary>
+        private readonly struct FrameworkCall : IDisposable
+        {
+            private readonly ControlledOperation Operation;
+
+            private FrameworkCall(ControlledOperation operation)
+            {
+                this.Operation = operation;
+            }
+
+            internal static FrameworkCall Enter()
+            {
+                var runtime = CoyoteRuntime.Current;
+                if (runtime.SchedulingPolicy is not SchedulingPolicy.None &&
+                    runtime.TryGetExecutingOperation(out ControlledOperation current))
+                {
+                    current.FrameworkCallDepth++;
+                    return new FrameworkCall(current);
+                }
+
+                return default;
+            }
+
+            public void Dispose()
+            {
+                if (this.Operation != null)
+                {
+                    this.Operation.FrameworkCallDepth--;
                 }
             }
         }
