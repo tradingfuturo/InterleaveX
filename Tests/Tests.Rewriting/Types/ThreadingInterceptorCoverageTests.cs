@@ -89,6 +89,8 @@ namespace Microsoft.Coyote.Rewriting.Tests
                 typeof(ControlledCancellationTokenRegistration), nameof(CancellationTokenRegistration.Dispose), 1);
             AssertInstanceMethodsIntercepted(typeof(CancellationTokenSource), typeof(ControlledCancellationTokenSource),
                 nameof(CancellationTokenSource.CancelAfter), 2);
+            AssertInstanceMethodsIntercepted(typeof(CancellationTokenSource), typeof(ControlledCancellationTokenSource),
+                nameof(CancellationTokenSource.Dispose), 1);
             foreach (Type delayType in new[] { typeof(TimeSpan), typeof(int) })
             {
                 ConstructorInfo constructor = typeof(CancellationTokenSource).GetConstructor(new[] { delayType });

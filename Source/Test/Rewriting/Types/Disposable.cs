@@ -41,6 +41,10 @@ namespace Microsoft.Coyote.Rewriting.Types
             {
                 Threading.Timer.Dispose(timer);
             }
+            else if (instance is System.Threading.CancellationTokenSource source)
+            {
+                Threading.CancellationTokenSource.Dispose(source);
+            }
             else if (instance is System.Threading.CancellationTokenRegistration registration)
             {
                 // A boxed copy is disposed. The registration is an immutable handle, so the copy denotes the same one.

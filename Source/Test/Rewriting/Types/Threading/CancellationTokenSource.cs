@@ -276,6 +276,32 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
         }
 
         /// <summary>
+        /// Releases the source, first waiting for any in-flight callback that links it to its parent tokens.
+        /// </summary>
+        /// <remarks>
+        /// A linked source disposes the registrations that link it to its parents, and CoreLib does that through the
+        /// spin-and-sleep wait of <see cref="SystemCancellationTokenRegistration.Dispose"/>. When a parent's
+        /// cancellation walk is running the linking callback on another operation, and that walk has reached a
+        /// scheduling point - completing a canceled delay, for instance - the disposing operation spins while the
+        /// walk is never scheduled again, and both park until the periodic monitor reports a hang. The linking
+        /// registrations are therefore released through the controlled registration model first. CoreLib's own
+        /// release then finds them unregistered, with no callback left to wait for.
+        /// </remarks>
+        public static void Dispose(SystemCancellationTokenSource source)
+        {
+            if (IsControlled(out CoyoteRuntime _))
+            {
+                foreach (SystemCancellationTokenRegistration linking in Internals.GetLinkingRegistrations(source))
+                {
+                    SystemCancellationTokenRegistration registration = linking;
+                    CancellationTokenRegistration.Dispose(ref registration);
+                }
+            }
+
+            source.Dispose();
+        }
+
+        /// <summary>
         /// Binds the private CoreLib members that the cancellation models have to reproduce exactly.
         /// </summary>
         /// <remarks>
@@ -319,6 +345,50 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             private static readonly FieldInfo RegistrationNodeField = GetField(typeof(SystemCancellationTokenRegistration), "_node");
 
             private static readonly FieldInfo NodeRegistrationsField = GetField(RegistrationNodeField.FieldType, "Registrations");
+
+            private static readonly Type Linked1Type = GetNestedType("Linked1CancellationTokenSource");
+
+            private static readonly FieldInfo Linked1RegistrationField = GetField(Linked1Type, "_reg1");
+
+            private static readonly Type Linked2Type = GetNestedType("Linked2CancellationTokenSource");
+
+            private static readonly FieldInfo Linked2FirstRegistrationField = GetField(Linked2Type, "_reg1");
+
+            private static readonly FieldInfo Linked2SecondRegistrationField = GetField(Linked2Type, "_reg2");
+
+            private static readonly Type LinkedNType = GetNestedType("LinkedNCancellationTokenSource");
+
+            private static readonly FieldInfo LinkedNRegistrationsField = GetField(LinkedNType, "_linkingRegistrations");
+
+            /// <summary>
+            /// Returns the registrations that link a source created by <c>CreateLinkedTokenSource</c> to its parent
+            /// tokens, or none for any other source.
+            /// </summary>
+            internal static SystemCancellationTokenRegistration[] GetLinkingRegistrations(SystemCancellationTokenSource source)
+            {
+                Type type = source.GetType();
+                if (type == Linked1Type)
+                {
+                    return new[] { (SystemCancellationTokenRegistration)Linked1RegistrationField.GetValue(source) };
+                }
+
+                if (type == Linked2Type)
+                {
+                    return new[]
+                    {
+                        (SystemCancellationTokenRegistration)Linked2FirstRegistrationField.GetValue(source),
+                        (SystemCancellationTokenRegistration)Linked2SecondRegistrationField.GetValue(source),
+                    };
+                }
+
+                if (type == LinkedNType)
+                {
+                    return (SystemCancellationTokenRegistration[])LinkedNRegistrationsField.GetValue(source) ??
+                        Array.Empty<SystemCancellationTokenRegistration>();
+                }
+
+                return Array.Empty<SystemCancellationTokenRegistration>();
+            }
 
             /// <summary>
             /// Moves the source into the canceled state, returning false if cancellation was already requested.
@@ -388,6 +458,10 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading
             /// </summary>
             internal static int GetThreadIdExecutingCallbacks(object registrations) =>
                 (int)ThreadIdExecutingCallbacksField.GetValue(registrations);
+
+            private static Type GetNestedType(string name) =>
+                typeof(SystemCancellationTokenSource).GetNestedType(name, BindingFlags.NonPublic) ??
+                throw new TypeLoadException($"{typeof(SystemCancellationTokenSource).FullName}+{name} is missing.");
 
             private static FieldInfo GetField(Type type, string name) =>
                 type.GetField(name, InstanceMembers) ?? throw new MissingFieldException(type.FullName, name);
