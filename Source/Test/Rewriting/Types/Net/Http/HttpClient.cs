@@ -116,7 +116,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Net.Http
             var linkedSource = links.Source;
             var timeoutLifetime = new SystemCancellationTokenSource();
             SystemTask timeout = client.Timeout == System.Threading.Timeout.InfiniteTimeSpan ? SystemTask.CompletedTask :
-                CancelOnTimeoutAsync(client.Timeout, links, timeoutLifetime.Token);
+                CancelOnTimeoutAsync(runtime, client.Timeout, links, timeoutLifetime.Token);
             SystemHttpResponseMessage response = null;
             try
             {
@@ -176,13 +176,22 @@ namespace Microsoft.Coyote.Rewriting.Types.Net.Http
             }
         }
 
+        /// <summary>
+        /// Cancels the request's links once the client timeout elapses, unless the request ended first.
+        /// </summary>
+        /// <remarks>
+        /// The timeout is an idle-only deadline, like a <c>CancelAfter</c> budget: the clock never advances to it
+        /// while work is enabled. As a racing delay it carried the clock past every shorter cancellation budget on
+        /// the request path as soon as the request was sent, so requests were cancelled while their handlers were
+        /// still making progress.
+        /// </remarks>
         [System.Runtime.CompilerServices.AsyncMethodBuilder(typeof(Types.Runtime.CompilerServices.AsyncTaskMethodBuilder))]
-        private static async SystemTask CancelOnTimeoutAsync(TimeSpan timeout, CancellationLinks links,
-            SystemCancellationToken lifetime)
+        private static async SystemTask CancelOnTimeoutAsync(CoyoteRuntime runtime, TimeSpan timeout,
+            CancellationLinks links, SystemCancellationToken lifetime)
         {
             try
             {
-                await ControlledTask.ConfigureAwait(ControlledTask.Delay(timeout, lifetime), false);
+                await ControlledTask.ConfigureAwait(runtime.ScheduleDelay(timeout, lifetime, fireOnlyWhenIdle: true), false);
                 if (!lifetime.IsCancellationRequested)
                 {
                     links.Cancel();

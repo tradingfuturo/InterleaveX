@@ -184,6 +184,48 @@ namespace Microsoft.Coyote.BugFinding.Tests
             }, configuration: this.StrictConfiguration());
         }
 
+        [Fact(Timeout = 10000)]
+        public void TestSendAsyncTimeoutDoesNotExpireWhileTheHandlerIsProgressing()
+        {
+            // The timeout is an idle-only deadline. As a racing delay the clock could take it at any step, so a
+            // handler still making progress was cancelled - and it carried the clock past every shorter
+            // cancellation budget on the request path along the way.
+            this.Test(async () =>
+            {
+                var handler = new TestHandler(async (_, token) =>
+                {
+                    for (int i = 0; i < 20; i++)
+                    {
+                        // A real handler observes its token between steps; that is how an expired timeout would
+                        // surface here.
+                        token.ThrowIfCancellationRequested();
+                        await Task.Yield();
+                    }
+
+                    return Response("ok");
+                });
+                using var client = new HttpClient(handler)
+                {
+                    Timeout = TimeSpan.FromMilliseconds(20),
+                };
+
+                Task sibling = Task.Run(async () =>
+                {
+                    for (int i = 0; i < 20; i++)
+                    {
+                        await Task.Yield();
+                    }
+                });
+
+                using HttpResponseMessage response = await client.SendAsync(
+                    new HttpRequestMessage(HttpMethod.Get, "https://example.test/progressing"),
+                    CancellationToken.None);
+                await sibling;
+                Specification.Assert(response.IsSuccessStatusCode,
+                    "The HttpClient timeout expired while the handler was still making progress.");
+            }, configuration: this.StrictConfiguration());
+        }
+
         [Fact(Timeout = 5000)]
         public void TestSendAsyncPreservesResponseFaultAndLifecycleRejections()
         {
