@@ -739,7 +739,11 @@ namespace Microsoft.Coyote.BugFinding.Tests
             this.GetConfiguration().WithTestingIterations(3));
 
             SharedChannel = null;
-            Assert.Contains("A channel created in a previous test iteration", report.UncontrolledInvocations);
+
+            // The report names where the channel was created, which is what finds a singleton in a large program.
+            Assert.Contains(report.UncontrolledInvocations, invocation =>
+                invocation.StartsWith("A channel created in a previous test iteration", StringComparison.Ordinal) &&
+                invocation.Contains(nameof(ChannelTests), StringComparison.Ordinal));
         }
 
         [Fact(Timeout = 5000)]
@@ -755,7 +759,8 @@ namespace Microsoft.Coyote.BugFinding.Tests
             },
             this.GetConfiguration().WithTestingIterations(3));
 
-            Assert.DoesNotContain("A channel created in a previous test iteration", report.UncontrolledInvocations);
+            Assert.DoesNotContain(report.UncontrolledInvocations, invocation =>
+                invocation.StartsWith("A channel created in a previous test iteration", StringComparison.Ordinal));
         }
 
         [Fact(Timeout = 5000)]

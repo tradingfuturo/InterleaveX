@@ -125,6 +125,12 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         private readonly Guid CreatingRuntimeId;
 
         /// <summary>
+        /// Where this channel was created, captured unformatted so that formatting is paid for only when a later
+        /// iteration reaches the channel and the report needs to say which channel it was.
+        /// </summary>
+        private readonly System.Diagnostics.StackTrace CreationStackTrace;
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="ControlledChannel{T}"/> class.
         /// </summary>
         internal ControlledChannel(CoyoteRuntime runtime, int capacity,
@@ -132,6 +138,7 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
         {
             this.SyncRoot = new object();
             this.CreatingRuntimeId = runtime.Id;
+            this.CreationStackTrace = new System.Diagnostics.StackTrace(1, false);
             this.Items = new LinkedList<T>();
             this.Capacity = capacity;
             this.FullMode = fullMode;
@@ -171,11 +178,20 @@ namespace Microsoft.Coyote.Rewriting.Types.Threading.Channels
             CoyoteRuntime runtime = CoyoteRuntime.Current;
             if (runtime.Id != this.CreatingRuntimeId)
             {
-                runtime.NotifyUncontrolledPrimitive("A channel created in a previous test iteration");
+                // Built once rather than per operation: a singleton channel is reached by every operation of every
+                // later iteration. The creation site is what tells a reader which channel in a large program it is.
+                this.CrossIterationReport ??= "A channel created in a previous test iteration " +
+                    $"(runtime id '{this.CreatingRuntimeId}') at:{Environment.NewLine}{this.CreationStackTrace}";
+                runtime.NotifyUncontrolledPrimitive(this.CrossIterationReport);
             }
 
             return runtime;
         }
+
+        /// <summary>
+        /// The report made when a later iteration reaches this channel, built on first use.
+        /// </summary>
+        private string CrossIterationReport;
 
         /// <summary>
         /// Whether the buffer has room for another item (always true when unbounded, and never true
