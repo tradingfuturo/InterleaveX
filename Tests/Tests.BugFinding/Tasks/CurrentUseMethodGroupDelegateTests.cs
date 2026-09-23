@@ -5,6 +5,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Coyote.Runtime;
 using Microsoft.Coyote.Specifications;
 using Xunit;
 using Xunit.Abstractions;
@@ -51,6 +52,65 @@ namespace Microsoft.Coyote.BugFinding.Tests
                 Specification.Assert(value is 1, "A method-group Task.Run did not run its work.");
             }, this.GetStrictConfiguration());
         }
+
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "CurrentUseThreadingModels")]
+        public void TestGenericRunMethodGroupDelegateIsControlled()
+        {
+            this.Test(async () =>
+            {
+                Func<Func<int>, Task<int>> run = Task.Run<int>;
+                AssertRewrittenGenericRunDelegate(run);
+
+                int result = await run(() =>
+                {
+                    SchedulingPoint.Interleave();
+                    return 42;
+                });
+                Specification.Assert(result is 42, "A generic method-group Task.Run did not return its result.");
+            }, this.GetStrictConfiguration());
+        }
+
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "CurrentUseThreadingModels")]
+        public void TestGenericAsyncRunMethodGroupDelegateIsControlled()
+        {
+            this.Test(async () =>
+            {
+                Func<Func<Task<int>>, Task<int>> run = Task.Run<int>;
+                AssertRewrittenGenericRunDelegate(run);
+
+                int result = await run(async () =>
+                {
+                    await Task.Yield();
+                    SchedulingPoint.Interleave();
+                    return 42;
+                });
+                Specification.Assert(result is 42, "An async generic method-group Task.Run did not return its result.");
+            }, this.GetStrictConfiguration());
+        }
+
+        [Fact(Timeout = 10000)]
+        [Trait("Category", "CurrentUseThreadingModels")]
+        public void TestGenericRunMethodGroupDelegatePreservesCallerTypeParameter()
+        {
+            this.Test(async () =>
+            {
+                string result = await RunFromGenericCaller(() => "value");
+                Specification.Assert(result is "value", "A generic caller's method-group Task.Run lost its type argument.");
+            }, this.GetStrictConfiguration());
+        }
+
+        private static async Task<T> RunFromGenericCaller<T>(Func<T> function)
+        {
+            Func<Func<T>, Task<T>> run = Task.Run<T>;
+            AssertRewrittenGenericRunDelegate(run);
+            return await run(function);
+        }
+
+        private static void AssertRewrittenGenericRunDelegate(Delegate run) =>
+            Specification.Assert(run.Method.DeclaringType?.FullName != "System.Threading.Tasks.Task",
+                "A generic method-group Task.Run delegate still targets the framework Task.Run method.");
 
         private Configuration GetStrictConfiguration() => this.GetConfiguration()
             .WithTestingIterations(50)
